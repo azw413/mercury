@@ -7,4 +7,9 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+mercury-ir = { path = "../ir" }
 mercury-spec = { path = "../spec" }
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

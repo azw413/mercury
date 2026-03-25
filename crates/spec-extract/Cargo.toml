@@ -9,3 +9,4 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 mercury-spec = { path = "../spec" }
+serde_json.workspace = true

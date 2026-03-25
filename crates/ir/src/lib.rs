@@ -1,3 +1,5 @@
-pub fn crate_purpose() -> &'static str {
-    "internal raw and editable assembly representations"
-}
+pub mod raw;
+
+pub use raw::{
+    RawFunction, RawFunctionFlags, RawInstruction, RawModule, RawOperand, RawSectionBoundaries,
+};

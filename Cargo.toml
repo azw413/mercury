@@ -6,6 +6,7 @@ members = [
     "crates/disasm",
     "crates/ir",
     "crates/spec",
+    "crates/spec-builtin",
     "crates/spec-extract",
 ]
 resolver = "3"

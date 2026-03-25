@@ -127,3 +127,12 @@ The next implementation pass should focus on `mercury-spec-extract`:
 3. parse opcode metadata into Rust structs
 4. parse a first cut of container metadata into Rust structs
 5. write canonical JSON snapshots for inspection and later parser use
+
+## Current CLI
+
+```bash
+cargo run -p mercury-cli -- extract-spec --tag v0.12.0
+cargo run -p mercury-cli -- extract-spec --tag v0.12.0 --compare-hermes-dec ../hermes-dec
+```
+
+Generated specs are keyed by Hermes bytecode version, for example `spec/generated/hbc89.json`, while still retaining the source git tag inside the JSON.
