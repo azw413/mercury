@@ -2,137 +2,193 @@
 
 `mercury` is a Rust command-line toolkit for Hermes bytecode reverse engineering, disassembly, reassembly, and transformation.
 
-The project is designed around one non-negotiable requirement: support multiple Hermes bytecode versions simultaneously without scattering version-specific logic throughout the parser and assembler.
+The core design rule is that Hermes bytecode versions must be handled through generated versioned specs rather than scattered ad hoc parser branches.
+
+## CLI Usage
+
+Show embedded supported bytecode versions:
+
+```bash
+cargo run -p mercury-cli -- versions
+```
+
+Decode a Hermes bytecode file in raw form:
+
+```bash
+cargo run -p mercury-cli -- decode test/hex.hbc
+```
+
+Decode to the normalized semantic view:
+
+```bash
+cargo run -p mercury-cli -- decode test/hex.hbc --format semantic
+```
+
+Write decode output to a file:
+
+```bash
+cargo run -p mercury-cli -- decode test/amazon.hbc --format semantic -o /tmp/amazon.semantic.txt
+```
+
+Extract a versioned spec from the local Hermes checkout:
+
+```bash
+cargo run -p mercury-cli -- extract-spec --tag v0.12.0
+```
+
+Extract a spec and compare it against `hermes-dec`:
+
+```bash
+cargo run -p mercury-cli -- extract-spec --tag v0.12.0 --compare-hermes-dec ../hermes-dec
+```
+
+## Current Status
+
+Implemented now:
+
+- versioned spec extraction from `../hermes`
+- generated JSON specs keyed by Hermes bytecode version under `spec/generated/`
+- embedded build-time spec registry for the CLI
+- binary parsing for real `.hbc` files including:
+  - file header
+  - section boundaries
+  - compact and overflowed function headers
+  - function bodies
+  - function info
+  - exception and debug-offset records
+  - string tables and storage
+  - CJS and function-source pair tables
+- spec-backed instruction decoding
+- raw IR generation
+- semantic IR lowering
+- raw and semantic CLI decode modes
+
+Working fixtures:
+
+- `test/hex.hbc`
+- `test/amazon.hbc`
+- `../hermes-dec/tests/sample.hbc`
+
+Current semantic status:
+
+- `hex.hbc` lowers almost entirely into structured semantic ops
+- `amazon.hbc` lowers end to end in semantic mode
+- the previous fallback-heavy lowering surface has been reduced to the point that the next major task should be stabilizing the semantic text grammar for assembly, not chasing broad missing instruction families
+
+Not implemented yet:
+
+- assembler
+- byte-perfect full-file rewrite path
+- final text grammar for semantic assembly
+- semantic-to-raw raising
 
 ## Goals
 
-- Extract canonical Hermes bytecode metadata directly from the upstream Hermes source tree and its git tags.
-- Represent both opcode definitions and container-format definitions in a versioned, tool-friendly intermediate format.
+- Extract canonical Hermes bytecode metadata directly from upstream Hermes source and tags.
+- Represent opcode definitions and container-format definitions in a versioned intermediate format.
 - Parse Hermes bytecode files into a byte-exact raw model suitable for round-trip rewriting.
-- Provide a higher-level editable assembly IR for reverse engineering, rewriting, and obfuscation.
-- Disassemble into a stable text format and assemble back into byte-for-byte equivalent binaries when unchanged.
+- Provide a stable semantic IR for reverse engineering, rewriting, and obfuscation.
+- Disassemble into a deterministic text format and assemble back into byte-for-byte equivalent binaries when unchanged.
 
 ## Major Components
-
-### `mercury-spec-extract`
-
-Reads Hermes source from `../hermes` and emits canonical versioned specs.
-
-This extractor has two distinct responsibilities:
-
-- Bytecode spec extraction:
-  - `BytecodeVersion.h`
-  - `BytecodeList.def`
-  - builtins and operand annotations
-- Container format extraction:
-  - `BytecodeFileFormat.h`
-  - function header layout
-  - file header evolution
-  - section ordering, alignment, and related serialization metadata
-
-The output of this phase will be checked-in generated data under `spec/generated/`.
-
-### `mercury-spec`
-
-Defines the versioned independent format used by the rest of the project.
-
-This crate is the compatibility boundary between upstream Hermes source and Mercury’s parser, disassembler, and assembler. It should be data-driven and version-aware, not a pile of ad hoc per-version parser branches.
-
-### `mercury-binary`
-
-Owns parsing and writing `.hbc` files using `mercury-spec`.
-
-This layer should preserve exact bytes, offsets, padding, and section boundaries. It is the foundation for byte-perfect round-tripping.
-
-### `mercury-ir`
-
-Defines stable internal representations above the raw binary layer.
-
-Planned split:
-
-- `Raw`:
-  exact decoded structures suitable for lossless rewriting
-- `Asm`:
-  editable instruction-oriented IR with labels and symbolic references
-
-### `mercury-disasm`
-
-Converts parsed bytecode into a deterministic text format.
-
-The initial priority is losslessness and stability, not pretty output.
-
-### `mercury-asm`
-
-Parses Mercury assembly text and emits binary output through `mercury-binary`.
-
-The first target is `disassemble -> assemble -> identical bytes` for unchanged files.
 
 ### `mercury-cli`
 
 User-facing command-line entry point.
 
-Planned commands:
+Current commands:
 
+- `versions`
+- `decode`
 - `extract-spec`
-- `inspect-spec`
-- `parse`
-- `disasm`
-- `asm`
 
-## Planned Milestones
+### `mercury-spec-extract`
 
-1. Create the Rust workspace and crate boundaries.
-2. Implement Hermes-source extraction for opcode and container metadata.
-3. Define the independent versioned spec format.
-4. Parse real `.hbc` containers for a narrow version set.
-5. Round-trip write unchanged files byte-for-byte.
-6. Add textual disassembly and reassembly.
-7. Add editing and obfuscation-oriented transforms.
+Reads Hermes source from `../hermes` and emits canonical versioned specs.
 
-## Initial Extractor Scope
+It extracts both:
 
-The extractor should start narrow and reproducible.
+- bytecode metadata:
+  - `BytecodeVersion.h`
+  - `BytecodeList.def`
+  - operand meanings
+  - builtins
+- container metadata:
+  - `BytecodeFileFormat.h`
+  - function header layouts
+  - bitfields
+  - section order and alignment
+  - serializer-derived container semantics
 
-### Bytecode Spec
+### `mercury-spec`
 
-- enumerate supported Hermes tags
-- read `BytecodeVersion.h`
-- parse `BytecodeList.def`
-- capture:
-  - opcode ordering
-  - operand types
-  - operand semantic annotations
-  - long jump variants
-  - return-target markers
-  - value-buffer user annotations
+Defines the versioned independent spec format used by the rest of the project.
 
-### Container Format
+This is the compatibility boundary between upstream Hermes and Mercury.
 
-- read `BytecodeFileFormat.h`
-- capture:
-  - file magic and delta magic
-  - file header fields by version
-  - function header field layout
-  - known small/overflowed header behavior
-  - section ordering and alignment assumptions
+### `mercury-spec-builtin`
 
-The extractor should produce a single merged spec per bytecode version that contains both the instruction set and the container-format schema.
+Embeds generated `hbcNN.json` specs into the final binary at build time.
+
+This makes the CLI self-contained and lets the binary report exactly which Hermes bytecode versions it supports.
+
+### `mercury-binary`
+
+Owns parsing and writing `.hbc` files using `mercury-spec`.
+
+The crate is split by domain:
+
+- `header.rs`
+- `sections.rs`
+- `functions.rs`
+- `tables.rs`
+- `decode.rs`
+- `encode.rs`
+- `parse.rs`
+
+Function-domain and table-domain parsing/writing are kept paired for symmetry and future round-tripping.
+
+### `mercury-ir`
+
+Defines the internal representations above the raw binary layer.
+
+Current split:
+
+- `Raw`
+  - exact decoded structures suitable for lossless rewriting
+- `Semantic`
+  - normalized instruction layer used by the semantic decode mode
+
+### `mercury-disasm`
+
+Planned home for deterministic text disassembly.
+
+At the moment, the semantic decode formatter in `mercury-cli` is acting as the proving ground for that eventual assembly syntax.
+
+### `mercury-asm`
+
+Planned home for parsing Mercury assembly text and emitting binary output through `mercury-binary`.
+
+The eventual target is:
+
+- `decode -> encode -> identical bytes` when unchanged
+- semantic editing and obfuscation against a stable IR
+
+## Current Version Support
+
+The build currently embeds generated specs for the versions present in `spec/generated/`.
+
+At the time of writing this README, that includes:
+
+- `hbc89`
+- `hbc94`
+- `hbc96`
 
 ## Near-Term Plan
 
-The next implementation pass should focus on `mercury-spec-extract`:
+The next major implementation step should be to turn the current semantic decode output into a real assembler target:
 
-1. discover Hermes tags from the local clone
-2. read selected files at each tag
-3. parse opcode metadata into Rust structs
-4. parse a first cut of container metadata into Rust structs
-5. write canonical JSON snapshots for inspection and later parser use
-
-## Current CLI
-
-```bash
-cargo run -p mercury-cli -- extract-spec --tag v0.12.0
-cargo run -p mercury-cli -- extract-spec --tag v0.12.0 --compare-hermes-dec ../hermes-dec
-```
-
-Generated specs are keyed by Hermes bytecode version, for example `spec/generated/hbc89.json`, while still retaining the source git tag inside the JSON.
+1. freeze the semantic text grammar
+2. define semantic-to-raw raising against a target bytecode version
+3. begin assembler work in `mercury-asm`
+4. add round-trip tests for `decode -> encode`
