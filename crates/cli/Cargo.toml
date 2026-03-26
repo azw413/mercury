@@ -11,5 +11,6 @@ anyhow.workspace = true
 clap.workspace = true
 mercury-binary = { path = "../binary" }
 mercury-ir = { path = "../ir" }
+mercury-spec = { path = "../spec" }
 mercury-spec-builtin = { path = "../spec-builtin" }
 mercury-spec-extract = { path = "../spec-extract" }
