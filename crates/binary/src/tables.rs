@@ -36,6 +36,12 @@ pub struct PairTableEntry {
     pub second: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShapeTableEntry {
+    pub key_buffer_offset: u32,
+    pub num_props: u32,
+}
+
 pub(crate) fn parse_string_kind_entries(
     bytes: &[u8],
     range: Range<usize>,
@@ -126,6 +132,25 @@ pub(crate) fn parse_pair_table_entries(
     Ok(entries)
 }
 
+pub(crate) fn parse_shape_table_entries(
+    bytes: &[u8],
+    range: Range<usize>,
+) -> Result<Vec<ShapeTableEntry>, HbcParseError> {
+    if range.end > bytes.len() {
+        return Err(HbcParseError::SectionOutOfRange);
+    }
+    let mut entries = Vec::new();
+    let mut offset = range.start;
+    while offset < range.end {
+        entries.push(ShapeTableEntry {
+            key_buffer_offset: read_u32(bytes, offset),
+            num_props: read_u32(bytes, offset + 4),
+        });
+        offset += 8;
+    }
+    Ok(entries)
+}
+
 pub fn write_string_kind_entries(entries: &[StringKindEntry]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(entries.len() * 4);
     for entry in entries {
@@ -156,6 +181,15 @@ pub fn write_pair_table_entries(entries: &[PairTableEntry]) -> Vec<u8> {
     for entry in entries {
         bytes.extend_from_slice(&entry.first.to_le_bytes());
         bytes.extend_from_slice(&entry.second.to_le_bytes());
+    }
+    bytes
+}
+
+pub fn write_shape_table_entries(entries: &[ShapeTableEntry]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(entries.len() * 8);
+    for entry in entries {
+        bytes.extend_from_slice(&entry.key_buffer_offset.to_le_bytes());
+        bytes.extend_from_slice(&entry.num_props.to_le_bytes());
     }
     bytes
 }
@@ -247,5 +281,23 @@ mod tests {
         let reparsed = parse_pair_table_entries(&bytes, 0..bytes.len()).expect("parses");
         assert_eq!(reparsed, entries);
         assert_eq!(write_pair_table_entries(&reparsed), bytes);
+    }
+
+    #[test]
+    fn roundtrips_shape_table_entries_bytes() {
+        let entries = vec![
+            ShapeTableEntry {
+                key_buffer_offset: 98,
+                num_props: 1,
+            },
+            ShapeTableEntry {
+                key_buffer_offset: 133,
+                num_props: 2,
+            },
+        ];
+        let bytes = write_shape_table_entries(&entries);
+        let reparsed = parse_shape_table_entries(&bytes, 0..bytes.len()).expect("parses");
+        assert_eq!(reparsed, entries);
+        assert_eq!(write_shape_table_entries(&reparsed), bytes);
     }
 }

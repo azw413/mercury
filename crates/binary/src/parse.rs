@@ -8,9 +8,10 @@ use crate::sections::{
     SMALL_FUNCTION_HEADER_SIZE,
 };
 use crate::tables::{
-    parse_overflow_string_table_entries, parse_pair_table_entries, parse_small_string_table_entries,
-    parse_string_kind_entries, parse_u32_array, OverflowStringTableEntry, PairTableEntry,
-    SmallStringTableEntry, StringKindEntry,
+    parse_overflow_string_table_entries, parse_pair_table_entries, parse_shape_table_entries,
+    parse_small_string_table_entries, parse_string_kind_entries, parse_u32_array,
+    OverflowStringTableEntry, PairTableEntry, ShapeTableEntry, SmallStringTableEntry,
+    StringKindEntry,
 };
 use mercury_spec::ContainerSpec;
 use thiserror::Error;
@@ -26,6 +27,9 @@ pub struct HbcContainer {
     pub small_string_table_entries: Vec<SmallStringTableEntry>,
     pub overflow_string_table_entries: Vec<OverflowStringTableEntry>,
     pub string_storage: Vec<u8>,
+    pub literal_value_buffer: Vec<u8>,
+    pub object_key_buffer: Vec<u8>,
+    pub object_shape_table: Vec<ShapeTableEntry>,
     pub cjs_module_entries: Vec<PairTableEntry>,
     pub function_source_entries: Vec<PairTableEntry>,
     function_bodies: Vec<FunctionBody>,
@@ -119,6 +123,10 @@ fn parse_hbc_container_impl(
         section_boundaries.overflow_string_table.clone(),
     )?;
     let string_storage = bytes[section_boundaries.string_storage.clone()].to_vec();
+    let literal_value_buffer = bytes[section_boundaries.literal_value_buffer.clone()].to_vec();
+    let object_key_buffer = bytes[section_boundaries.obj_key_buffer.clone()].to_vec();
+    let object_shape_table =
+        parse_shape_table_entries(bytes, section_boundaries.obj_shape_table.clone())?;
     let cjs_module_entries = parse_pair_table_entries(bytes, section_boundaries.cjs_module_table.clone())?;
     let function_source_entries =
         parse_pair_table_entries(bytes, section_boundaries.function_source_table.clone())?;
@@ -135,6 +143,9 @@ fn parse_hbc_container_impl(
         small_string_table_entries,
         overflow_string_table_entries,
         string_storage,
+        literal_value_buffer,
+        object_key_buffer,
+        object_shape_table,
         cjs_module_entries,
         function_source_entries,
         function_bodies,

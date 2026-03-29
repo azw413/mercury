@@ -24,6 +24,12 @@ Decode to the normalized semantic view:
 cargo run -p mercury-cli -- decode test/hex.hbc --format semantic
 ```
 
+Assemble semantic text back into a real `hbc96` file:
+
+```bash
+cargo run -p mercury-cli -- assemble /tmp/hex.semantic.txt --target-version 96 -o /tmp/hex.assembled.hbc
+```
+
 Write decode output to a file:
 
 ```bash
@@ -62,6 +68,14 @@ Implemented now:
 - raw IR generation
 - semantic IR lowering
 - raw and semantic CLI decode modes
+- first semantic assembly parser and raiser
+- first real `assemble -o out.hbc` path for semantic `hbc96` modules
+- minimal `hbc96` container writer with:
+  - generated string tables
+  - generated identifier hashes
+  - synthesized small function headers
+  - empty debug section
+  - SHA-1 footer
 
 Working fixtures:
 
@@ -73,14 +87,55 @@ Current semantic status:
 
 - `hex.hbc` lowers almost entirely into structured semantic ops
 - `amazon.hbc` lowers end to end in semantic mode
-- the previous fallback-heavy lowering surface has been reduced to the point that the next major task should be stabilizing the semantic text grammar for assembly, not chasing broad missing instruction families
+- the current semantic decode output for `hex.hbc` can now be parsed, raised, and reassembled into a valid `hbc96` file that Hermes itself will disassemble successfully
+- the previous fallback-heavy lowering surface has been reduced to the point that the next major task is expanding assembler coverage and stabilizing the semantic text grammar, not chasing broad missing instruction families
 
 Not implemented yet:
 
-- assembler
 - byte-perfect full-file rewrite path
-- final text grammar for semantic assembly
-- semantic-to-raw raising
+- full semantic-to-raw raising coverage for the entire semantic vocabulary
+- container writing beyond the current minimal `hbc96` path
+- exact/preservation-oriented rebuild mode
+
+## Semantic Assembly Draft
+
+The semantic text format is now the primary assembly target.
+
+Guiding rules:
+
+- function labels are authoritative, not instruction offsets
+- string literals are authored as literals, not raw string ids
+- function references are symbolic, using `@name`
+- semantic readability takes priority over byte-preserving container details
+
+Current parser shape accepted by `crates/asm`:
+
+```text
+bytecode_version 96
+
+.strings
+  s0 = ""
+  s9 = "encode"
+.end
+
+.function @global params=1 frame=3 env=0
+  declare_global_var "encode"
+  create_environment r0
+  create_closure r2, r0, @encode
+L1:
+  branch_false r10, L2
+.end
+
+.function @encode params=2 frame=25 env=0
+  load_param r9, 1
+  return r0
+.end
+```
+
+Notes:
+
+- instruction offsets like `0000:` are currently accepted for compatibility with the existing disassembler output, but they are intended to become display-only rather than required syntax
+- `.strings` is also currently accepted in the emitted form `s9 = "encode"`, but the longer-term intent is that string literals in instructions are the semantic source of truth and the assembler will rebuild string tables automatically
 
 ## Goals
 
@@ -100,6 +155,7 @@ Current commands:
 
 - `versions`
 - `decode`
+- `assemble`
 - `extract-spec`
 
 ### `mercury-spec-extract`
@@ -167,7 +223,20 @@ At the moment, the semantic decode formatter in `mercury-cli` is acting as the p
 
 ### `mercury-asm`
 
-Planned home for parsing Mercury assembly text and emitting binary output through `mercury-binary`.
+Home for parsing Mercury assembly text, raising it into raw bytecode instructions, and feeding binary emission through `mercury-binary`.
+
+Current status:
+
+- semantic assembly AST
+- line-oriented parser for the current semantic disassembly syntax
+- first semantic-to-raw raiser for a useful `hbc96` subset
+- first end-to-end semantic assembly path that can emit a real `.hbc` through the CLI
+- support for:
+  - `.strings`
+  - `.function`
+  - labels
+  - optional displayed instruction offsets
+  - registers, labels, function refs, string literals, integers, and barewords as operands
 
 The eventual target is:
 
@@ -189,6 +258,7 @@ At the time of writing this README, that includes:
 The next major implementation step should be to turn the current semantic decode output into a real assembler target:
 
 1. freeze the semantic text grammar
-2. define semantic-to-raw raising against a target bytecode version
-3. begin assembler work in `mercury-asm`
-4. add round-trip tests for `decode -> encode`
+2. remove instruction offsets from required semantic syntax
+3. define semantic-to-raw raising against a target bytecode version
+4. begin binary emission from `mercury-asm`
+5. add semantic round-trip tests for `decode -> parse -> raise`

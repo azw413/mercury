@@ -131,7 +131,7 @@ pub enum SemanticOp {
         key_count: u32,
         value_count: u32,
         key_buffer_index: u32,
-        value_buffer_index: u32,
+        shape_table_index: u32,
     },
     Binary {
         kind: BinaryOpKind,

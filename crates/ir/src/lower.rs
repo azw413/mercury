@@ -612,7 +612,7 @@ fn lower_new_object_with_buffer(raw: &RawInstruction) -> Result<Option<SemanticO
         key_buffer_index: raw_u32(&raw.operands[3]).ok_or_else(|| LoweringError::InvalidOperandShape {
             name: raw.name.clone(),
         })?,
-        value_buffer_index: raw_u32(&raw.operands[4]).ok_or_else(|| LoweringError::InvalidOperandShape {
+        shape_table_index: raw_u32(&raw.operands[4]).ok_or_else(|| LoweringError::InvalidOperandShape {
             name: raw.name.clone(),
         })?,
     }))
@@ -2331,7 +2331,7 @@ mod tests {
                 key_count: 7,
                 value_count: 6,
                 key_buffer_index: 6350,
-                value_buffer_index: 65579,
+                shape_table_index: 65579,
             }
         );
 

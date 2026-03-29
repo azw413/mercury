@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+mercury-asm = { path = "../asm" }
 mercury-binary = { path = "../binary" }
 mercury-ir = { path = "../ir" }
 mercury-spec = { path = "../spec" }

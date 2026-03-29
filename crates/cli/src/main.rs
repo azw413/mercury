@@ -4,7 +4,11 @@ use std::path::PathBuf;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use mercury_binary::{decode_raw_module, parse_hbc_container_with_spec};
+use mercury_asm::{parse_semantic_assembly, raise_module};
+use mercury_binary::{
+    build_minimal_module, decode_raw_module, encode_instructions, parse_hbc_container_with_spec,
+    MinimalFunction, MinimalModule, ShapeTableEntry,
+};
 use mercury_ir::{
     lower_module, BinaryOpKind, BranchKind, Immediate, PropertyAccessKind, RawFunction,
     PropertyDefineKind, RawInstruction, RawOperand, SemanticFunction, SemanticInstruction,
@@ -31,6 +35,13 @@ enum Command {
         output: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = DecodeFormat::Raw)]
         format: DecodeFormat,
+    },
+    Assemble {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        target_version: Option<u32>,
     },
     ExtractSpec {
         #[arg(long, default_value = "../hermes")]
@@ -89,6 +100,35 @@ fn main() -> anyhow::Result<()> {
                 print!("{body}");
             }
         }
+        Command::Assemble {
+            input,
+            output,
+            target_version,
+        } => {
+            let text = fs::read_to_string(&input)
+                .with_context(|| format!("failed to read {}", input.display()))?;
+            let module = parse_semantic_assembly(&text)
+                .with_context(|| format!("failed to parse {}", input.display()))?;
+            let target_version = target_version
+                .or(module.bytecode_version)
+                .ok_or_else(|| anyhow::anyhow!("target bytecode version is required"))?;
+            let spec = load_spec(target_version)
+                .with_context(|| format!("no embedded spec for bytecode version {target_version}"))?;
+            let raised = raise_module(&module, &spec.bytecode)
+                .with_context(|| format!("failed to raise {}", input.display()))?;
+
+            if let Some(output) = output {
+                let minimal = build_minimal_module_from_semantic(&module, &raised, target_version);
+                let bytes = build_minimal_module(&minimal, &spec.bytecode)
+                    .with_context(|| format!("failed to build {}", input.display()))?;
+                fs::write(&output, bytes)
+                    .with_context(|| format!("failed to write {}", output.display()))?;
+            } else {
+                let body = render_assembled_module(&input, target_version, &raised, &spec.bytecode)
+                    .with_context(|| format!("failed to assemble {}", input.display()))?;
+                print!("{body}");
+            }
+        }
         Command::ExtractSpec {
             hermes_repo,
             tag,
@@ -141,6 +181,96 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn build_minimal_module_from_semantic(
+    module: &mercury_asm::SemanticAssemblyModule,
+    raised: &mercury_asm::RaisedAssemblyModule,
+    target_version: u32,
+) -> MinimalModule {
+    let functions = module
+        .functions
+        .iter()
+        .zip(raised.functions.iter())
+        .map(|(semantic, raised)| MinimalFunction {
+            name: raised.name.clone(),
+            param_count: semantic.params,
+            frame_size: semantic.frame,
+            environment_size: semantic.env,
+            instructions: raised.instructions.clone(),
+        })
+        .collect();
+
+    MinimalModule {
+        version: target_version,
+        global_code_index: 0,
+        strings: raised.strings.clone(),
+        string_kinds: module
+            .string_kinds
+            .iter()
+            .map(|kind| match kind {
+                mercury_asm::AssemblyStringKind::String => mercury_binary::StringKind::String,
+                mercury_asm::AssemblyStringKind::Identifier => {
+                    mercury_binary::StringKind::Identifier
+                }
+            })
+            .collect(),
+        literal_value_buffer: module.literal_value_buffer.clone(),
+        object_key_buffer: module.object_key_buffer.clone(),
+        object_shape_table: module
+            .object_shape_table
+            .iter()
+            .map(|entry| ShapeTableEntry {
+                key_buffer_offset: entry.key_buffer_offset,
+                num_props: entry.num_props,
+            })
+            .collect(),
+        functions,
+    }
+}
+
+fn render_assembled_module(
+    input: &PathBuf,
+    target_version: u32,
+    raised: &mercury_asm::RaisedAssemblyModule,
+    bytecode_spec: &mercury_spec::BytecodeSpec,
+) -> anyhow::Result<String> {
+    let mut out = String::new();
+    let _ = writeln!(out, "# mercury assemble");
+    let _ = writeln!(out, "input {}", input.display());
+    let _ = writeln!(out, "target_bytecode_version {}", target_version);
+    let _ = writeln!(out, "function_count {}", raised.functions.len());
+    let _ = writeln!(out);
+
+    if !raised.strings.is_empty() {
+        let _ = writeln!(out, ".strings");
+        for (index, string) in raised.strings.iter().enumerate() {
+            let _ = writeln!(out, "  s{index} = {:?}", string);
+        }
+        let _ = writeln!(out, ".end");
+        let _ = writeln!(out);
+    }
+
+    for function in &raised.functions {
+        let bytes = encode_instructions(&function.instructions, bytecode_spec)
+            .with_context(|| format!("failed to encode function {}", function.name))?;
+        let _ = writeln!(out, ".function @{}", function.name);
+        let _ = writeln!(out, "  instruction_count {}", function.instructions.len());
+        let _ = writeln!(out, "  byte_length {}", bytes.len());
+        let _ = writeln!(out, "  bytes {}", render_hex_bytes(&bytes));
+        let _ = writeln!(out, ".end");
+        let _ = writeln!(out);
+    }
+
+    Ok(out)
+}
+
+fn render_hex_bytes(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn detect_bytecode_version(bytes: &[u8]) -> anyhow::Result<u32> {
@@ -223,18 +353,30 @@ fn render_semantic_module(
     let _ = writeln!(out, "function_count {}", semantic.functions.len());
     let _ = writeln!(out);
 
-    let used_strings = collect_used_semantic_strings(semantic);
-    if !used_strings.is_empty() {
+    if !container.small_string_table_entries.is_empty() {
         let _ = writeln!(out, ".strings");
-        for string_id in used_strings {
+        let string_kinds = expand_string_kinds(container);
+        for string_id in 0..container.small_string_table_entries.len() as u32 {
             let rendered = resolve_string(string_id, container)
                 .map(|value| format!("{value:?}"))
                 .unwrap_or_else(|| format!("<missing:{string_id}>"));
-            let _ = writeln!(out, "  s{string_id} = {rendered}");
+            let prefix = match string_kinds.get(string_id as usize) {
+                Some(mercury_binary::StringKind::Identifier) => 'i',
+                _ => 's',
+            };
+            let _ = writeln!(out, "  {prefix}{string_id} = {rendered}");
         }
         let _ = writeln!(out, ".end");
         let _ = writeln!(out);
     }
+
+    render_hex_section(
+        &mut out,
+        ".literal_value_buffer",
+        &container.literal_value_buffer,
+    );
+    render_hex_section(&mut out, ".object_key_buffer", &container.object_key_buffer);
+    render_shape_table_section(&mut out, &container.object_shape_table);
 
     for function in &semantic.functions {
         let raw_function = &raw.functions[function.function_index];
@@ -267,6 +409,40 @@ fn render_semantic_module(
     }
 
     out
+}
+
+fn render_hex_section(out: &mut String, name: &str, bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "{name}");
+    for chunk in bytes.chunks(16) {
+        let _ = writeln!(out, "  {}", render_hex_bytes(chunk));
+    }
+    let _ = writeln!(out, ".end");
+    let _ = writeln!(out);
+}
+
+fn render_shape_table_section(out: &mut String, entries: &[ShapeTableEntry]) {
+    if entries.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, ".object_shape_table");
+    for entry in entries {
+        let _ = writeln!(out, "  {}, {}", entry.key_buffer_offset, entry.num_props);
+    }
+    let _ = writeln!(out, ".end");
+    let _ = writeln!(out);
+}
+
+fn expand_string_kinds(container: &mercury_binary::HbcContainer) -> Vec<mercury_binary::StringKind> {
+    let mut expanded = Vec::new();
+    for entry in &container.string_kind_entries {
+        for _ in 0..entry.count {
+            expanded.push(entry.kind);
+        }
+    }
+    expanded
 }
 
 fn collect_labels(
@@ -526,9 +702,9 @@ fn render_semantic_instruction(
             key_count,
             value_count,
             key_buffer_index,
-            value_buffer_index,
+            shape_table_index,
         } => format!(
-            "new_object_with_buffer {}, {key_count}, {value_count}, {key_buffer_index}, {value_buffer_index}",
+            "new_object_with_buffer {}, {key_count}, {value_count}, {key_buffer_index}, {shape_table_index}",
             render_register(*dst)
         ),
         SemanticOp::Binary { kind, dst, lhs, rhs } => {

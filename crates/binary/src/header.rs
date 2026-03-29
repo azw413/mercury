@@ -20,9 +20,10 @@ pub struct HbcVersionedFileHeader {
     pub big_int_storage_size: u32,
     pub reg_exp_count: u32,
     pub reg_exp_storage_size: u32,
-    pub array_buffer_size: u32,
+    pub literal_value_buffer_size: u32,
     pub obj_key_buffer_size: u32,
-    pub obj_value_buffer_size: u32,
+    pub obj_shape_table_count: u32,
+    pub num_string_switch_imms: u32,
     pub segment_id: u32,
     pub cjs_module_count: u32,
     pub function_source_count: u32,
@@ -47,13 +48,59 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
         });
     }
 
+    let version = read_u32(bytes, 8);
     let mut source_hash = [0u8; 20];
     source_hash.copy_from_slice(&bytes[12..32]);
-    let options_raw = bytes[108];
+    let function_count = read_u32(bytes, 40);
+    let file_length = read_u32(bytes, 32);
+    let field_104 = read_u32(bytes, 104);
+    let field_108 = read_u32(bytes, 108);
+    let uses_extended_post_96_layout = version >= 96
+        && (field_108 != 0 || field_104 <= function_count.saturating_add(1_024));
+
+    let (
+        obj_shape_table_count,
+        num_string_switch_imms,
+        segment_id,
+        cjs_module_count,
+        function_source_count,
+        debug_info_offset,
+        options_raw,
+    ) = if uses_extended_post_96_layout {
+        (
+            read_u32(bytes, 88),
+            read_u32(bytes, 92),
+            read_u32(bytes, 96),
+            read_u32(bytes, 100),
+            field_104,
+            field_108,
+            bytes[112],
+        )
+    } else if version >= 96 {
+        (
+            read_u32(bytes, 88),
+            read_u32(bytes, 92),
+            read_u32(bytes, 96),
+            read_u32(bytes, 100),
+            0,
+            field_104.min(file_length),
+            bytes[108],
+        )
+    } else {
+        (
+            read_u32(bytes, 88),
+            0,
+            read_u32(bytes, 92),
+            read_u32(bytes, 96),
+            read_u32(bytes, 100),
+            field_104,
+            bytes[108],
+        )
+    };
 
     Ok(HbcVersionedFileHeader {
         magic,
-        version: read_u32(bytes, 8),
+        version,
         source_hash,
         file_length: read_u32(bytes, 32),
         global_code_index: read_u32(bytes, 36),
@@ -67,13 +114,14 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
         big_int_storage_size: read_u32(bytes, 68),
         reg_exp_count: read_u32(bytes, 72),
         reg_exp_storage_size: read_u32(bytes, 76),
-        array_buffer_size: read_u32(bytes, 80),
+        literal_value_buffer_size: read_u32(bytes, 80),
         obj_key_buffer_size: read_u32(bytes, 84),
-        obj_value_buffer_size: read_u32(bytes, 88),
-        segment_id: read_u32(bytes, 92),
-        cjs_module_count: read_u32(bytes, 96),
-        function_source_count: read_u32(bytes, 100),
-        debug_info_offset: read_u32(bytes, 104),
+        obj_shape_table_count,
+        num_string_switch_imms,
+        segment_id,
+        cjs_module_count,
+        function_source_count,
+        debug_info_offset,
         options: BytecodeOptions {
             raw: options_raw,
             static_builtins: (options_raw & 0b001) != 0,
@@ -100,14 +148,24 @@ pub fn write_file_header(header: &HbcVersionedFileHeader) -> [u8; FILE_HEADER_SI
     bytes[68..72].copy_from_slice(&header.big_int_storage_size.to_le_bytes());
     bytes[72..76].copy_from_slice(&header.reg_exp_count.to_le_bytes());
     bytes[76..80].copy_from_slice(&header.reg_exp_storage_size.to_le_bytes());
-    bytes[80..84].copy_from_slice(&header.array_buffer_size.to_le_bytes());
+    bytes[80..84].copy_from_slice(&header.literal_value_buffer_size.to_le_bytes());
     bytes[84..88].copy_from_slice(&header.obj_key_buffer_size.to_le_bytes());
-    bytes[88..92].copy_from_slice(&header.obj_value_buffer_size.to_le_bytes());
-    bytes[92..96].copy_from_slice(&header.segment_id.to_le_bytes());
-    bytes[96..100].copy_from_slice(&header.cjs_module_count.to_le_bytes());
-    bytes[100..104].copy_from_slice(&header.function_source_count.to_le_bytes());
-    bytes[104..108].copy_from_slice(&header.debug_info_offset.to_le_bytes());
-    bytes[108] = header.options.raw;
+    if header.version >= 96 {
+        bytes[88..92].copy_from_slice(&header.obj_shape_table_count.to_le_bytes());
+        bytes[92..96].copy_from_slice(&header.num_string_switch_imms.to_le_bytes());
+        bytes[96..100].copy_from_slice(&header.segment_id.to_le_bytes());
+        bytes[100..104].copy_from_slice(&header.cjs_module_count.to_le_bytes());
+        bytes[104..108].copy_from_slice(&header.function_source_count.to_le_bytes());
+        bytes[108..112].copy_from_slice(&header.debug_info_offset.to_le_bytes());
+        bytes[112] = header.options.raw;
+    } else {
+        bytes[88..92].copy_from_slice(&header.obj_shape_table_count.to_le_bytes());
+        bytes[92..96].copy_from_slice(&header.segment_id.to_le_bytes());
+        bytes[96..100].copy_from_slice(&header.cjs_module_count.to_le_bytes());
+        bytes[100..104].copy_from_slice(&header.function_source_count.to_le_bytes());
+        bytes[104..108].copy_from_slice(&header.debug_info_offset.to_le_bytes());
+        bytes[108] = header.options.raw;
+    }
     bytes
 }
 
@@ -145,9 +203,10 @@ mod tests {
             big_int_storage_size: 16,
             reg_exp_count: 1,
             reg_exp_storage_size: 66,
-            array_buffer_size: 20,
+            literal_value_buffer_size: 20,
             obj_key_buffer_size: 30,
-            obj_value_buffer_size: 40,
+            obj_shape_table_count: 5,
+            num_string_switch_imms: 11,
             segment_id: 7,
             cjs_module_count: 3,
             function_source_count: 2,
