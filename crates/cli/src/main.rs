@@ -384,7 +384,7 @@ fn render_semantic_module(
         let labels = collect_semantic_labels(function);
         let _ = writeln!(
             out,
-            ".function {} name={} params={} frame={} env={}",
+            ".function @f{} name={} params={} frame={} env={}",
             function.function_index,
             function_name,
             function.param_count,
@@ -492,26 +492,6 @@ fn collect_semantic_labels(function: &SemanticFunction) -> std::collections::BTr
     }
 
     labels
-}
-
-fn collect_used_semantic_strings(semantic: &SemanticModule) -> std::collections::BTreeSet<u32> {
-    let mut strings = std::collections::BTreeSet::new();
-
-    for function in &semantic.functions {
-        for instruction in &function.instructions {
-            match &instruction.op {
-                SemanticOp::DeclareGlobalVar { name } => {
-                    strings.insert(*name);
-                }
-                SemanticOp::LoadConstString { string, .. } => {
-                    strings.insert(*string);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    strings
 }
 
 fn render_semantic_instruction(
@@ -1048,8 +1028,8 @@ fn render_function_ref(
     let Some(function) = raw.functions.get(function_id as usize) else {
         return format!("fn{function_id}");
     };
-    let name = render_function_name(function, raw, container);
-    format!("@{}", name.trim_matches('"'))
+    let _ = (function, raw, container);
+    format!("@f{function_id}")
 }
 
 fn camel_to_snake_case(value: &str) -> String {

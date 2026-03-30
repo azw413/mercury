@@ -192,6 +192,7 @@ fn parse_function_header(
     line_no: usize,
     line: &str,
 ) -> Result<SemanticAssemblyFunction, AssemblyParseError> {
+    let mut symbol = None;
     let mut name = None;
     let mut params = None;
     let mut frame = None;
@@ -213,16 +214,23 @@ fn parse_function_header(
             frame = value.parse().ok();
         } else if let Some(value) = token.strip_prefix("env=") {
             env = value.parse().ok();
-        } else if token.starts_with('@') && name.is_none() {
-            name = Some(token.trim_start_matches('@').to_owned());
+        } else if token.starts_with('@') && symbol.is_none() {
+            symbol = Some(token.trim_start_matches('@').to_owned());
         }
     }
 
-    Ok(SemanticAssemblyFunction {
-        name: name.ok_or_else(|| AssemblyParseError::InvalidFunctionHeader {
+    let symbol = symbol
+        .clone()
+        .or_else(|| name.clone())
+        .ok_or_else(|| AssemblyParseError::InvalidFunctionHeader {
             line: line_no,
             text: line.to_owned(),
-        })?,
+        })?;
+    let name = name.unwrap_or_else(|| symbol.clone());
+
+    Ok(SemanticAssemblyFunction {
+        symbol,
+        name,
         params: params.ok_or_else(|| AssemblyParseError::InvalidFunctionHeader {
             line: line_no,
             text: line.to_owned(),

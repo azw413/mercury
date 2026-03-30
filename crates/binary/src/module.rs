@@ -73,9 +73,15 @@ pub fn build_minimal_module(
     }
 
     let mut string_pool = module.strings.clone();
+    let mut string_kinds = module.string_kinds.clone();
     let mut function_name_ids = Vec::with_capacity(module.functions.len());
     for function in &module.functions {
-        function_name_ids.push(intern_string(&mut string_pool, &function.name));
+        function_name_ids.push(intern_string_with_kind(
+            &mut string_pool,
+            &mut string_kinds,
+            &function.name,
+            StringKind::String,
+        ));
     }
     if string_pool.len() > u32::MAX as usize {
         return Err(HbcBuildError::TooManyStrings {
@@ -89,8 +95,8 @@ pub fn build_minimal_module(
         .map(|function| encode_instructions(&function.instructions, bytecode_spec))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let string_kinds = if module.string_kinds.len() == string_pool.len() {
-        module.string_kinds.clone()
+    let string_kinds = if string_kinds.len() == string_pool.len() {
+        string_kinds
     } else {
         classify_string_kinds(module, &string_pool)?
     };
@@ -439,11 +445,17 @@ fn encode_utf16le(value: &str) -> Vec<u8> {
     out
 }
 
-fn intern_string(pool: &mut Vec<String>, value: &str) -> u32 {
+fn intern_string_with_kind(
+    pool: &mut Vec<String>,
+    kinds: &mut Vec<StringKind>,
+    value: &str,
+    kind: StringKind,
+) -> u32 {
     if let Some(index) = pool.iter().position(|candidate| candidate == value) {
         index as u32
     } else {
         pool.push(value.to_owned());
+        kinds.push(kind);
         (pool.len() - 1) as u32
     }
 }

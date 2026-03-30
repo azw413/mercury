@@ -1256,7 +1256,7 @@ fn lower_call(raw: &RawInstruction) -> Result<Option<SemanticOp>, LoweringError>
                 .operands
                 .iter()
                 .skip(2)
-                .map(|operand| lower_register(operand).map(Value::Register).unwrap_or_else(|| lower_value(operand)))
+                .map(lower_value)
                 .collect();
             (None, args)
         }

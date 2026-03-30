@@ -39,7 +39,6 @@ fn run_command(program: &Path, args: &[&str]) -> (i32, String, String) {
 }
 
 #[test]
-#[ignore = "semantic assembly does not yet fully serialize hbc96 literal/object buffer and shape-table data needed by box2d"]
 fn roundtrips_box2d_through_semantic_cli_and_preserves_stdout() {
     let workspace = workspace_root();
     let input_hbc = workspace.join("test/box2d.hbc");

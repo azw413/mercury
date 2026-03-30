@@ -51,7 +51,7 @@ pub fn raise_module(
         .functions
         .iter()
         .enumerate()
-        .map(|(index, function)| (function.name.clone(), index as u32))
+        .map(|(index, function)| (function.symbol.clone(), index as u32))
         .collect::<HashMap<_, _>>();
     // When semantic assembly includes a full `.strings` table, preserve it as
     // the canonical id ordering so raw literal/object buffers that embed string
@@ -84,13 +84,14 @@ fn raise_function(
     let mut instructions = Vec::new();
     let mut offset = 0u32;
 
-    for statement in &function.body {
+    for (index, statement) in function.body.iter().enumerate() {
         let SemanticAssemblyStatement::Instruction(instruction) = statement else {
             continue;
         };
         let decoded = raise_instruction(
             instruction,
             offset,
+            next_instruction_offset_hint(&function.body, index),
             &labels,
             function_ids,
             string_pool,
@@ -116,13 +117,17 @@ fn collect_label_offsets(
     let mut labels = BTreeMap::new();
     let mut offset = 0u32;
 
-    for statement in &function.body {
+    for (index, statement) in function.body.iter().enumerate() {
         match statement {
             SemanticAssemblyStatement::Label(name) => {
                 labels.insert(name.clone(), offset);
             }
             SemanticAssemblyStatement::Instruction(instruction) => {
-                let size = estimate_instruction_size(instruction, bytecode_spec)?;
+                let size = estimate_instruction_size(
+                    instruction,
+                    next_instruction_offset_hint(&function.body, index),
+                    bytecode_spec,
+                )?;
                 offset = offset.saturating_add(size as u32);
             }
         }
@@ -133,14 +138,24 @@ fn collect_label_offsets(
 
 fn estimate_instruction_size(
     instruction: &SemanticAssemblyInstruction,
+    next_offset_hint: Option<u32>,
     bytecode_spec: &BytecodeSpec,
 ) -> Result<usize, RaiseError> {
-    let raw_name = raw_instruction_name(instruction)?;
+    let raw_name = raw_instruction_name(instruction, next_offset_hint, bytecode_spec)?;
+    instruction_size_for_raw_name(&raw_name, bytecode_spec)
+}
+
+fn instruction_size_for_raw_name(
+    raw_name: &str,
+    bytecode_spec: &BytecodeSpec,
+) -> Result<usize, RaiseError> {
     let spec = bytecode_spec
         .instructions
         .iter()
         .find(|candidate| candidate.name == raw_name)
-        .ok_or_else(|| RaiseError::MissingInstruction { name: raw_name.clone() })?;
+        .ok_or_else(|| RaiseError::MissingInstruction {
+            name: raw_name.to_owned(),
+        })?;
 
     let mut size = 1usize;
     for operand in &spec.operands {
@@ -149,7 +164,11 @@ fn estimate_instruction_size(
             "UInt16" => 2,
             "Reg32" | "UInt32" | "Addr32" | "Imm32" => 4,
             "Double" => 8,
-            _ => return Err(RaiseError::MissingInstruction { name: raw_name.clone() }),
+            _ => {
+                return Err(RaiseError::MissingInstruction {
+                    name: raw_name.to_owned(),
+                })
+            }
         };
     }
     Ok(size)
@@ -158,12 +177,17 @@ fn estimate_instruction_size(
 fn raise_instruction(
     instruction: &SemanticAssemblyInstruction,
     offset: u32,
+    next_offset_hint: Option<u32>,
     labels: &BTreeMap<String, u32>,
     function_ids: &HashMap<String, u32>,
     string_pool: &mut Vec<String>,
     bytecode_spec: &BytecodeSpec,
 ) -> Result<DecodedInstruction, RaiseError> {
-    let raw_name = raw_instruction_name(instruction)?;
+    let raw_name = raw_instruction_name(
+        instruction,
+        next_offset_hint,
+        bytecode_spec,
+    )?;
     let spec = bytecode_spec
         .instructions
         .iter()
@@ -180,7 +204,7 @@ fn raise_instruction(
         spec.operands.iter().map(|operand| operand.kind.as_str()).collect(),
     )?;
 
-    let size = estimate_instruction_size(instruction, bytecode_spec)?;
+    let size = instruction_size_for_raw_name(&raw_name, bytecode_spec)?;
     Ok(DecodedInstruction {
         offset,
         opcode: spec.opcode,
@@ -282,7 +306,11 @@ fn reorder_operands_for_raw_encoding(
     instruction.operands.clone()
 }
 
-fn raw_instruction_name(instruction: &SemanticAssemblyInstruction) -> Result<String, RaiseError> {
+fn raw_instruction_name(
+    instruction: &SemanticAssemblyInstruction,
+    next_offset_hint: Option<u32>,
+    bytecode_spec: &BytecodeSpec,
+) -> Result<String, RaiseError> {
     let name = match instruction.mnemonic.as_str() {
         "declare_global_var" => "DeclareGlobalVar",
         "create_environment" => "CreateEnvironment",
@@ -323,29 +351,30 @@ fn raw_instruction_name(instruction: &SemanticAssemblyInstruction) -> Result<Str
         "new_array" => "NewArray",
         "new_object" => "NewObject",
         "new_object_with_buffer" => "NewObjectWithBuffer",
-        "branch_true" => "JmpTrueLong",
-        "branch_false" => "JmpFalseLong",
-        "branch_undefined" => "JmpUndefinedLong",
-        "branch" => "JmpLong",
-        "branch_greater" => "JGreaterLong",
-        "branch_greater_equal" => "JGreaterEqualLong",
-        "branch_less" => "JLessLong",
-        "branch_less_equal" => "JLessEqualLong",
-        "branch_not_greater" => "JNotGreaterLong",
-        "branch_not_greater_equal" => "JNotGreaterEqualLong",
-        "branch_not_less" => "JNotLessLong",
-        "branch_not_less_equal" => "JNotLessEqualLong",
-        "branch_equal" => "JEqualLong",
-        "branch_not_equal" => "JNotEqualLong",
-        "branch_strict_equal" => "JStrictEqualLong",
-        "branch_strict_not_equal" => "JStrictNotEqualLong",
+        "branch_true" => choose_branch_name("JmpTrue", "JmpTrueLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_false" => choose_branch_name("JmpFalse", "JmpFalseLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_undefined" => choose_branch_name("JmpUndefined", "JmpUndefinedLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch" => choose_branch_name("Jmp", "JmpLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_greater" => choose_branch_name("JGreater", "JGreaterLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_greater_equal" => choose_branch_name("JGreaterEqual", "JGreaterEqualLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_less" => choose_branch_name("JLess", "JLessLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_less_equal" => choose_branch_name("JLessEqual", "JLessEqualLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_not_greater" => choose_branch_name("JNotGreater", "JNotGreaterLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_not_greater_equal" => choose_branch_name("JNotGreaterEqual", "JNotGreaterEqualLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_not_less" => choose_branch_name("JNotLess", "JNotLessLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_not_less_equal" => choose_branch_name("JNotLessEqual", "JNotLessEqualLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_equal" => choose_branch_name("JEqual", "JEqualLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_not_equal" => choose_branch_name("JNotEqual", "JNotEqualLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_strict_equal" => choose_branch_name("JStrictEqual", "JStrictEqualLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_strict_not_equal" => choose_branch_name("JStrictNotEqual", "JStrictNotEqualLong", instruction, next_offset_hint, bytecode_spec)?,
         "get_by_id_short" => "GetByIdShort",
         "try_get_by_id" => "TryGetById",
-        "call" => match instruction.operands.len() {
-            3 => "Call1",
-            4 => "Call2",
-            5 => "Call3",
-            6 => "Call4",
+        "call" => match instruction.operands.as_slice() {
+            [_, _, SemanticOperand::Integer(_)] => "Call",
+            [_, _, SemanticOperand::Register(_)] => "Call1",
+            [_, _, _, _] => "Call2",
+            [_, _, _, _, _] => "Call3",
+            [_, _, _, _, _, _] => "Call4",
             _ => "Call",
         },
         "add" => "Add",
@@ -388,6 +417,37 @@ fn raw_instruction_name(instruction: &SemanticAssemblyInstruction) -> Result<Str
     };
 
     Ok(name.to_owned())
+}
+
+fn next_instruction_offset_hint(
+    body: &[SemanticAssemblyStatement],
+    current_index: usize,
+) -> Option<u32> {
+    body.iter()
+        .skip(current_index + 1)
+        .find_map(|statement| match statement {
+            SemanticAssemblyStatement::Instruction(instruction) => instruction.offset,
+            SemanticAssemblyStatement::Label(_) => None,
+        })
+}
+
+fn choose_branch_name(
+    short_name: &'static str,
+    long_name: &'static str,
+    instruction: &SemanticAssemblyInstruction,
+    next_offset_hint: Option<u32>,
+    bytecode_spec: &BytecodeSpec,
+) -> Result<&'static str, RaiseError> {
+    if let (Some(current_offset), Some(next_offset)) = (instruction.offset, next_offset_hint) {
+        let expected_size = next_offset.saturating_sub(current_offset) as usize;
+        if instruction_size_for_raw_name(short_name, bytecode_spec)? == expected_size {
+            return Ok(short_name);
+        }
+        if instruction_size_for_raw_name(long_name, bytecode_spec)? == expected_size {
+            return Ok(long_name);
+        }
+    }
+    Ok(long_name)
 }
 
 fn resolve_u32(
@@ -557,13 +617,15 @@ L2:
         assert_eq!(encode[1].name, "LoadConstZero");
         assert_eq!(encode[2].name, "Greater");
         assert!(encode.iter().any(|instruction| instruction.name == "Mov"));
-        assert!(encode.iter().any(|instruction| instruction.name == "JGreaterLong"));
+        assert!(encode.iter().any(|instruction| instruction.name == "JGreater" || instruction.name == "JGreaterLong"));
         assert_eq!(encode.last().unwrap().name, "Ret");
 
         let decode = &raised.functions[2].instructions;
         assert_eq!(decode[0].name, "GetGlobalObject");
         assert_eq!(decode[1].name, "GetByIdShort");
-        assert!(decode.iter().any(|instruction| instruction.name == "JmpFalseLong"));
+        assert!(decode
+            .iter()
+            .any(|instruction| instruction.name == "JmpFalse" || instruction.name == "JmpFalseLong"));
         assert_eq!(decode.last().unwrap().name, "Ret");
     }
 }

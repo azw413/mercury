@@ -23,6 +23,7 @@ pub struct SemanticObjectShapeEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticAssemblyFunction {
+    pub symbol: String,
     pub name: String,
     pub params: u32,
     pub frame: u32,
