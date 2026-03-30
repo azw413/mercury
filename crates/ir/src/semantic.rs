@@ -1,10 +1,12 @@
 #[derive(Debug, Clone, PartialEq)]
+/// Stable semantic view of a module used by analysis and editing tools.
 pub struct SemanticModule {
     pub version: u32,
     pub functions: Vec<SemanticFunction>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Stable semantic view of a function body and its metadata.
 pub struct SemanticFunction {
     pub function_index: usize,
     pub name: Option<u32>,
@@ -15,12 +17,14 @@ pub struct SemanticFunction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// One lowered semantic instruction.
 pub struct SemanticInstruction {
     pub offset: u32,
     pub op: SemanticOp,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Normalized semantic operations used across Hermes bytecode versions.
 pub enum SemanticOp {
     CallBuiltin {
         dst: Register,
@@ -281,6 +285,7 @@ pub enum SemanticOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Normalized family of control-flow comparisons and jumps.
 pub enum BranchKind {
     Jump,
     JumpFalse,
@@ -302,6 +307,7 @@ pub enum BranchKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Closure construction mode exposed by Hermes bytecode.
 pub enum ClosureKind {
     Normal,
     Generator,
@@ -309,6 +315,7 @@ pub enum ClosureKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Normalized family of binary operators.
 pub enum BinaryOpKind {
     Add,
     AddN,
@@ -339,6 +346,7 @@ pub enum BinaryOpKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Access mode for property lookup operations.
 pub enum PropertyAccessKind {
     ById,
     ByIdShort,
@@ -348,6 +356,7 @@ pub enum PropertyAccessKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Access mode for property-definition style instructions.
 pub enum PropertyDefineKind {
     NewOwnById,
     NewOwnByIdShort,
@@ -355,6 +364,7 @@ pub enum PropertyDefineKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Immediate constant value carried by a semantic instruction.
 pub enum Immediate {
     Undefined,
     Null,
@@ -365,6 +375,7 @@ pub enum Immediate {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Normalized family of unary operators.
 pub enum UnaryOpKind {
     AddEmptyString,
     BitNot,
@@ -378,9 +389,11 @@ pub enum UnaryOpKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Register identifier used by the semantic IR.
 pub struct Register(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
+/// Operand value in the semantic IR.
 pub enum Value {
     Register(Register),
     U32(u32),

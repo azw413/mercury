@@ -1,3 +1,6 @@
+//! Semantic assembly model, parser, and raiser for Mercury's editable
+//! disassembly format.
+
 pub mod ast;
 pub mod parser;
 pub mod raise;

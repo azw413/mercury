@@ -1,3 +1,6 @@
+//! Binary parser, decoder, encoder, and minimal module builder for Hermes
+//! bytecode containers.
+
 mod decode;
 mod encode;
 mod functions;

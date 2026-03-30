@@ -1,5 +1,6 @@
 use mercury_spec::HermesSpec;
 
+/// Embedded JSON payload for one supported Hermes bytecode version.
 struct EmbeddedSpec {
     version: u32,
     json: &'static [u8],
@@ -7,15 +8,18 @@ struct EmbeddedSpec {
 
 include!(concat!(env!("OUT_DIR"), "/registry.rs"));
 
+/// Returns the Hermes bytecode versions embedded into this build.
 pub fn supported_versions() -> &'static [u32] {
     SUPPORTED_VERSIONS
 }
 
+/// Loads the embedded spec for a specific Hermes bytecode version.
 pub fn load_spec(version: u32) -> Option<HermesSpec> {
     let embedded = EMBEDDED_SPECS.iter().find(|spec| spec.version == version)?;
     serde_json::from_slice(embedded.json).ok()
 }
 
+/// Deserializes every embedded spec bundled into the current binary.
 pub fn load_all_specs() -> Result<Vec<HermesSpec>, serde_json::Error> {
     EMBEDDED_SPECS
         .iter()

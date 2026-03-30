@@ -5,6 +5,7 @@ use crate::ast::{
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+/// Error returned when semantic assembly text cannot be parsed.
 pub enum AssemblyParseError {
     #[error("invalid directive at line {line}: {text}")]
     InvalidDirective { line: usize, text: String },
@@ -29,6 +30,7 @@ enum Section {
     Function,
 }
 
+/// Parses Mercury's semantic assembly text format into an editable AST.
 pub fn parse_semantic_assembly(input: &str) -> Result<SemanticAssemblyModule, AssemblyParseError> {
     let mut module = SemanticAssemblyModule {
         bytecode_version: None,

@@ -22,6 +22,7 @@ const SMALL_STRING_MAX_OFFSET: u32 = (1 << 23) - 1;
 const SMALL_STRING_MAX_LENGTH: u32 = 0xff - 1;
 
 #[derive(Debug, Clone, PartialEq)]
+/// Minimal semantic module description used by Mercury's current assembler path.
 pub struct MinimalModule {
     pub version: u32,
     pub global_code_index: u32,
@@ -34,6 +35,7 @@ pub struct MinimalModule {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Function entry used by [`MinimalModule`] during semantic rebuild.
 pub struct MinimalFunction {
     pub name: String,
     pub param_count: u32,
@@ -43,6 +45,7 @@ pub struct MinimalFunction {
 }
 
 #[derive(Debug, Error)]
+/// Error returned when building a minimal Hermes container from semantic input.
 pub enum HbcBuildError {
     #[error("only bytecode version 96 is currently supported for semantic module building")]
     UnsupportedVersion,
@@ -58,6 +61,7 @@ pub enum HbcBuildError {
     MissingString { function: String, string_id: u32 },
 }
 
+/// Builds a runnable minimal Hermes module from semantic assembly output.
 pub fn build_minimal_module(
     module: &MinimalModule,
     bytecode_spec: &BytecodeSpec,

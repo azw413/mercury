@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, PartialEq)]
+/// Lossless raw view of a Hermes bytecode module after binary decoding.
 pub struct RawModule {
     pub version: u32,
     pub function_count: u32,
@@ -7,11 +8,13 @@ pub struct RawModule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Raw section boundary information preserved from the source container.
 pub struct RawSectionBoundaries {
     pub function_bodies_start: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Lossless raw view of a single decoded Hermes function.
 pub struct RawFunction {
     pub function_index: usize,
     pub offset: u32,
@@ -26,6 +29,7 @@ pub struct RawFunction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Function flags copied directly from the Hermes function header.
 pub struct RawFunctionFlags {
     pub prohibit_invoke: u8,
     pub strict_mode: bool,
@@ -35,6 +39,7 @@ pub struct RawFunctionFlags {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Decoded raw instruction with its original opcode and typed operands.
 pub struct RawInstruction {
     pub offset: u32,
     pub opcode: u16,
@@ -44,6 +49,7 @@ pub struct RawInstruction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Typed raw operand value used by [`RawInstruction`].
 pub enum RawOperand {
     U8(u8),
     U16(u16),

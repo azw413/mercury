@@ -3,17 +3,20 @@ use std::process::Command;
 use anyhow::{Context, Result};
 
 #[derive(Debug, Clone)]
+/// Helper for reading files from historical Hermes revisions in a local git checkout.
 pub struct HermesSource {
     pub repo_path: String,
 }
 
 impl HermesSource {
+    /// Creates a new source accessor rooted at the provided repository path.
     pub fn new(repo_path: impl Into<String>) -> Self {
         Self {
             repo_path: repo_path.into(),
         }
     }
 
+    /// Lists git tags available in the configured Hermes checkout.
     pub fn list_tags(&self) -> Result<Vec<String>> {
         let output = Command::new("git")
             .arg("-C")
@@ -37,6 +40,7 @@ impl HermesSource {
         Ok(tags)
     }
 
+    /// Reads a single file as it existed at the supplied git tag or revision.
     pub fn read_file_at_tag(&self, tag: &str, path: &str) -> Result<String> {
         let object = format!("{tag}:{path}");
         let output = Command::new("git")

@@ -17,26 +17,31 @@ use mercury_spec::{
 use crate::hermes_source::HermesSource;
 
 #[derive(Debug, Clone)]
+/// Configuration for building an [`Extractor`].
 pub struct ExtractorConfig {
     pub hermes_repo: String,
 }
 
 #[derive(Debug)]
+/// High-level extractor that reads Hermes source files and emits a [`HermesSpec`].
 pub struct Extractor {
     source: HermesSource,
 }
 
 impl Extractor {
+    /// Creates a new extractor rooted at the supplied Hermes git checkout.
     pub fn new(config: ExtractorConfig) -> Self {
         Self {
             source: HermesSource::new(config.hermes_repo),
         }
     }
 
+    /// Lists available git tags in the configured Hermes checkout.
     pub fn list_tags(&self) -> Result<Vec<String>> {
         self.source.list_tags()
     }
 
+    /// Extracts a versioned spec from a specific Hermes git tag or revision.
     pub fn extract_tag(&self, tag: &str) -> Result<HermesSpec> {
         let version_header = self.source.read_file_at_tag(
             tag,
@@ -68,6 +73,7 @@ impl Extractor {
         })
     }
 
+    /// Writes a pretty-printed JSON representation of a generated spec to disk.
     pub fn write_json(&self, spec: &HermesSpec, output_path: impl AsRef<Path>) -> Result<()> {
         let output_path = output_path.as_ref();
         if let Some(parent) = output_path.parent() {

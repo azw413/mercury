@@ -9,12 +9,14 @@ use mercury_spec::BytecodeSpec;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq)]
+/// Raised semantic assembly module ready for binary encoding.
 pub struct RaisedAssemblyModule {
     pub strings: Vec<String>,
     pub functions: Vec<RaisedAssemblyFunction>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Raised function containing concrete decoded instructions for one target version.
 pub struct RaisedAssemblyFunction {
     pub name: String,
     pub params: u32,
@@ -24,6 +26,7 @@ pub struct RaisedAssemblyFunction {
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+/// Error returned when semantic assembly cannot be raised to target bytecode instructions.
 pub enum RaiseError {
     #[error("unsupported mnemonic {mnemonic}")]
     UnsupportedMnemonic { mnemonic: String },
@@ -43,6 +46,7 @@ pub enum RaiseError {
     MissingInstruction { name: String },
 }
 
+/// Raises parsed semantic assembly into target-version decoded instructions.
 pub fn raise_module(
     module: &SemanticAssemblyModule,
     bytecode_spec: &BytecodeSpec,

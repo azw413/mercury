@@ -5,6 +5,7 @@ use mercury_spec::BytecodeSpec;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq)]
+/// One decoded instruction in a concrete Hermes bytecode version.
 pub struct DecodedInstruction {
     pub offset: u32,
     pub opcode: u16,
@@ -14,6 +15,7 @@ pub struct DecodedInstruction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Typed operand value produced by instruction decoding.
 pub enum DecodedOperand {
     U8(u8),
     U16(u16),
@@ -24,6 +26,7 @@ pub enum DecodedOperand {
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+/// Error returned when decoding Hermes function bodies.
 pub enum HbcDecodeError {
     #[error("bytecode spec does not define opcode {opcode}")]
     UnknownOpcode { opcode: u8 },
@@ -33,6 +36,7 @@ pub enum HbcDecodeError {
     TruncatedInstruction,
 }
 
+/// Decodes a raw function-body byte slice into concrete instructions.
 pub fn decode_function_instructions(
     body_bytes: &[u8],
     bytecode_spec: &BytecodeSpec,
@@ -70,6 +74,7 @@ pub fn decode_function_instructions(
     Ok(instructions)
 }
 
+/// Decodes one function from a parsed container into Mercury's raw IR.
 pub fn decode_raw_function(
     container: &HbcContainer,
     bytes: &[u8],
@@ -88,6 +93,7 @@ pub fn decode_raw_function(
     Ok(raw_function_from_decoded(function_index, header, decoded))
 }
 
+/// Decodes every function in a parsed container into Mercury's raw IR.
 pub fn decode_raw_module(
     container: &HbcContainer,
     bytes: &[u8],

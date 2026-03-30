@@ -3,6 +3,7 @@ use std::ops::Range;
 use crate::parse::HbcParseError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Run-length encoded entry in the Hermes string-kind table.
 pub struct StringKindEntry {
     pub raw: u32,
     pub kind: StringKind,
@@ -10,12 +11,14 @@ pub struct StringKindEntry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Kind of string stored in the module-level string table.
 pub enum StringKind {
     String,
     Identifier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Compact string-table entry used for short offsets and lengths.
 pub struct SmallStringTableEntry {
     pub raw: u32,
     pub is_utf16: bool,
@@ -25,18 +28,21 @@ pub struct SmallStringTableEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Overflow string-table entry used when the compact form cannot encode a string.
 pub struct OverflowStringTableEntry {
     pub offset: u32,
     pub length: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Generic pair-table entry used by CJS and function-source tables.
 pub struct PairTableEntry {
     pub first: u32,
     pub second: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Entry in the preserved object-shape table.
 pub struct ShapeTableEntry {
     pub key_buffer_offset: u32,
     pub num_props: u32,
@@ -151,6 +157,7 @@ pub(crate) fn parse_shape_table_entries(
     Ok(entries)
 }
 
+/// Serializes string-kind run entries.
 pub fn write_string_kind_entries(entries: &[StringKindEntry]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(entries.len() * 4);
     for entry in entries {
@@ -159,6 +166,7 @@ pub fn write_string_kind_entries(entries: &[StringKindEntry]) -> Vec<u8> {
     bytes
 }
 
+/// Serializes compact string-table entries.
 pub fn write_small_string_table_entries(entries: &[SmallStringTableEntry]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(entries.len() * 4);
     for entry in entries {
@@ -167,6 +175,7 @@ pub fn write_small_string_table_entries(entries: &[SmallStringTableEntry]) -> Ve
     bytes
 }
 
+/// Serializes overflow string-table entries.
 pub fn write_overflow_string_table_entries(entries: &[OverflowStringTableEntry]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(entries.len() * 8);
     for entry in entries {
@@ -176,6 +185,7 @@ pub fn write_overflow_string_table_entries(entries: &[OverflowStringTableEntry])
     bytes
 }
 
+/// Serializes a generic pair table.
 pub fn write_pair_table_entries(entries: &[PairTableEntry]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(entries.len() * 8);
     for entry in entries {
@@ -185,6 +195,7 @@ pub fn write_pair_table_entries(entries: &[PairTableEntry]) -> Vec<u8> {
     bytes
 }
 
+/// Serializes object-shape table entries.
 pub fn write_shape_table_entries(entries: &[ShapeTableEntry]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(entries.len() * 8);
     for entry in entries {

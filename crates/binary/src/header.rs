@@ -4,6 +4,7 @@ pub const HERMES_MAGIC: u64 = 0x1F19_03C1_03BC_1FC6;
 pub const FILE_HEADER_SIZE: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Parsed Hermes file header with the fields Mercury currently models.
 pub struct HbcVersionedFileHeader {
     pub magic: u64,
     pub version: u32,
@@ -32,6 +33,7 @@ pub struct HbcVersionedFileHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Decoded `BytecodeOptions` bitfield from the Hermes file header.
 pub struct BytecodeOptions {
     pub raw: u8,
     pub static_builtins: bool,
@@ -131,6 +133,7 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
     })
 }
 
+/// Serializes a parsed Hermes file header back to its on-disk byte layout.
 pub fn write_file_header(header: &HbcVersionedFileHeader) -> [u8; FILE_HEADER_SIZE] {
     let mut bytes = [0u8; FILE_HEADER_SIZE];
     bytes[0..8].copy_from_slice(&header.magic.to_le_bytes());

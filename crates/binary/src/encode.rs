@@ -3,6 +3,7 @@ use mercury_spec::{BytecodeSpec, InstructionSpec};
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+/// Error returned when encoding decoded instructions back to bytes.
 pub enum HbcEncodeError {
     #[error("bytecode spec does not define instruction {name}")]
     UnknownInstruction { name: String },
@@ -20,6 +21,7 @@ pub enum HbcEncodeError {
     },
 }
 
+/// Encodes a single decoded instruction to its binary representation.
 pub fn encode_instruction(
     instruction: &DecodedInstruction,
     bytecode_spec: &BytecodeSpec,
@@ -41,6 +43,7 @@ pub fn encode_instruction(
     Ok(bytes)
 }
 
+/// Encodes an instruction stream into a Hermes function body.
 pub fn encode_instructions(
     instructions: &[DecodedInstruction],
     bytecode_spec: &BytecodeSpec,

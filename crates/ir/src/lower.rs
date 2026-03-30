@@ -8,6 +8,7 @@ use mercury_spec::{BytecodeSpec, InstructionOperandSpec, OperandMeaning};
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+/// Error returned when raw bytecode cannot be lowered into semantic IR.
 pub enum LoweringError {
     #[error("missing instruction spec for opcode {opcode} ({name})")]
     MissingInstructionSpec { opcode: u16, name: String },
@@ -15,6 +16,7 @@ pub enum LoweringError {
     InvalidOperandShape { name: String },
 }
 
+/// Lowers a decoded raw module into the stable semantic IR.
 pub fn lower_module(raw: &RawModule, bytecode_spec: &BytecodeSpec) -> Result<SemanticModule, LoweringError> {
     let mut functions = Vec::with_capacity(raw.functions.len());
     for function in &raw.functions {
@@ -27,6 +29,7 @@ pub fn lower_module(raw: &RawModule, bytecode_spec: &BytecodeSpec) -> Result<Sem
     })
 }
 
+/// Lowers a single raw function into semantic IR.
 pub fn lower_function(
     raw: &RawFunction,
     bytecode_spec: &BytecodeSpec,
@@ -46,6 +49,7 @@ pub fn lower_function(
     })
 }
 
+/// Lowers a single raw instruction into its semantic form.
 pub fn lower_instruction(
     raw: &RawInstruction,
     bytecode_spec: &BytecodeSpec,

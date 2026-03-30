@@ -1,6 +1,9 @@
+//! Shared serializable schema for extracted Hermes specs.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Canonical extracted description of one Hermes bytecode version.
 pub struct HermesSpec {
     pub hermes_tag: String,
     pub bytecode_version: u32,
@@ -10,6 +13,7 @@ pub struct HermesSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Versioned opcode metadata used by decode, encode, and lowering layers.
 pub struct BytecodeSpec {
     pub operand_types: Vec<OperandTypeSpec>,
     pub instructions: Vec<InstructionSpec>,
@@ -17,12 +21,14 @@ pub struct BytecodeSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Known operand kind in a particular Hermes bytecode version.
 pub struct OperandTypeSpec {
     pub name: String,
     pub rust_like_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Description of a single opcode in a specific Hermes version.
 pub struct InstructionSpec {
     pub opcode: u16,
     pub name: String,
@@ -31,6 +37,7 @@ pub struct InstructionSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Description of one operand in an instruction definition.
 pub struct InstructionOperandSpec {
     pub index: u8,
     pub kind: String,
@@ -38,6 +45,7 @@ pub struct InstructionOperandSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Flags attached to an opcode definition.
 pub struct InstructionFlags {
     pub has_ret_target: bool,
     pub is_value_buffer_user: bool,
@@ -46,6 +54,7 @@ pub struct InstructionFlags {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Known semantic role for an instruction operand.
 pub enum OperandMeaning {
     BigIntId,
     FunctionId,
@@ -53,6 +62,7 @@ pub enum OperandMeaning {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Versioned raw file/container-format description for Hermes bytecode.
 pub struct ContainerSpec {
     pub magic: String,
     pub delta_magic: String,
@@ -66,12 +76,14 @@ pub struct ContainerSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Generic struct layout extracted from Hermes headers/macros.
 pub struct StructSpec {
     pub name: String,
     pub fields: Vec<FieldSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Field in a [`StructSpec`].
 pub struct FieldSpec {
     pub name: String,
     pub type_name: String,
@@ -80,12 +92,14 @@ pub struct FieldSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Bitfield layout extracted from Hermes container definitions.
 pub struct BitfieldSpec {
     pub name: String,
     pub fields: Vec<BitfieldFieldSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// One entry in a [`BitfieldSpec`].
 pub struct BitfieldFieldSpec {
     pub name: String,
     pub type_name: String,
@@ -94,6 +108,7 @@ pub struct BitfieldFieldSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Raw, versioned description of the module-level serialized sections Mercury models.
 pub struct RawModuleSpec {
     pub function_header: RawFunctionHeaderSpec,
     pub function_body: RawFunctionBodySpec,
@@ -113,6 +128,7 @@ pub struct RawModuleSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Versioned layout of small and overflowed function headers.
 pub struct RawFunctionHeaderSpec {
     pub small_header_fields: Vec<FieldSpec>,
     pub small_header_flags: String,
@@ -121,6 +137,7 @@ pub struct RawFunctionHeaderSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Serializer rules for the raw opcode stream and body-adjacent data.
 pub struct RawFunctionBodySpec {
     pub opcode_stream_alignment: Option<u32>,
     pub jump_table_alignment: Option<u32>,
@@ -130,6 +147,7 @@ pub struct RawFunctionBodySpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Layout of per-function info records.
 pub struct RawFunctionInfoSpec {
     pub info_alignment: Option<u32>,
     pub large_header_may_be_present: bool,
@@ -138,6 +156,7 @@ pub struct RawFunctionInfoSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Metadata for raw exception-handler tables.
 pub struct RawExceptionHandlerSpec {
     pub header_name: String,
     pub table_entry_type: String,
@@ -146,6 +165,7 @@ pub struct RawExceptionHandlerSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Metadata for raw debug-offset records.
 pub struct RawDebugOffsetsSpec {
     pub record_type: String,
     pub alignment: Option<u32>,
@@ -153,6 +173,7 @@ pub struct RawDebugOffsetsSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Metadata for serialized debug-info sections.
 pub struct RawDebugInfoSpec {
     pub header_name: String,
     pub alignment: Option<u32>,
@@ -162,6 +183,7 @@ pub struct RawDebugInfoSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Strategy used to encode Hermes string table entries.
 pub struct RawStringTableSpec {
     pub small_entry_type: String,
     pub overflow_entry_type: String,
@@ -170,6 +192,7 @@ pub struct RawStringTableSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Opaque raw buffer section such as array or object-key storage.
 pub struct RawBufferSpec {
     pub alignment: Option<u32>,
     pub storage: String,
@@ -177,6 +200,7 @@ pub struct RawBufferSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Typed raw table section such as CJS modules or function-source pairs.
 pub struct RawTableSpec {
     pub alignment: Option<u32>,
     pub entry_type: String,
@@ -185,6 +209,7 @@ pub struct RawTableSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Footer and checksum metadata for the serialized file.
 pub struct RawFooterSpec {
     pub type_name: String,
     pub hash_description: String,
@@ -192,6 +217,7 @@ pub struct RawFooterSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Named nested subsection within a raw structure.
 pub struct RawSubsectionSpec {
     pub name: String,
     pub alignment: Option<u32>,
@@ -200,6 +226,7 @@ pub struct RawSubsectionSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Top-level serialized section plus its alignment constraints.
 pub struct SectionSpec {
     pub name: String,
     pub alignment: Option<u32>,
@@ -207,6 +234,7 @@ pub struct SectionSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Builtin object or method declared by Hermes for a given version.
 pub struct BuiltinSpec {
     pub index: u32,
     pub kind: BuiltinKind,
@@ -215,6 +243,7 @@ pub struct BuiltinSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Category of builtin entry declared in `Builtins.def`.
 pub enum BuiltinKind {
     BuiltinObject,
     BuiltinMethod,
@@ -223,6 +252,7 @@ pub enum BuiltinKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Version-independent semantic schema Mercury aims to expose to users.
 pub struct SemanticSpec {
     pub module: SemanticModuleSpec,
     pub function: SemanticFunctionSpec,
@@ -234,36 +264,42 @@ pub struct SemanticSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Semantic module shape exposed by the extracted spec.
 pub struct SemanticModuleSpec {
     pub fields: Vec<SemanticFieldSpec>,
     pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Semantic function shape exposed by the extracted spec.
 pub struct SemanticFunctionSpec {
     pub fields: Vec<SemanticFieldSpec>,
     pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Semantic instruction shape exposed by the extracted spec.
 pub struct SemanticInstructionSpec {
     pub fields: Vec<SemanticFieldSpec>,
     pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Semantic exception-handler shape exposed by the extracted spec.
 pub struct SemanticExceptionHandlerSpec {
     pub fields: Vec<SemanticFieldSpec>,
     pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Semantic debug-info shape exposed by the extracted spec.
 pub struct SemanticDebugInfoSpec {
     pub fields: Vec<SemanticFieldSpec>,
     pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Semantic side-table shape exposed by the extracted spec.
 pub struct SemanticSideTableSpec {
     pub name: String,
     pub fields: Vec<SemanticFieldSpec>,
@@ -271,6 +307,7 @@ pub struct SemanticSideTableSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Named field in one of the semantic schema descriptions.
 pub struct SemanticFieldSpec {
     pub name: String,
     pub type_name: String,

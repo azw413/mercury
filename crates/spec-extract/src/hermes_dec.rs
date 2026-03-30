@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use mercury_spec::{HermesSpec, OperandMeaning};
 
 #[derive(Debug, Clone)]
+/// Summary of how a generated Mercury spec compares with `hermes-dec`.
 pub struct HermesDecComparison {
     pub opcode_module_path: PathBuf,
     pub opcode_count_matches: bool,
@@ -21,6 +22,7 @@ struct HermesDecInstruction {
     has_ret_target: bool,
 }
 
+/// Compares a generated spec with the matching `hermes-dec` opcode and header tables.
 pub fn compare_against_hermes_dec(
     spec: &HermesSpec,
     hermes_dec_root: impl AsRef<Path>,

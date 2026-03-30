@@ -17,6 +17,7 @@ use mercury_spec::ContainerSpec;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Parsed Hermes container with typed top-level tables and function metadata.
 pub struct HbcContainer {
     pub header: HbcVersionedFileHeader,
     pub function_headers: Vec<FunctionHeader>,
@@ -36,6 +37,7 @@ pub struct HbcContainer {
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+/// Error returned when parsing a Hermes bytecode container.
 pub enum HbcParseError {
     #[error("input too short: expected at least {expected} bytes, got {actual}")]
     InputTooShort { expected: usize, actual: usize },
@@ -59,10 +61,12 @@ pub enum HbcParseError {
     FunctionInfoOutOfRange,
 }
 
+/// Parses a Hermes container using Mercury's built-in layout rules.
 pub fn parse_hbc_container(bytes: &[u8]) -> Result<HbcContainer, HbcParseError> {
     parse_hbc_container_impl(bytes, None)
 }
 
+/// Parses a Hermes container using an extracted versioned [`ContainerSpec`].
 pub fn parse_hbc_container_with_spec(
     bytes: &[u8],
     container_spec: &ContainerSpec,
@@ -153,10 +157,12 @@ fn parse_hbc_container_impl(
 }
 
 impl HbcContainer {
+    /// Returns parsed metadata for one function body.
     pub fn function_body(&self, function_index: usize) -> Option<&FunctionBody> {
         self.function_bodies.get(function_index)
     }
 
+    /// Returns the raw byte slice for one function body from the original file bytes.
     pub fn function_body_bytes<'a>(&self, bytes: &'a [u8], function_index: usize) -> Option<&'a [u8]> {
         let body = self.function_body(function_index)?;
         Some(&bytes[body.byte_range.clone()])

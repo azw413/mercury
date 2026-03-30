@@ -1,3 +1,6 @@
+//! Raw and normalized intermediate representations for Hermes bytecode, plus
+//! lowering from raw decoded instructions into the stable semantic model.
+
 pub mod raw;
 pub mod semantic;
 pub mod lower;

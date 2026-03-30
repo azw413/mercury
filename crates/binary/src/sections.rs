@@ -8,6 +8,7 @@ pub const SMALL_FUNCTION_HEADER_SIZE: usize = 16;
 const BYTECODE_ALIGNMENT: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Computed byte ranges for the major serialized sections of a Hermes container.
 pub struct HbcSectionBoundaries {
     pub file_header: Range<usize>,
     pub function_headers: Range<usize>,
@@ -238,6 +239,7 @@ fn apply_section_range(
     Ok(())
 }
 
+/// Aligns a byte offset upward to the requested alignment.
 pub fn align_up(value: usize, alignment: usize) -> usize {
     if value % alignment == 0 {
         value

@@ -7,6 +7,7 @@ const LARGE_FUNCTION_HEADER_SIZE: usize = 32;
 const INFO_ALIGNMENT: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Decoded Hermes function header, including fields that overflow out of the small header.
 pub struct FunctionHeader {
     pub offset: u32,
     pub param_count: u32,
@@ -22,6 +23,7 @@ pub struct FunctionHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Decoded bitflags attached to a Hermes function header.
 pub struct FunctionHeaderFlags {
     pub raw: u8,
     pub prohibit_invoke: u8,
@@ -32,12 +34,14 @@ pub struct FunctionHeaderFlags {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Byte range and size information for a function body within a container.
 pub struct FunctionBody {
     pub function_index: usize,
     pub byte_range: Range<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Parsed per-function info record and its optional nested tables.
 pub struct FunctionInfo {
     pub function_index: usize,
     pub info_offset: Option<u32>,
@@ -47,6 +51,7 @@ pub struct FunctionInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One entry in a Hermes exception-handler table.
 pub struct ExceptionHandlerEntry {
     pub start: u32,
     pub end: u32,
@@ -54,6 +59,7 @@ pub struct ExceptionHandlerEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Debug-offset record attached to a Hermes function.
 pub struct DebugOffsetsEntry {
     pub source_locations: u32,
     pub scope_desc_data: u32,
@@ -236,6 +242,7 @@ pub(crate) fn parse_function_info(
     })
 }
 
+/// Serializes a small Hermes function header.
 pub fn write_small_function_header(header: &FunctionHeader) -> [u8; SMALL_FUNCTION_HEADER_SIZE] {
     let mut bytes = [0u8; SMALL_FUNCTION_HEADER_SIZE];
     let w1 = (header.offset & ((1 << 25) - 1)) | ((header.param_count & ((1 << 7) - 1)) << 25);
@@ -252,6 +259,7 @@ pub fn write_small_function_header(header: &FunctionHeader) -> [u8; SMALL_FUNCTI
     bytes
 }
 
+/// Serializes a large Hermes function header.
 pub fn write_large_function_header(header: &FunctionHeader) -> [u8; LARGE_FUNCTION_HEADER_SIZE] {
     let mut bytes = [0u8; LARGE_FUNCTION_HEADER_SIZE];
     bytes[0..4].copy_from_slice(&header.offset.to_le_bytes());
@@ -267,6 +275,7 @@ pub fn write_large_function_header(header: &FunctionHeader) -> [u8; LARGE_FUNCTI
     bytes
 }
 
+/// Serializes an exception-handler table.
 pub fn write_exception_handler_table(entries: &[ExceptionHandlerEntry]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(4 + entries.len() * 12);
     bytes.extend_from_slice(&(entries.len() as u32).to_le_bytes());
@@ -278,6 +287,7 @@ pub fn write_exception_handler_table(entries: &[ExceptionHandlerEntry]) -> Vec<u
     bytes
 }
 
+/// Serializes a debug-offset record.
 pub fn write_debug_offsets(entry: &DebugOffsetsEntry) -> [u8; 12] {
     let mut bytes = [0u8; 12];
     bytes[0..4].copy_from_slice(&entry.source_locations.to_le_bytes());
