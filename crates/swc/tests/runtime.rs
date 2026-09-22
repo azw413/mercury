@@ -121,6 +121,23 @@ fn mutable_sibling_and_multilevel_closures_preserve_environment_identity() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn new_array_preserves_length_holes_and_mutation() {
+    let compiler = compiler();
+    let module = SwcModule::parse(
+        "sparse-array.js",
+        "var OriginalArray = Array; Array = function() { return 99; }; var empty = []; var sparse = [,,,]; print(empty.length, sparse.length, sparse instanceof OriginalArray, 0 in sparse, 2 in sparse); sparse[1] = 7; print(sparse.length, 0 in sparse, 1 in sparse, sparse[1]);",
+        SourceLanguage::JavaScript,
+        SourceKind::Script,
+    )
+    .unwrap();
+    let original = compiler.compile(&module).unwrap();
+    assert_eq!(execute(&original), "0 3 true false false\n3 false true 7\n");
+    let rebuilt = compiler.compile(&decompile(&original).unwrap()).unwrap();
+    assert_eq!(execute(&rebuilt), "0 3 true false false\n3 false true 7\n");
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn decompilation_preserves_receiver_side_effects_and_nan_comparisons() {
     let compiler = compiler();
     for (source, expected) in [

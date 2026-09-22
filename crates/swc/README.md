@@ -72,16 +72,16 @@ expressions and structured `if`/`while` statements.
 The initial subset includes constants, parameter loads, functions with mutable
 captured variables, global access, property reads/writes, fixed-arity and general
 calls, common arithmetic/comparisons, conditional/unconditional branches,
-returns, and throws without handlers. Function names and strictness are retained.
-Unknown opcodes fail with function index and instruction offset; malformed branch
-targets fail before emitting a tree.
+empty and sparse array allocation, returns, and throws without handlers. Function
+names and strictness are retained. Unknown opcodes fail with function index and
+instruction offset; malformed branch targets fail before emitting a tree.
 
 Closure environments are reconstructed as a private parent-linked slot structure.
 This preserves mutation shared by sibling closures, independent environments from
 separate outer calls, and captures across multiple lexical levels. The structure
 is an implementation detail rather than part of the module interface.
 
-Exception handlers, async/generators, switch tables, array literals and
+Exception handlers, async/generators, switch tables, populated array literals and
 buffer-backed object/array construction, dynamic eval, regexp and bigint tables
 are not implemented. The decompiler also rejects non-finite literal doubles,
 unpaired UTF-16 surrogates and function/global names outside its supported
@@ -113,8 +113,9 @@ logic, a receiver whose `.call` property has been replaced, side effects, NaN-li
 relational comparisons, helper-name collisions, TS enum lowering, and mutable
 captured variables. Closure checks cover independent outer calls, sibling
 closures sharing one environment, and captures across multiple lexical levels.
-The main loop prints `18` after recompilation; an SWC numeric-literal visitor
-changes it to print `28`.
+Sparse-array checks cover length, holes, and indexed mutation. The main loop
+prints `18` after recompilation; an SWC numeric-literal visitor changes it to
+print `28`.
 
 `tests/fixtures/control_flow.hbc` was generated from the adjacent authored JS
 fixture with the local compiler reporting Hermes release 0.12.0 / HBC 96:

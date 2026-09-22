@@ -412,6 +412,9 @@ impl Lower<'_> {
                     .collect::<Result<Vec<_>, _>>()?;
                 b::call(b::id("_apply"), vec![r(1)?, this_arg, b::array(args)])
             }
+            // An array literal with empty elements creates holes without
+            // consulting a replaceable global Array constructor.
+            "NewArray" => b::sparse_array(uint(op, 1)? as usize),
             "NewObject" => Box::new(Expr::Object(ObjectLit {
                 span: DUMMY_SP,
                 props: vec![],

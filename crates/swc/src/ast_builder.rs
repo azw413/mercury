@@ -144,6 +144,12 @@ pub fn array(values: Vec<Box<Expr>>) -> Box<Expr> {
             .collect(),
     }))
 }
+pub fn sparse_array(length: usize) -> Box<Expr> {
+    Box::new(Expr::Array(ArrayLit {
+        span: DUMMY_SP,
+        elems: vec![None; length],
+    }))
+}
 pub fn this() -> Box<Expr> {
     Box::new(Expr::This(ThisExpr { span: DUMMY_SP }))
 }
