@@ -1,14 +1,12 @@
-use crate::encode::{encode_instructions, HbcEncodeError};
-use crate::functions::{
-    write_small_function_header, FunctionHeader, FunctionHeaderFlags,
-};
+use crate::encode::{HbcEncodeError, encode_instructions};
+use crate::functions::{FunctionHeader, FunctionHeaderFlags, write_small_function_header};
 use crate::header::{
-    write_file_header, BytecodeOptions, HbcVersionedFileHeader, FILE_HEADER_SIZE, HERMES_MAGIC,
+    BytecodeOptions, FILE_HEADER_SIZE, HERMES_MAGIC, HbcVersionedFileHeader, write_file_header,
 };
 use crate::tables::{
-    write_overflow_string_table_entries, write_shape_table_entries, write_small_string_table_entries,
-    write_string_kind_entries, OverflowStringTableEntry, ShapeTableEntry, SmallStringTableEntry,
-    StringKind, StringKindEntry,
+    OverflowStringTableEntry, ShapeTableEntry, SmallStringTableEntry, StringKind, StringKindEntry,
+    write_overflow_string_table_entries, write_shape_table_entries,
+    write_small_string_table_entries, write_string_kind_entries,
 };
 use crate::{DecodedInstruction, DecodedOperand};
 use mercury_spec::BytecodeSpec;
@@ -47,6 +45,8 @@ pub struct MinimalFunction {
 #[derive(Debug, Error)]
 /// Error returned when building a minimal Hermes container from semantic input.
 pub enum HbcBuildError {
+    #[error("invalid semantic module: {reason}")]
+    InvalidModule { reason: String },
     #[error("only bytecode version 96 is currently supported for semantic module building")]
     UnsupportedVersion,
     #[error("instruction encoding failed")]
@@ -76,8 +76,71 @@ pub fn build_minimal_module(
         });
     }
 
+    if module.functions.is_empty() || module.global_code_index as usize >= module.functions.len() {
+        return Err(HbcBuildError::InvalidModule {
+            reason: "entry function is missing".into(),
+        });
+    }
+    if !module.string_kinds.is_empty() && module.string_kinds.len() != module.strings.len() {
+        return Err(HbcBuildError::InvalidModule {
+            reason: "string kind count does not match string count".into(),
+        });
+    }
+    for function in &module.functions {
+        if function.instructions.is_empty() {
+            return Err(HbcBuildError::InvalidModule {
+                reason: format!("function {} has no instructions", function.name),
+            });
+        }
+        for instruction in &function.instructions {
+            if let Some(spec) = bytecode_spec
+                .instructions
+                .iter()
+                .find(|spec| spec.name == instruction.name)
+            {
+                for (operand, spec) in instruction.operands.iter().zip(&spec.operands) {
+                    let value = match operand {
+                        DecodedOperand::U8(value) => Some(u32::from(*value)),
+                        DecodedOperand::U16(value) => Some(u32::from(*value)),
+                        DecodedOperand::U32(value) => Some(*value),
+                        _ => None,
+                    };
+                    if spec.kind.starts_with("Reg")
+                        && value.is_some_and(|value| value >= function.frame_size)
+                    {
+                        return Err(HbcBuildError::InvalidModule {
+                            reason: format!(
+                                "{} in {} references a register outside frame={}",
+                                instruction.name, function.name, function.frame_size
+                            ),
+                        });
+                    }
+                    if spec.meaning == Some(mercury_spec::OperandMeaning::StringId)
+                        && let Some(string_id) =
+                            value.filter(|id| *id as usize >= module.strings.len())
+                    {
+                        return Err(HbcBuildError::MissingString {
+                            function: function.name.clone(),
+                            string_id,
+                        });
+                    }
+                    if spec.meaning == Some(mercury_spec::OperandMeaning::FunctionId)
+                        && value.is_some_and(|value| value as usize >= module.functions.len())
+                    {
+                        return Err(HbcBuildError::InvalidModule {
+                            reason: format!("{} references a missing function", instruction.name),
+                        });
+                    }
+                }
+            }
+        }
+    }
     let mut string_pool = module.strings.clone();
-    let mut string_kinds = module.string_kinds.clone();
+    let mut string_kinds = if module.string_kinds.is_empty() {
+        vec![StringKind::String; string_pool.len()]
+    } else {
+        module.string_kinds.clone()
+    };
     let mut function_name_ids = Vec::with_capacity(module.functions.len());
     for function in &module.functions {
         function_name_ids.push(intern_string_with_kind(
@@ -99,11 +162,16 @@ pub fn build_minimal_module(
         .map(|function| encode_instructions(&function.instructions, bytecode_spec))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let string_kinds = if string_kinds.len() == string_pool.len() {
-        string_kinds
-    } else {
-        classify_string_kinds(module, &string_pool)?
-    };
+    // Preserve kinds required by opaque buffers, and promote strings newly used
+    // as identifiers by edited instructions.
+    for (kind, required) in string_kinds
+        .iter_mut()
+        .zip(classify_string_kinds(module, &string_pool)?)
+    {
+        if required == StringKind::Identifier {
+            *kind = required;
+        }
+    }
     let identifier_hashes = build_identifier_hashes(&string_pool, &string_kinds);
     let string_table = build_string_tables(&string_pool);
 
@@ -112,30 +180,46 @@ pub fn build_minimal_module(
         function_headers_start + module.functions.len() * SMALL_FUNCTION_HEADER_SIZE;
     let string_kinds_start = align_up(function_headers_end, BYTECODE_ALIGNMENT);
     let string_kinds_bytes = write_string_kind_entries(&encode_string_kind_entries(&string_kinds));
-    let identifier_hashes_start = align_up(string_kinds_start + string_kinds_bytes.len(), BYTECODE_ALIGNMENT);
+    let identifier_hashes_start = align_up(
+        string_kinds_start + string_kinds_bytes.len(),
+        BYTECODE_ALIGNMENT,
+    );
     let identifier_hashes_bytes = write_u32_array(&identifier_hashes);
-    let small_string_table_start =
-        align_up(identifier_hashes_start + identifier_hashes_bytes.len(), BYTECODE_ALIGNMENT);
-    let small_string_table_bytes =
-        write_small_string_table_entries(&string_table.small_entries);
-    let overflow_string_table_start =
-        align_up(small_string_table_start + small_string_table_bytes.len(), BYTECODE_ALIGNMENT);
+    let small_string_table_start = align_up(
+        identifier_hashes_start + identifier_hashes_bytes.len(),
+        BYTECODE_ALIGNMENT,
+    );
+    let small_string_table_bytes = write_small_string_table_entries(&string_table.small_entries);
+    let overflow_string_table_start = align_up(
+        small_string_table_start + small_string_table_bytes.len(),
+        BYTECODE_ALIGNMENT,
+    );
     let overflow_string_table_bytes =
         write_overflow_string_table_entries(&string_table.overflow_entries);
-    let string_storage_start =
-        align_up(overflow_string_table_start + overflow_string_table_bytes.len(), BYTECODE_ALIGNMENT);
+    let string_storage_start = align_up(
+        overflow_string_table_start + overflow_string_table_bytes.len(),
+        BYTECODE_ALIGNMENT,
+    );
     let string_storage_bytes = string_table.storage;
-    let literal_value_buffer_start =
-        align_up(string_storage_start + string_storage_bytes.len(), BYTECODE_ALIGNMENT);
+    let literal_value_buffer_start = align_up(
+        string_storage_start + string_storage_bytes.len(),
+        BYTECODE_ALIGNMENT,
+    );
     let literal_value_buffer_bytes = module.literal_value_buffer.clone();
-    let object_key_buffer_start =
-        align_up(literal_value_buffer_start + literal_value_buffer_bytes.len(), BYTECODE_ALIGNMENT);
+    let object_key_buffer_start = align_up(
+        literal_value_buffer_start + literal_value_buffer_bytes.len(),
+        BYTECODE_ALIGNMENT,
+    );
     let object_key_buffer_bytes = module.object_key_buffer.clone();
-    let object_shape_table_start =
-        align_up(object_key_buffer_start + object_key_buffer_bytes.len(), BYTECODE_ALIGNMENT);
+    let object_shape_table_start = align_up(
+        object_key_buffer_start + object_key_buffer_bytes.len(),
+        BYTECODE_ALIGNMENT,
+    );
     let object_shape_table_bytes = write_shape_table_entries(&module.object_shape_table);
-    let function_bodies_start =
-        align_up(object_shape_table_start + object_shape_table_bytes.len(), BYTECODE_ALIGNMENT);
+    let function_bodies_start = align_up(
+        object_shape_table_start + object_shape_table_bytes.len(),
+        BYTECODE_ALIGNMENT,
+    );
 
     let function_headers = build_function_headers(
         module,
@@ -177,10 +261,10 @@ pub fn build_minimal_module(
     pad_to(&mut bytes, debug_info_offset);
     bytes.extend_from_slice(&empty_debug_info_section(module.version));
 
-    let footer_hash = compute_sha1(&bytes);
-    bytes.extend_from_slice(&footer_hash);
+    bytes.resize(bytes.len() + FOOTER_SIZE, 0);
 
     let header = HbcVersionedFileHeader {
+        layout: crate::header::HbcHeaderLayout::V96WithFunctionSources,
         magic: HERMES_MAGIC,
         version: module.version,
         source_hash: [0u8; 20],
@@ -212,6 +296,9 @@ pub fn build_minimal_module(
         },
     };
     bytes[0..FILE_HEADER_SIZE].copy_from_slice(&write_file_header(&header));
+    let footer_start = bytes.len() - FOOTER_SIZE;
+    let footer_hash = compute_sha1(&bytes[..footer_start]);
+    bytes[footer_start..].copy_from_slice(&footer_hash);
 
     Ok(bytes)
 }
@@ -524,7 +611,11 @@ mod tests {
             version: 96,
             global_code_index: 0,
             strings: vec!["encode".into(), "decode".into(), "".into()],
-            string_kinds: vec![StringKind::Identifier, StringKind::Identifier, StringKind::String],
+            string_kinds: vec![
+                StringKind::Identifier,
+                StringKind::Identifier,
+                StringKind::String,
+            ],
             literal_value_buffer: vec![0xaa],
             object_key_buffer: vec![0xbb, 0xcc],
             object_shape_table: vec![
@@ -600,8 +691,12 @@ mod tests {
         };
 
         let bytes = build_minimal_module(&module, &spec.bytecode).expect("builds");
-        let container =
-            parse_hbc_container_with_spec(&bytes, &spec.container).expect("reparses");
+        assert_eq!(
+            &bytes[bytes.len() - FOOTER_SIZE..],
+            &compute_sha1(&bytes[..bytes.len() - FOOTER_SIZE]),
+            "footer must hash the final header and body"
+        );
+        let container = parse_hbc_container_with_spec(&bytes, &spec.container).expect("reparses");
         let raw = decode_raw_module(&container, &bytes, &spec.bytecode).expect("decodes");
 
         assert_eq!(container.header.version, 96);

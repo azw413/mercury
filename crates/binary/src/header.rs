@@ -3,9 +3,19 @@ use crate::parse::HbcParseError;
 pub const HERMES_MAGIC: u64 = 0x1F19_03C1_03BC_1FC6;
 pub const FILE_HEADER_SIZE: usize = 128;
 
+/// Header layouts seen in the supported Hermes producers. Preserve the layout
+/// when writing parsed headers; version 96 exists with both tail layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HbcHeaderLayout {
+    Pre96,
+    V96,
+    V96WithFunctionSources,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Parsed Hermes file header with the fields Mercury currently models.
 pub struct HbcVersionedFileHeader {
+    pub layout: HbcHeaderLayout,
     pub magic: u64,
     pub version: u32,
     pub source_hash: [u8; 20],
@@ -53,12 +63,18 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
     let version = read_u32(bytes, 8);
     let mut source_hash = [0u8; 20];
     source_hash.copy_from_slice(&bytes[12..32]);
-    let function_count = read_u32(bytes, 40);
     let file_length = read_u32(bytes, 32);
     let field_104 = read_u32(bytes, 104);
     let field_108 = read_u32(bytes, 108);
-    let uses_extended_post_96_layout = version >= 96
-        && (field_108 != 0 || field_104 <= function_count.saturating_add(1_024));
+    // In the compact layout word 108 holds option bits and padding, not a
+    // debug offset. A debug section cannot begin inside the fixed header.
+    let layout = if version < 96 {
+        HbcHeaderLayout::Pre96
+    } else if field_108 >= FILE_HEADER_SIZE as u32 && field_108 <= file_length {
+        HbcHeaderLayout::V96WithFunctionSources
+    } else {
+        HbcHeaderLayout::V96
+    };
 
     let (
         obj_shape_table_count,
@@ -68,7 +84,7 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
         function_source_count,
         debug_info_offset,
         options_raw,
-    ) = if uses_extended_post_96_layout {
+    ) = if layout == HbcHeaderLayout::V96WithFunctionSources {
         (
             read_u32(bytes, 88),
             read_u32(bytes, 92),
@@ -78,14 +94,14 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
             field_108,
             bytes[112],
         )
-    } else if version >= 96 {
+    } else if layout == HbcHeaderLayout::V96 {
         (
             read_u32(bytes, 88),
             read_u32(bytes, 92),
             read_u32(bytes, 96),
             read_u32(bytes, 100),
             0,
-            field_104.min(file_length),
+            field_104,
             bytes[108],
         )
     } else {
@@ -101,6 +117,7 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
     };
 
     Ok(HbcVersionedFileHeader {
+        layout,
         magic,
         version,
         source_hash,
@@ -153,14 +170,19 @@ pub fn write_file_header(header: &HbcVersionedFileHeader) -> [u8; FILE_HEADER_SI
     bytes[76..80].copy_from_slice(&header.reg_exp_storage_size.to_le_bytes());
     bytes[80..84].copy_from_slice(&header.literal_value_buffer_size.to_le_bytes());
     bytes[84..88].copy_from_slice(&header.obj_key_buffer_size.to_le_bytes());
-    if header.version >= 96 {
+    if header.layout != HbcHeaderLayout::Pre96 {
         bytes[88..92].copy_from_slice(&header.obj_shape_table_count.to_le_bytes());
         bytes[92..96].copy_from_slice(&header.num_string_switch_imms.to_le_bytes());
         bytes[96..100].copy_from_slice(&header.segment_id.to_le_bytes());
         bytes[100..104].copy_from_slice(&header.cjs_module_count.to_le_bytes());
-        bytes[104..108].copy_from_slice(&header.function_source_count.to_le_bytes());
-        bytes[108..112].copy_from_slice(&header.debug_info_offset.to_le_bytes());
-        bytes[112] = header.options.raw;
+        if header.layout == HbcHeaderLayout::V96WithFunctionSources {
+            bytes[104..108].copy_from_slice(&header.function_source_count.to_le_bytes());
+            bytes[108..112].copy_from_slice(&header.debug_info_offset.to_le_bytes());
+            bytes[112] = header.options.raw;
+        } else {
+            bytes[104..108].copy_from_slice(&header.debug_info_offset.to_le_bytes());
+            bytes[108] = header.options.raw;
+        }
     } else {
         bytes[88..92].copy_from_slice(&header.obj_shape_table_count.to_le_bytes());
         bytes[92..96].copy_from_slice(&header.segment_id.to_le_bytes());
@@ -189,8 +211,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_small_compiler_header_without_mistaking_debug_offset_for_count() {
+        let bytes = include_bytes!("../../../test/hex.hbc");
+        let parsed = parse_file_header(bytes).unwrap();
+        assert_eq!(parsed.function_source_count, 0);
+        assert_eq!(parsed.debug_info_offset, 740);
+        assert_eq!(&write_file_header(&parsed), &bytes[..FILE_HEADER_SIZE]);
+    }
+
+    #[test]
     fn roundtrips_file_header_bytes() {
         let header = HbcVersionedFileHeader {
+            layout: HbcHeaderLayout::V96WithFunctionSources,
             magic: HERMES_MAGIC,
             version: 96,
             source_hash: [0x5a; 20],

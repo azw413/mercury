@@ -1,17 +1,17 @@
 use crate::functions::{
-    compute_function_bodies, parse_function_infos, parse_small_function_header,
-    resolve_overflowed_function_headers, FunctionBody, FunctionHeader, FunctionInfo,
+    FunctionBody, FunctionHeader, FunctionInfo, compute_function_bodies, parse_function_infos,
+    parse_small_function_header, resolve_overflowed_function_headers,
 };
-use crate::header::{parse_file_header, HbcVersionedFileHeader, FILE_HEADER_SIZE};
+use crate::header::{FILE_HEADER_SIZE, HbcVersionedFileHeader, parse_file_header};
 use crate::sections::{
-    compute_section_boundaries, compute_section_boundaries_with_spec, HbcSectionBoundaries,
-    SMALL_FUNCTION_HEADER_SIZE,
+    HbcSectionBoundaries, SMALL_FUNCTION_HEADER_SIZE, compute_section_boundaries,
+    compute_section_boundaries_with_spec,
 };
 use crate::tables::{
-    parse_overflow_string_table_entries, parse_pair_table_entries, parse_shape_table_entries,
-    parse_small_string_table_entries, parse_string_kind_entries, parse_u32_array,
     OverflowStringTableEntry, PairTableEntry, ShapeTableEntry, SmallStringTableEntry,
-    StringKindEntry,
+    StringKindEntry, parse_overflow_string_table_entries, parse_pair_table_entries,
+    parse_shape_table_entries, parse_small_string_table_entries, parse_string_kind_entries,
+    parse_u32_array,
 };
 use mercury_spec::ContainerSpec;
 use thiserror::Error;
@@ -118,7 +118,8 @@ fn parse_hbc_container_impl(
         return Err(HbcParseError::SectionOutOfRange);
     }
 
-    let string_kind_entries = parse_string_kind_entries(bytes, section_boundaries.string_kinds.clone())?;
+    let string_kind_entries =
+        parse_string_kind_entries(bytes, section_boundaries.string_kinds.clone())?;
     let identifier_hashes = parse_u32_array(bytes, section_boundaries.identifier_hashes.clone())?;
     let small_string_table_entries =
         parse_small_string_table_entries(bytes, section_boundaries.small_string_table.clone())?;
@@ -131,7 +132,8 @@ fn parse_hbc_container_impl(
     let object_key_buffer = bytes[section_boundaries.obj_key_buffer.clone()].to_vec();
     let object_shape_table =
         parse_shape_table_entries(bytes, section_boundaries.obj_shape_table.clone())?;
-    let cjs_module_entries = parse_pair_table_entries(bytes, section_boundaries.cjs_module_table.clone())?;
+    let cjs_module_entries =
+        parse_pair_table_entries(bytes, section_boundaries.cjs_module_table.clone())?;
     let function_source_entries =
         parse_pair_table_entries(bytes, section_boundaries.function_source_table.clone())?;
     let function_bodies = compute_function_bodies(&function_headers, bytes.len())?;
@@ -163,7 +165,11 @@ impl HbcContainer {
     }
 
     /// Returns the raw byte slice for one function body from the original file bytes.
-    pub fn function_body_bytes<'a>(&self, bytes: &'a [u8], function_index: usize) -> Option<&'a [u8]> {
+    pub fn function_body_bytes<'a>(
+        &self,
+        bytes: &'a [u8],
+        function_index: usize,
+    ) -> Option<&'a [u8]> {
         let body = self.function_body(function_index)?;
         Some(&bytes[body.byte_range.clone()])
     }
@@ -172,24 +178,21 @@ impl HbcContainer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::{decode_function_instructions, decode_raw_function, DecodedOperand};
+    use crate::decode::{DecodedOperand, decode_function_instructions, decode_raw_function};
     use crate::header::HERMES_MAGIC;
     use crate::tables::StringKind;
     use mercury_ir::RawOperand;
+    use mercury_spec::HermesSpec;
     use std::fs;
     use std::path::PathBuf;
-    use mercury_spec::HermesSpec;
 
     fn fixture_bytes(name: &str) -> Vec<u8> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("crates directory")
-            .parent()
-            .expect("workspace root")
-            .parent()
-            .expect("workspace parent")
-            .join("hermes-dec/tests")
-            .join(name);
+        let path = PathBuf::from(
+            std::env::var_os("HERMES_DEC_ROOT")
+                .expect("set HERMES_DEC_ROOT to a hermes-dec checkout"),
+        )
+        .join("tests")
+        .join(name);
         fs::read(&path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()))
     }
 
@@ -211,11 +214,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires HERMES_DEC_ROOT pointing to a hermes-dec checkout"]
     fn parses_sample_hbc_header_and_function_headers() {
         let bytes = fixture_bytes("sample.hbc");
         let spec = load_generated_spec("hbc94.json");
-        let parsed =
-            parse_hbc_container_with_spec(&bytes, &spec.container).expect("sample.hbc should parse");
+        let parsed = parse_hbc_container_with_spec(&bytes, &spec.container)
+            .expect("sample.hbc should parse");
 
         assert_eq!(parsed.header.magic, HERMES_MAGIC);
         assert_eq!(parsed.header.version, 94);
@@ -259,8 +263,14 @@ mod tests {
         assert_eq!(
             parsed.function_source_entries,
             vec![
-                PairTableEntry { first: 3, second: 0 },
-                PairTableEntry { first: 5, second: 0 },
+                PairTableEntry {
+                    first: 3,
+                    second: 0
+                },
+                PairTableEntry {
+                    first: 5,
+                    second: 0
+                },
             ]
         );
         assert!(parsed.function_infos[0].debug_offsets.is_some());
@@ -291,11 +301,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires HERMES_DEC_ROOT pointing to a hermes-dec checkout"]
     fn decodes_opening_instructions_of_sample_global_function() {
         let bytes = fixture_bytes("sample.hbc");
         let spec = load_generated_spec("hbc94.json");
-        let parsed =
-            parse_hbc_container_with_spec(&bytes, &spec.container).expect("sample.hbc should parse");
+        let parsed = parse_hbc_container_with_spec(&bytes, &spec.container)
+            .expect("sample.hbc should parse");
         let body = parsed
             .function_body_bytes(&bytes, 0)
             .expect("global function body should exist");
@@ -336,11 +347,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires HERMES_DEC_ROOT pointing to a hermes-dec checkout"]
     fn decodes_sample_global_function_into_raw_ir() {
         let bytes = fixture_bytes("sample.hbc");
         let spec = load_generated_spec("hbc94.json");
-        let parsed =
-            parse_hbc_container_with_spec(&bytes, &spec.container).expect("sample.hbc should parse");
+        let parsed = parse_hbc_container_with_spec(&bytes, &spec.container)
+            .expect("sample.hbc should parse");
         let raw = decode_raw_function(&parsed, &bytes, 0, &spec.bytecode)
             .expect("raw function should decode");
 
@@ -360,8 +372,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_magic() {
-        let mut bytes = fixture_bytes("sample.hbc");
-        bytes[0] = 0;
+        let bytes = vec![0; FILE_HEADER_SIZE];
         let err = parse_hbc_container(&bytes).expect_err("magic check should fail");
         assert!(matches!(err, HbcParseError::InvalidMagic { .. }));
     }
@@ -378,15 +389,30 @@ mod tests {
         assert_eq!(parsed.header.version, 96);
         assert_eq!(parsed.header.file_length as usize, bytes.len());
         assert!(parsed.header.function_count > 200_000);
-        assert_eq!(parsed.function_headers.len(), parsed.header.function_count as usize);
-        assert_eq!(parsed.function_infos.len(), parsed.header.function_count as usize);
-        assert_eq!(parsed.cjs_module_entries.len(), parsed.header.cjs_module_count as usize);
+        assert_eq!(
+            parsed.function_headers.len(),
+            parsed.header.function_count as usize
+        );
+        assert_eq!(
+            parsed.function_infos.len(),
+            parsed.header.function_count as usize
+        );
+        assert_eq!(
+            parsed.cjs_module_entries.len(),
+            parsed.header.cjs_module_count as usize
+        );
         assert_eq!(
             parsed.function_source_entries.len(),
             parsed.header.function_source_count as usize
         );
-        assert!(parsed.section_boundaries.function_bodies_start > parsed.section_boundaries.function_headers.end);
-        assert!(parsed.function_headers[0].offset > parsed.section_boundaries.function_headers.end as u32);
+        assert!(
+            parsed.section_boundaries.function_bodies_start
+                > parsed.section_boundaries.function_headers.end
+        );
+        assert!(
+            parsed.function_headers[0].offset
+                > parsed.section_boundaries.function_headers.end as u32
+        );
         assert!(parsed.function_headers[0].bytecode_size_in_bytes > 0);
         assert!(parsed.function_headers[1].bytecode_size_in_bytes > 0);
         assert!(!parsed.function_headers[0].flags.overflowed);
@@ -396,16 +422,29 @@ mod tests {
         assert!(parsed.function_infos[0].large_header_range.is_some());
         assert!(parsed.function_infos[1].large_header_range.is_some());
 
-        let body0 = parsed.function_body(0).expect("first function body should resolve");
-        assert_eq!(body0.byte_range.start, parsed.function_headers[0].offset as usize);
+        let body0 = parsed
+            .function_body(0)
+            .expect("first function body should resolve");
+        assert_eq!(
+            body0.byte_range.start,
+            parsed.function_headers[0].offset as usize
+        );
         assert_eq!(
             body0.byte_range.len(),
             parsed.function_headers[0].bytecode_size_in_bytes as usize
         );
         assert!(body0.byte_range.end <= bytes.len());
 
-        for (header, info) in parsed.function_headers.iter().zip(parsed.function_infos.iter()).take(32) {
-            assert_eq!(header.flags.has_exception_handler, !info.exception_handlers.is_empty());
+        for (header, info) in parsed
+            .function_headers
+            .iter()
+            .zip(parsed.function_infos.iter())
+            .take(32)
+        {
+            assert_eq!(
+                header.flags.has_exception_handler,
+                !info.exception_handlers.is_empty()
+            );
             assert_eq!(header.flags.has_debug_info, info.debug_offsets.is_some());
         }
     }

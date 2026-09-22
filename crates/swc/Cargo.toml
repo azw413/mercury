@@ -1,5 +1,5 @@
 [package]
-name = "mercury-cli"
+name = "mercury-swc"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,13 +7,9 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-anyhow.workspace = true
-clap.workspace = true
-serde_json.workspace = true
-mercury-asm = { path = "../asm" }
 mercury-binary = { path = "../binary" }
 mercury-ir = { path = "../ir" }
-mercury-spec = { path = "../spec" }
 mercury-spec-builtin = { path = "../spec-builtin" }
-mercury-spec-extract = { path = "../spec-extract" }
-mercury-swc = { path = "../swc" }
+swc_core = { version = "75.0.0", features = ["common", "ecma_ast", "ecma_parser", "ecma_parser_typescript", "ecma_codegen", "ecma_transforms_typescript", "ecma_transforms", "ecma_visit"] }
+tempfile = "3"
+thiserror.workspace = true

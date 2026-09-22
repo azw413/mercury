@@ -28,6 +28,18 @@ pub struct RaisedAssemblyFunction {
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 /// Error returned when semantic assembly cannot be raised to target bytecode instructions.
 pub enum RaiseError {
+    #[error("branch target {target} is not an instruction in this function")]
+    InvalidBranchTarget { target: i64 },
+    #[error("duplicate symbol {name}")]
+    DuplicateSymbol { name: String },
+    #[error("operand value {value} is out of range for {kind} in {mnemonic}")]
+    OperandOutOfRange {
+        mnemonic: String,
+        kind: String,
+        value: i128,
+    },
+    #[error("function bytecode exceeds the 32-bit address space")]
+    FunctionTooLarge,
     #[error("unsupported mnemonic {mnemonic}")]
     UnsupportedMnemonic { mnemonic: String },
     #[error("invalid operand count for {mnemonic}: expected {expected}, got {actual}")]
@@ -51,12 +63,17 @@ pub fn raise_module(
     module: &SemanticAssemblyModule,
     bytecode_spec: &BytecodeSpec,
 ) -> Result<RaisedAssemblyModule, RaiseError> {
-    let function_ids = module
-        .functions
-        .iter()
-        .enumerate()
-        .map(|(index, function)| (function.symbol.clone(), index as u32))
-        .collect::<HashMap<_, _>>();
+    let mut function_ids = HashMap::new();
+    for (index, function) in module.functions.iter().enumerate() {
+        if function_ids
+            .insert(function.symbol.clone(), index as u32)
+            .is_some()
+        {
+            return Err(RaiseError::DuplicateSymbol {
+                name: function.symbol.clone(),
+            });
+        }
+    }
     // When semantic assembly includes a full `.strings` table, preserve it as
     // the canonical id ordering so raw literal/object buffers that embed string
     // ids stay valid across reassembly.
@@ -88,21 +105,41 @@ fn raise_function(
     let mut instructions = Vec::new();
     let mut offset = 0u32;
 
-    for (index, statement) in function.body.iter().enumerate() {
+    for statement in &function.body {
         let SemanticAssemblyStatement::Instruction(instruction) = statement else {
             continue;
         };
         let decoded = raise_instruction(
             instruction,
             offset,
-            next_instruction_offset_hint(&function.body, index),
             &labels,
             function_ids,
             string_pool,
             bytecode_spec,
         )?;
-        offset = offset.saturating_add(decoded.size as u32);
+        offset = offset
+            .checked_add(decoded.size as u32)
+            .ok_or(RaiseError::FunctionTooLarge)?;
         instructions.push(decoded);
+    }
+
+    let offsets = instructions
+        .iter()
+        .map(|instruction| i64::from(instruction.offset))
+        .collect::<std::collections::HashSet<_>>();
+    for instruction in &instructions {
+        // All currently supported branch opcodes put their displacement first.
+        if instruction.name.starts_with('J') {
+            let displacement = match instruction.operands.first() {
+                Some(DecodedOperand::I32(value)) => i64::from(*value),
+                Some(DecodedOperand::I8(value)) => i64::from(*value),
+                _ => continue,
+            };
+            let target = i64::from(instruction.offset) + displacement;
+            if !offsets.contains(&target) {
+                return Err(RaiseError::InvalidBranchTarget { target });
+            }
+        }
     }
 
     Ok(RaisedAssemblyFunction {
@@ -121,18 +158,18 @@ fn collect_label_offsets(
     let mut labels = BTreeMap::new();
     let mut offset = 0u32;
 
-    for (index, statement) in function.body.iter().enumerate() {
+    for statement in &function.body {
         match statement {
             SemanticAssemblyStatement::Label(name) => {
-                labels.insert(name.clone(), offset);
+                if labels.insert(name.clone(), offset).is_some() {
+                    return Err(RaiseError::DuplicateSymbol { name: name.clone() });
+                }
             }
             SemanticAssemblyStatement::Instruction(instruction) => {
-                let size = estimate_instruction_size(
-                    instruction,
-                    next_instruction_offset_hint(&function.body, index),
-                    bytecode_spec,
-                )?;
-                offset = offset.saturating_add(size as u32);
+                let size = estimate_instruction_size(instruction, bytecode_spec)?;
+                offset = offset
+                    .checked_add(size as u32)
+                    .ok_or(RaiseError::FunctionTooLarge)?;
             }
         }
     }
@@ -142,10 +179,9 @@ fn collect_label_offsets(
 
 fn estimate_instruction_size(
     instruction: &SemanticAssemblyInstruction,
-    next_offset_hint: Option<u32>,
     bytecode_spec: &BytecodeSpec,
 ) -> Result<usize, RaiseError> {
-    let raw_name = raw_instruction_name(instruction, next_offset_hint, bytecode_spec)?;
+    let raw_name = raw_instruction_name(instruction)?;
     instruction_size_for_raw_name(&raw_name, bytecode_spec)
 }
 
@@ -171,7 +207,7 @@ fn instruction_size_for_raw_name(
             _ => {
                 return Err(RaiseError::MissingInstruction {
                     name: raw_name.to_owned(),
-                })
+                });
             }
         };
     }
@@ -181,22 +217,19 @@ fn instruction_size_for_raw_name(
 fn raise_instruction(
     instruction: &SemanticAssemblyInstruction,
     offset: u32,
-    next_offset_hint: Option<u32>,
     labels: &BTreeMap<String, u32>,
     function_ids: &HashMap<String, u32>,
     string_pool: &mut Vec<String>,
     bytecode_spec: &BytecodeSpec,
 ) -> Result<DecodedInstruction, RaiseError> {
-    let raw_name = raw_instruction_name(
-        instruction,
-        next_offset_hint,
-        bytecode_spec,
-    )?;
+    let raw_name = raw_instruction_name(instruction)?;
     let spec = bytecode_spec
         .instructions
         .iter()
         .find(|candidate| candidate.name == raw_name)
-        .ok_or_else(|| RaiseError::MissingInstruction { name: raw_name.clone() })?;
+        .ok_or_else(|| RaiseError::MissingInstruction {
+            name: raw_name.clone(),
+        })?;
 
     let operands = raise_operands(
         instruction,
@@ -205,7 +238,10 @@ fn raise_instruction(
         labels,
         function_ids,
         string_pool,
-        spec.operands.iter().map(|operand| operand.kind.as_str()).collect(),
+        spec.operands
+            .iter()
+            .map(|operand| operand.kind.as_str())
+            .collect(),
     )?;
 
     let size = instruction_size_for_raw_name(&raw_name, bytecode_spec)?;
@@ -227,57 +263,105 @@ fn raise_operands(
     string_pool: &mut Vec<String>,
     kinds: Vec<&str>,
 ) -> Result<Vec<DecodedOperand>, RaiseError> {
-    let reordered = reorder_operands_for_raw_encoding(instruction);
+    let mut reordered = reorder_operands_for_raw_encoding(instruction);
+    // These semantic constants encode their value in the opcode itself.
+    if instruction.mnemonic == "load_immediate" {
+        if instruction.operands.len() != 2 {
+            return Err(RaiseError::InvalidOperandCount {
+                mnemonic: instruction.mnemonic.clone(),
+                expected: 2,
+                actual: instruction.operands.len(),
+            });
+        }
+        if matches!(
+            raw_name,
+            "LoadConstUndefined"
+                | "LoadConstNull"
+                | "LoadConstTrue"
+                | "LoadConstFalse"
+                | "LoadConstZero"
+        ) {
+            reordered.pop();
+        }
+    }
+    if reordered.len() != kinds.len() {
+        return Err(RaiseError::InvalidOperandCount {
+            mnemonic: instruction.mnemonic.clone(),
+            expected: kinds.len(),
+            actual: reordered.len(),
+        });
+    }
     let operands = reordered.as_slice();
 
     let mut out = Vec::new();
     for (operand, kind) in operands.iter().zip(kinds.iter()) {
         out.push(match *kind {
             "Reg8" => match operand {
-                SemanticOperand::Register(value) => DecodedOperand::U8(*value as u8),
-                SemanticOperand::Integer(value) => DecodedOperand::U8(*value as u8),
-                _ => return Err(RaiseError::InvalidOperand { mnemonic: raw_name.to_owned() }),
+                SemanticOperand::Register(value) => {
+                    DecodedOperand::U8(checked(*value, raw_name, "Reg8")?)
+                }
+                SemanticOperand::Integer(value) => {
+                    DecodedOperand::U8(checked(*value, raw_name, "Reg8")?)
+                }
+                _ => {
+                    return Err(RaiseError::InvalidOperand {
+                        mnemonic: raw_name.to_owned(),
+                    });
+                }
             },
             "Reg32" => match operand {
                 SemanticOperand::Register(value) => DecodedOperand::U32(*value),
-                SemanticOperand::Integer(value) => DecodedOperand::U32(*value as u32),
-                _ => return Err(RaiseError::InvalidOperand { mnemonic: raw_name.to_owned() }),
+                SemanticOperand::Integer(value) => {
+                    DecodedOperand::U32(checked(*value, raw_name, "Reg32")?)
+                }
+                _ => {
+                    return Err(RaiseError::InvalidOperand {
+                        mnemonic: raw_name.to_owned(),
+                    });
+                }
             },
-            "UInt8" => DecodedOperand::U8(resolve_u32(
+            "UInt8" => DecodedOperand::U8(checked(
+                resolve_u32(raw_name, operand, function_ids, string_pool)?,
                 raw_name,
-                operand,
-                function_ids,
-                string_pool,
-            )? as u8),
-            "UInt16" => DecodedOperand::U16(resolve_u32(
-                raw_name,
-                operand,
-                function_ids,
-                string_pool,
-            )? as u16),
-            "UInt32" => DecodedOperand::U32(resolve_u32(
-                raw_name,
-                operand,
-                function_ids,
-                string_pool,
+                "UInt8",
             )?),
+            "UInt16" => DecodedOperand::U16(checked(
+                resolve_u32(raw_name, operand, function_ids, string_pool)?,
+                raw_name,
+                "UInt16",
+            )?),
+            "UInt32" => {
+                DecodedOperand::U32(resolve_u32(raw_name, operand, function_ids, string_pool)?)
+            }
             "Addr8" => {
                 let label = as_label(raw_name, operand)?;
-                let target = labels
-                    .get(label)
-                    .ok_or_else(|| RaiseError::UnknownLabel { name: label.to_owned() })?;
-                DecodedOperand::I8(target.wrapping_sub(offset) as i8)
+                let target = labels.get(label).ok_or_else(|| RaiseError::UnknownLabel {
+                    name: label.to_owned(),
+                })?;
+                DecodedOperand::I8(checked(
+                    i64::from(*target) - i64::from(offset),
+                    raw_name,
+                    "Addr8",
+                )?)
             }
             "Addr32" => {
                 let label = as_label(raw_name, operand)?;
-                let target = labels
-                    .get(label)
-                    .ok_or_else(|| RaiseError::UnknownLabel { name: label.to_owned() })?;
-                DecodedOperand::I32(target.wrapping_sub(offset) as i32)
+                let target = labels.get(label).ok_or_else(|| RaiseError::UnknownLabel {
+                    name: label.to_owned(),
+                })?;
+                DecodedOperand::I32(checked(
+                    i64::from(*target) - i64::from(offset),
+                    raw_name,
+                    "Addr32",
+                )?)
             }
-            "Imm32" => DecodedOperand::I32(as_i64(raw_name, operand)? as i32),
+            "Imm32" => DecodedOperand::I32(checked(as_i64(raw_name, operand)?, raw_name, "Imm32")?),
             "Double" => DecodedOperand::F64(as_f64(raw_name, operand)?),
-            _ => return Err(RaiseError::InvalidOperand { mnemonic: raw_name.to_owned() }),
+            _ => {
+                return Err(RaiseError::InvalidOperand {
+                    mnemonic: raw_name.to_owned(),
+                });
+            }
         });
     }
 
@@ -301,20 +385,13 @@ fn reorder_operands_for_raw_encoding(
     }
 
     if instruction.mnemonic == "new_array" && instruction.operands.len() == 1 {
-        return vec![
-            instruction.operands[0].clone(),
-            SemanticOperand::Integer(0),
-        ];
+        return vec![instruction.operands[0].clone(), SemanticOperand::Integer(0)];
     }
 
     instruction.operands.clone()
 }
 
-fn raw_instruction_name(
-    instruction: &SemanticAssemblyInstruction,
-    next_offset_hint: Option<u32>,
-    bytecode_spec: &BytecodeSpec,
-) -> Result<String, RaiseError> {
+fn raw_instruction_name(instruction: &SemanticAssemblyInstruction) -> Result<String, RaiseError> {
     let name = match instruction.mnemonic.as_str() {
         "declare_global_var" => "DeclareGlobalVar",
         "create_environment" => "CreateEnvironment",
@@ -337,13 +414,21 @@ fn raw_instruction_name(
             Some(SemanticOperand::Bareword(value)) if value == "true" => "LoadConstTrue",
             Some(SemanticOperand::Bareword(value)) if value == "false" => "LoadConstFalse",
             Some(SemanticOperand::Integer(0)) => "LoadConstZero",
-            Some(SemanticOperand::Integer(value)) if *value >= 0 && *value <= 255 => "LoadConstUInt8",
-            Some(SemanticOperand::Integer(value)) if i32::try_from(*value).is_ok() => "LoadConstInt",
+            Some(SemanticOperand::Integer(value)) if *value >= 0 && *value <= 255 => {
+                "LoadConstUInt8"
+            }
+            Some(SemanticOperand::Integer(value)) if i32::try_from(*value).is_ok() => {
+                "LoadConstInt"
+            }
             Some(SemanticOperand::Integer(_)) => "LoadConstDouble",
-            Some(SemanticOperand::Bareword(value)) if value.parse::<f64>().is_ok() => "LoadConstDouble",
-            _ => return Err(RaiseError::UnsupportedMnemonic {
-                mnemonic: instruction.mnemonic.clone(),
-            }),
+            Some(SemanticOperand::Bareword(value)) if value.parse::<f64>().is_ok() => {
+                "LoadConstDouble"
+            }
+            _ => {
+                return Err(RaiseError::UnsupportedMnemonic {
+                    mnemonic: instruction.mnemonic.clone(),
+                });
+            }
         },
         "load_from_environment" => "LoadFromEnvironment",
         "store_to_environment" => "StoreToEnvironment",
@@ -355,22 +440,22 @@ fn raw_instruction_name(
         "new_array" => "NewArray",
         "new_object" => "NewObject",
         "new_object_with_buffer" => "NewObjectWithBuffer",
-        "branch_true" => choose_branch_name("JmpTrue", "JmpTrueLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_false" => choose_branch_name("JmpFalse", "JmpFalseLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_undefined" => choose_branch_name("JmpUndefined", "JmpUndefinedLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch" => choose_branch_name("Jmp", "JmpLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_greater" => choose_branch_name("JGreater", "JGreaterLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_greater_equal" => choose_branch_name("JGreaterEqual", "JGreaterEqualLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_less" => choose_branch_name("JLess", "JLessLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_less_equal" => choose_branch_name("JLessEqual", "JLessEqualLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_not_greater" => choose_branch_name("JNotGreater", "JNotGreaterLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_not_greater_equal" => choose_branch_name("JNotGreaterEqual", "JNotGreaterEqualLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_not_less" => choose_branch_name("JNotLess", "JNotLessLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_not_less_equal" => choose_branch_name("JNotLessEqual", "JNotLessEqualLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_equal" => choose_branch_name("JEqual", "JEqualLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_not_equal" => choose_branch_name("JNotEqual", "JNotEqualLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_strict_equal" => choose_branch_name("JStrictEqual", "JStrictEqualLong", instruction, next_offset_hint, bytecode_spec)?,
-        "branch_strict_not_equal" => choose_branch_name("JStrictNotEqual", "JStrictNotEqualLong", instruction, next_offset_hint, bytecode_spec)?,
+        "branch_true" => "JmpTrueLong",
+        "branch_false" => "JmpFalseLong",
+        "branch_undefined" => "JmpUndefinedLong",
+        "branch" => "JmpLong",
+        "branch_greater" => "JGreaterLong",
+        "branch_greater_equal" => "JGreaterEqualLong",
+        "branch_less" => "JLessLong",
+        "branch_less_equal" => "JLessEqualLong",
+        "branch_not_greater" => "JNotGreaterLong",
+        "branch_not_greater_equal" => "JNotGreaterEqualLong",
+        "branch_not_less" => "JNotLessLong",
+        "branch_not_less_equal" => "JNotLessEqualLong",
+        "branch_equal" => "JEqualLong",
+        "branch_not_equal" => "JNotEqualLong",
+        "branch_strict_equal" => "JStrictEqualLong",
+        "branch_strict_not_equal" => "JStrictNotEqualLong",
         "get_by_id_short" => "GetByIdShort",
         "try_get_by_id" => "TryGetById",
         "call" => match instruction.operands.as_slice() {
@@ -416,42 +501,26 @@ fn raw_instruction_name(
         other => {
             return Err(RaiseError::UnsupportedMnemonic {
                 mnemonic: other.to_owned(),
-            })
+            });
         }
     };
 
     Ok(name.to_owned())
 }
 
-fn next_instruction_offset_hint(
-    body: &[SemanticAssemblyStatement],
-    current_index: usize,
-) -> Option<u32> {
-    body.iter()
-        .skip(current_index + 1)
-        .find_map(|statement| match statement {
-            SemanticAssemblyStatement::Instruction(instruction) => instruction.offset,
-            SemanticAssemblyStatement::Label(_) => None,
-        })
-}
-
-fn choose_branch_name(
-    short_name: &'static str,
-    long_name: &'static str,
-    instruction: &SemanticAssemblyInstruction,
-    next_offset_hint: Option<u32>,
-    bytecode_spec: &BytecodeSpec,
-) -> Result<&'static str, RaiseError> {
-    if let (Some(current_offset), Some(next_offset)) = (instruction.offset, next_offset_hint) {
-        let expected_size = next_offset.saturating_sub(current_offset) as usize;
-        if instruction_size_for_raw_name(short_name, bytecode_spec)? == expected_size {
-            return Ok(short_name);
-        }
-        if instruction_size_for_raw_name(long_name, bytecode_spec)? == expected_size {
-            return Ok(long_name);
-        }
-    }
-    Ok(long_name)
+// Long branches give a stable layout independent of displayed source offsets.
+// Short-branch optimisation can be added later without changing text semantics.
+fn checked<T: TryFrom<i128>>(
+    value: impl Into<i128>,
+    mnemonic: &str,
+    kind: &str,
+) -> Result<T, RaiseError> {
+    let value = value.into();
+    T::try_from(value).map_err(|_| RaiseError::OperandOutOfRange {
+        mnemonic: mnemonic.to_owned(),
+        kind: kind.to_owned(),
+        value,
+    })
 }
 
 fn resolve_u32(
@@ -461,7 +530,7 @@ fn resolve_u32(
     string_pool: &mut Vec<String>,
 ) -> Result<u32, RaiseError> {
     match operand {
-        SemanticOperand::Integer(value) => Ok(*value as u32),
+        SemanticOperand::Integer(value) => checked(*value, mnemonic, "UInt32"),
         SemanticOperand::FunctionRef(name) => function_ids
             .get(name)
             .copied()
@@ -472,7 +541,6 @@ fn resolve_u32(
             })?;
             Ok(intern_string(string_pool, &decoded))
         }
-        SemanticOperand::Bareword(value) if value == "undefined" => Ok(0),
         _ => Err(RaiseError::InvalidOperand {
             mnemonic: mnemonic.to_owned(),
         }),
@@ -503,7 +571,17 @@ fn as_i64(mnemonic: &str, operand: &SemanticOperand) -> Result<i64, RaiseError> 
 
 fn as_f64(mnemonic: &str, operand: &SemanticOperand) -> Result<f64, RaiseError> {
     match operand {
-        SemanticOperand::Integer(value) => Ok(*value as f64),
+        SemanticOperand::Integer(value) => {
+            let double = *value as f64;
+            if double as i128 != i128::from(*value) {
+                return Err(RaiseError::OperandOutOfRange {
+                    mnemonic: mnemonic.to_owned(),
+                    kind: "exact Double".into(),
+                    value: i128::from(*value),
+                });
+            }
+            Ok(double)
+        }
         SemanticOperand::Bareword(value) => value.parse().map_err(|_| RaiseError::InvalidOperand {
             mnemonic: mnemonic.to_owned(),
         }),
@@ -598,38 +676,5 @@ L2:
         assert_eq!(instructions[1].name, "JLessLong");
         assert_eq!(instructions[2].name, "JStrictEqualLong");
         assert_eq!(instructions[3].name, "Ret");
-    }
-
-    #[test]
-    fn raises_current_hex_semantic_output_shape() {
-        let asm = std::fs::read_to_string("/tmp/hex.semantic.current.txt").expect("hex semantic dump");
-        let module = parse_semantic_assembly(&asm).unwrap();
-        let spec = load_spec(96).unwrap();
-        let raised = raise_module(&module, &spec.bytecode).unwrap();
-
-        assert_eq!(raised.functions.len(), 3);
-
-        let global = &raised.functions[0].instructions;
-        assert_eq!(global[0].name, "DeclareGlobalVar");
-        assert_eq!(global[2].name, "CreateEnvironment");
-        assert_eq!(global[3].name, "CreateClosure");
-        assert_eq!(global[5].name, "PutById");
-        assert_eq!(global.last().unwrap().name, "Ret");
-
-        let encode = &raised.functions[1].instructions;
-        assert_eq!(encode[0].name, "LoadParam");
-        assert_eq!(encode[1].name, "LoadConstZero");
-        assert_eq!(encode[2].name, "Greater");
-        assert!(encode.iter().any(|instruction| instruction.name == "Mov"));
-        assert!(encode.iter().any(|instruction| instruction.name == "JGreater" || instruction.name == "JGreaterLong"));
-        assert_eq!(encode.last().unwrap().name, "Ret");
-
-        let decode = &raised.functions[2].instructions;
-        assert_eq!(decode[0].name, "GetGlobalObject");
-        assert_eq!(decode[1].name, "GetByIdShort");
-        assert!(decode
-            .iter()
-            .any(|instruction| instruction.name == "JmpFalse" || instruction.name == "JmpFalseLong"));
-        assert_eq!(decode.last().unwrap().name, "Ret");
     }
 }

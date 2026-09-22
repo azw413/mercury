@@ -7,6 +7,8 @@ use thiserror::Error;
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 /// Error returned when semantic assembly text cannot be parsed.
 pub enum AssemblyParseError {
+    #[error("semantic rebuild does not support {feature} (line {line})")]
+    UnsupportedFeature { line: usize, feature: String },
     #[error("invalid directive at line {line}: {text}")]
     InvalidDirective { line: usize, text: String },
     #[error("invalid function header at line {line}: {text}")]
@@ -50,14 +52,34 @@ pub fn parse_semantic_assembly(input: &str) -> Result<SemanticAssemblyModule, As
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if matches!(line, "view semantic")
-            || line.starts_with("input ")
-            || line.starts_with("function_count ")
+        if section.is_none()
+            && (matches!(line, "view semantic")
+                || line.starts_with("input ")
+                || line.starts_with("function_count "))
         {
             continue;
         }
+        if let Some(feature) = line.strip_prefix(".unsupported ") {
+            return Err(AssemblyParseError::UnsupportedFeature {
+                line: line_no,
+                feature: feature.to_owned(),
+            });
+        }
         if let Some(rest) = line.strip_prefix("bytecode_version ") {
-            module.bytecode_version = rest.parse().ok();
+            if section.is_some() || module.bytecode_version.is_some() {
+                return Err(AssemblyParseError::InvalidDirective {
+                    line: line_no,
+                    text: line.to_owned(),
+                });
+            }
+            module.bytecode_version =
+                Some(
+                    rest.parse()
+                        .map_err(|_| AssemblyParseError::InvalidDirective {
+                            line: line_no,
+                            text: line.to_owned(),
+                        })?,
+                );
             continue;
         }
 
@@ -148,7 +170,9 @@ pub fn parse_semantic_assembly(input: &str) -> Result<SemanticAssemblyModule, As
                 } else {
                     (AssemblyStringKind::String, line)
                 };
-                module.strings.push(decode_string_literal(line_no, literal)?);
+                module
+                    .strings
+                    .push(decode_string_literal(line_no, literal)?);
                 module.string_kinds.push(kind);
             }
             Some(Section::LiteralValueBuffer) => {
@@ -158,7 +182,9 @@ pub fn parse_semantic_assembly(input: &str) -> Result<SemanticAssemblyModule, As
                 parse_hex_bytes_into(line_no, line, &mut module.object_key_buffer)?;
             }
             Some(Section::ObjectShapeTable) => {
-                module.object_shape_table.push(parse_shape_table_entry(line_no, line)?);
+                module
+                    .object_shape_table
+                    .push(parse_shape_table_entry(line_no, line)?);
             }
             Some(Section::Function) => {
                 let function = current_function
@@ -169,16 +195,18 @@ pub fn parse_semantic_assembly(input: &str) -> Result<SemanticAssemblyModule, As
                         .body
                         .push(SemanticAssemblyStatement::Label(label.to_owned()));
                 } else {
-                    function.body.push(SemanticAssemblyStatement::Instruction(
-                        parse_instruction(line_no, line)?,
-                    ));
+                    function
+                        .body
+                        .push(SemanticAssemblyStatement::Instruction(parse_instruction(
+                            line_no, line,
+                        )?));
                 }
             }
             None => {
                 return Err(AssemblyParseError::InvalidDirective {
                     line: line_no,
                     text: line.to_owned(),
-                })
+                });
             }
         }
     }
@@ -200,34 +228,50 @@ fn parse_function_header(
     let mut frame = None;
     let mut env = None;
 
-    let rest = line
-        .strip_prefix(".function ")
-        .ok_or_else(|| AssemblyParseError::InvalidFunctionHeader {
+    let rest = line.strip_prefix(".function ").ok_or_else(|| {
+        AssemblyParseError::InvalidFunctionHeader {
             line: line_no,
             text: line.to_owned(),
-        })?;
+        }
+    })?;
 
-    for token in rest.split_whitespace() {
+    let mut seen = std::collections::HashSet::new();
+    for token in header_tokens(line_no, rest)? {
+        let key = token.split('=').next().unwrap_or(token);
+        if !seen.insert(key) {
+            return Err(AssemblyParseError::InvalidFunctionHeader {
+                line: line_no,
+                text: line.to_owned(),
+            });
+        }
         if let Some(value) = token.strip_prefix("name=") {
-            name = Some(value.trim_matches('"').trim_start_matches('@').to_owned());
+            name = Some(if value.starts_with('"') {
+                decode_string_literal(line_no, value)?
+            } else {
+                value.trim_start_matches('@').to_owned()
+            });
         } else if let Some(value) = token.strip_prefix("params=") {
             params = value.parse().ok();
         } else if let Some(value) = token.strip_prefix("frame=") {
             frame = value.parse().ok();
         } else if let Some(value) = token.strip_prefix("env=") {
             env = value.parse().ok();
-        } else if token.starts_with('@') && symbol.is_none() {
+        } else if token.starts_with('@') && token.len() > 1 && symbol.is_none() {
             symbol = Some(token.trim_start_matches('@').to_owned());
+        } else if seen.len() != 1 || !token.chars().all(|c| c.is_ascii_digit()) {
+            return Err(AssemblyParseError::InvalidFunctionHeader {
+                line: line_no,
+                text: line.to_owned(),
+            });
         }
     }
 
-    let symbol = symbol
-        .clone()
-        .or_else(|| name.clone())
-        .ok_or_else(|| AssemblyParseError::InvalidFunctionHeader {
+    let symbol = symbol.clone().or_else(|| name.clone()).ok_or_else(|| {
+        AssemblyParseError::InvalidFunctionHeader {
             line: line_no,
             text: line.to_owned(),
-        })?;
+        }
+    })?;
     let name = name.unwrap_or_else(|| symbol.clone());
 
     Ok(SemanticAssemblyFunction {
@@ -247,6 +291,42 @@ fn parse_function_header(
         })?,
         body: Vec::new(),
     })
+}
+
+fn header_tokens(line: usize, text: &str) -> Result<Vec<&str>, AssemblyParseError> {
+    let mut tokens = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, ch) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quoted && ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            quoted = !quoted;
+        }
+        if ch.is_whitespace() && !quoted {
+            if start < index {
+                tokens.push(&text[start..index]);
+            }
+            start = index + ch.len_utf8();
+        }
+    }
+    if quoted {
+        return Err(AssemblyParseError::InvalidFunctionHeader {
+            line,
+            text: text.to_owned(),
+        });
+    }
+    if start < text.len() {
+        tokens.push(&text[start..]);
+    }
+    Ok(tokens)
 }
 
 fn parse_instruction(
@@ -269,7 +349,8 @@ fn parse_instruction(
         (None, line)
     };
 
-    let (mnemonic, operands) = if let Some((mnemonic, rest)) = body.split_once(' ') {
+    let (mnemonic, operands) = if let Some((mnemonic, rest)) = body.split_once(char::is_whitespace)
+    {
         (mnemonic.to_owned(), parse_operands(line_no, rest.trim())?)
     } else {
         (body.to_owned(), Vec::new())
@@ -289,10 +370,7 @@ fn parse_instruction(
     })
 }
 
-fn parse_operands(
-    line_no: usize,
-    text: &str,
-) -> Result<Vec<SemanticOperand>, AssemblyParseError> {
+fn parse_operands(line_no: usize, text: &str) -> Result<Vec<SemanticOperand>, AssemblyParseError> {
     if text.is_empty() {
         return Ok(Vec::new());
     }
@@ -338,10 +416,11 @@ fn parse_hex_bytes_into(
     out: &mut Vec<u8>,
 ) -> Result<(), AssemblyParseError> {
     for token in line.split_whitespace() {
-        let byte = u8::from_str_radix(token, 16).map_err(|_| AssemblyParseError::InvalidDirective {
-            line: line_no,
-            text: line.to_owned(),
-        })?;
+        let byte =
+            u8::from_str_radix(token, 16).map_err(|_| AssemblyParseError::InvalidDirective {
+                line: line_no,
+                text: line.to_owned(),
+            })?;
         out.push(byte);
     }
     Ok(())
@@ -385,7 +464,10 @@ fn push_operand(
 ) -> Result<(), AssemblyParseError> {
     let token = raw.trim();
     if token.is_empty() {
-        return Ok(());
+        return Err(AssemblyParseError::InvalidInstruction {
+            line: line_no,
+            text: raw.to_owned(),
+        });
     }
 
     let operand = if let Some(value) = token.strip_prefix('r') {
@@ -428,20 +510,18 @@ fn parse_non_register_operand(
     Ok(SemanticOperand::Bareword(token.to_owned()))
 }
 
-fn parse_string_literal<'a>(
-    line_no: usize,
-    token: &'a str,
-) -> Result<&'a str, AssemblyParseError> {
+fn parse_string_literal<'a>(line_no: usize, token: &'a str) -> Result<&'a str, AssemblyParseError> {
     if !(token.starts_with('"') && token.ends_with('"')) {
         return Err(AssemblyParseError::InvalidStringLiteral {
             line: line_no,
             text: token.to_owned(),
         });
     }
-    let _: String = serde_json::from_str(token).map_err(|_| AssemblyParseError::InvalidStringLiteral {
-        line: line_no,
-        text: token.to_owned(),
-    })?;
+    let _: String =
+        serde_json::from_str(token).map_err(|_| AssemblyParseError::InvalidStringLiteral {
+            line: line_no,
+            text: token.to_owned(),
+        })?;
     Ok(token)
 }
 

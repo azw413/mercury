@@ -2,6 +2,11 @@
 
 `mercury` is a Rust command-line toolkit for Hermes bytecode reverse engineering, disassembly, reassembly, and transformation.
 
+Mercury is dual-licensed under [GPLv3](LICENSE) or the alternative
+[commercial license](LICENSE-commercial). Cargo metadata identifies the GPLv3
+option as `GPL-3.0-only`. Commercial terms and eligibility, including the
+existing employer exemption, are described in `LICENSE-commercial`.
+
 The core design rule is that Hermes bytecode versions must be handled through generated versioned specs rather than scattered ad hoc parser branches.
 
 ## CLI Usage
@@ -15,19 +20,19 @@ cargo run -p mercury-cli -- versions
 Decode a Hermes bytecode file in raw form:
 
 ```bash
-cargo run -p mercury-cli -- decode test/hex.hbc
+cargo run -p mercury-cli -- decode test/box2d.hbc
 ```
 
 Decode to the normalized semantic view:
 
 ```bash
-cargo run -p mercury-cli -- decode test/hex.hbc --format semantic
+cargo run -p mercury-cli -- decode test/box2d.hbc --format semantic -o /tmp/box2d.semantic.txt
 ```
 
 Assemble semantic text back into a real `hbc96` file:
 
 ```bash
-cargo run -p mercury-cli -- assemble /tmp/hex.semantic.txt --target-version 96 -o /tmp/hex.assembled.hbc
+cargo run -p mercury-cli -- assemble /tmp/box2d.semantic.txt --target-version 96 -o /tmp/box2d.assembled.hbc
 ```
 
 Write decode output to a file:
@@ -77,18 +82,26 @@ Implemented now:
   - empty debug section
   - SHA-1 footer
 
-Working fixtures:
+Verified fixtures:
 
-- `test/hex.hbc`
-- `test/amazon.hbc`
-- `../hermes-dec/tests/sample.hbc`
+- `test/box2d.hbc`: version-96 semantic decode, rebuild, edit, and Hermes execution
+- `test/amazon.hbc`: large-container parsing
+- `hermes-dec/tests/sample.hbc`: version-94 parsing in explicitly configured external tests
 
-Current semantic status:
+The version-96 editing milestone now includes:
 
-- `hex.hbc` lowers almost entirely into structured semantic ops
-- `amazon.hbc` lowers end to end in semantic mode
-- the current semantic decode output for `hex.hbc` can now be parsed, raised, and reassembled into a valid `hbc96` file that Hermes itself will disassemble successfully
-- the previous fallback-heavy lowering surface has been reduced to the point that the next major task is expanding assembler coverage and stabilizing the semantic text grammar, not chasing broad missing instruction families
+- deterministic semantic text with symbolic labels and no required instruction offsets
+- checked operand widths and counts, duplicate-symbol rejection, and recalculated long branches
+- preservation of function names, JSON string escapes, and negative zero
+- correct SHA-1 footers calculated after writing the final header
+- explicit assembly rejection of unsupported runtime metadata and cross-version rebuilds
+- a self-contained Box2D editing test and an opt-in Hermes execution test that verifies a deliberate edit
+
+`test/hex.hbc` now covers compact version-96 header parsing and header
+byte-equality after the SWC integration exposed and fixed the small-file layout
+heuristic. Box2D remains the verified semantic editing fixture.
+
+See [fixture and test instructions](test/README.md) for reproducible checks.
 
 Not implemented yet:
 
@@ -96,6 +109,22 @@ Not implemented yet:
 - full semantic-to-raw raising coverage for the entire semantic vocabulary
 - container writing beyond the current minimal `hbc96` path
 - exact/preservation-oriented rebuild mode
+
+## JavaScript / TypeScript and SWC
+
+The new [`mercury-swc`](crates/swc/README.md) module parses JS/TS into actual SWC
+AST structs, prints/transforms them, compiles scripts through a configured
+version-96 `hermesc`, and decompiles a deliberately limited bytecode subset into
+executable SWC trees. The first decompiler uses register temporaries and a
+basic-block dispatcher. Captured closures and exception handlers are unsupported.
+
+```sh
+cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js --hermesc /path/to/hermesc -o /tmp/example.hbc
+cargo run -p mercury-cli -- decompile /tmp/example.hbc -o /tmp/example.js
+```
+
+See the module README for the supported contract, Rust interface, and execution
+tests, including an SWC visitor edit verified in Hermes.
 
 ## Semantic Assembly Draft
 
@@ -134,7 +163,7 @@ L1:
 
 Notes:
 
-- instruction offsets like `0000:` are currently accepted for compatibility with the existing disassembler output, but they are intended to become display-only rather than required syntax
+- instruction offsets like `0000:` are accepted for compatibility and ignored during encoding; labels determine branch targets, and the assembler currently uses long branches
 - `.strings` is also currently accepted in the emitted form `s9 = "encode"`, but the longer-term intent is that string literals in instructions are the semantic source of truth and the assembler will rebuild string tables automatically
 
 ## Goals
@@ -211,7 +240,7 @@ Defines the internal representations above the raw binary layer.
 Current split:
 
 - `Raw`
-  - exact decoded structures suitable for lossless rewriting
+  - decoded instructions preserving their original encoding; full-container preservation is still pending
 - `Semantic`
   - normalized instruction layer used by the semantic decode mode
 
@@ -253,12 +282,23 @@ At the time of writing this README, that includes:
 - `hbc94`
 - `hbc96`
 
-## Near-Term Plan
+## Semantic rebuild contract and next steps
 
-The next major implementation step should be to turn the current semantic decode output into a real assembler target:
+The current writer supports a subset of version 96. It rebuilds a minimal
+container and drops debug/source metadata; it does not promise byte-for-byte
+preservation of the original file. Opaque literal/object buffers and their
+string-table ordering are carried through unchanged. Editing those buffers or
+reordering/removing their string entries is outside the verified editing path.
 
-1. freeze the semantic text grammar
-2. remove instruction offsets from required semantic syntax
-3. define semantic-to-raw raising against a target bytecode version
-4. begin binary emission from `mercury-asm`
-5. add semantic round-trip tests for `decode -> parse -> raise`
+Decode remains available for inspection when rebuilding is unsupported. It
+emits `.unsupported` markers for runtime metadata the writer cannot preserve
+(such as exception handlers, strict/invocation flags, non-default options,
+nonzero entry functions, and regexp/bigint tables). Assembly rejects those
+markers with a reason. Unsupported instructions and values that do not fit the
+selected encoding also fail explicitly. Long branches can make functions
+larger; functions exceeding small-header limits are rejected.
+
+The next steps are to move text formatting into `mercury-disasm`, expand
+explicitly tested runtime metadata and instruction coverage, and model
+container layout variants in the generated specs. Exact container preservation
+needs a separate representation and byte-equality test contract.

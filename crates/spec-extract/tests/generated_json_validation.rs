@@ -14,13 +14,13 @@ fn workspace_root() -> PathBuf {
 }
 
 #[test]
+#[ignore = "requires HERMES_DEC_ROOT pointing to a hermes-dec checkout"]
 fn generated_hbc89_json_matches_hermes_dec_with_only_known_gaps() {
     let workspace_root = workspace_root();
     let spec_path = workspace_root.join("spec/generated/hbc89.json");
-    let hermes_dec_root = workspace_root
-        .parent()
-        .expect("workspace parent should exist")
-        .join("hermes-dec");
+    let hermes_dec_root = PathBuf::from(
+        std::env::var_os("HERMES_DEC_ROOT").expect("set HERMES_DEC_ROOT to a hermes-dec checkout"),
+    );
 
     let spec_body = fs::read_to_string(&spec_path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", spec_path.display()));
@@ -43,7 +43,8 @@ fn generated_hbc89_json_matches_hermes_dec_with_only_known_gaps() {
     ];
 
     assert_eq!(
-        comparison.opcode_mismatches, expected,
+        comparison.opcode_mismatches,
+        expected,
         "unexpected opcode mismatches when validating {} against {}",
         spec_path.display(),
         comparison.opcode_module_path.display()

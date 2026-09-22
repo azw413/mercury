@@ -20,7 +20,7 @@ pub use functions::{
     write_small_function_header, DebugOffsetsEntry, ExceptionHandlerEntry, FunctionBody,
     FunctionHeader, FunctionHeaderFlags, FunctionInfo,
 };
-pub use header::{write_file_header, BytecodeOptions, HbcVersionedFileHeader};
+pub use header::{HbcHeaderLayout, write_file_header, BytecodeOptions, HbcVersionedFileHeader};
 pub use module::{build_minimal_module, HbcBuildError, MinimalFunction, MinimalModule};
 pub use sections::HbcSectionBoundaries;
 pub use tables::{

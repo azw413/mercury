@@ -6,17 +6,17 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use mercury_asm::{parse_semantic_assembly, raise_module};
 use mercury_binary::{
-    build_minimal_module, decode_raw_module, encode_instructions, parse_hbc_container_with_spec,
-    MinimalFunction, MinimalModule, ShapeTableEntry,
+    MinimalFunction, MinimalModule, ShapeTableEntry, build_minimal_module, decode_raw_module,
+    encode_instructions, parse_hbc_container_with_spec,
 };
 use mercury_ir::{
-    lower_module, BinaryOpKind, BranchKind, Immediate, PropertyAccessKind, RawFunction,
-    PropertyDefineKind, RawInstruction, RawOperand, SemanticFunction, SemanticInstruction,
-    SemanticModule, SemanticOp, UnaryOpKind, Value,
+    BinaryOpKind, BranchKind, Immediate, PropertyAccessKind, PropertyDefineKind, RawFunction,
+    RawInstruction, RawOperand, SemanticFunction, SemanticInstruction, SemanticModule, SemanticOp,
+    UnaryOpKind, Value, lower_module,
 };
 use mercury_spec_builtin::{load_spec, supported_versions};
-use mercury_spec_extract::{Extractor, ExtractorConfig};
 use mercury_spec_extract::hermes_dec::compare_against_hermes_dec;
+use mercury_spec_extract::{Extractor, ExtractorConfig};
 
 #[derive(Debug, Parser)]
 #[command(name = "mercury")]
@@ -28,6 +28,21 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Compile a JS/TS script through SWC and a configured version-96 hermesc.
+    Compile {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Compiler executable; alternatively set HERMESC_BIN.
+        #[arg(long)]
+        hermesc: Option<PathBuf>,
+    },
+    /// Decompile the supported HBC-96 subset through SWC into JavaScript.
+    Decompile {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     Versions,
     Decode {
         input: PathBuf,
@@ -65,6 +80,45 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Compile {
+            input,
+            output,
+            hermesc,
+        } => {
+            let compiler = hermesc
+                .or_else(|| std::env::var_os("HERMESC_BIN").map(PathBuf::from))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("set --hermesc or HERMESC_BIN to a version-96 Hermes compiler")
+                })?;
+            let language = if input.extension().is_some_and(|ext| ext == "ts") {
+                mercury_swc::SourceLanguage::TypeScript
+            } else {
+                mercury_swc::SourceLanguage::JavaScript
+            };
+            let text = fs::read_to_string(&input)
+                .with_context(|| format!("failed to read {}", input.display()))?;
+            let module = mercury_swc::SwcModule::parse(
+                &input.display().to_string(),
+                &text,
+                language,
+                mercury_swc::SourceKind::Script,
+            )?;
+            let bytes = mercury_swc::HermesCompiler::new(compiler, 96).compile(&module)?;
+            fs::write(&output, bytes)
+                .with_context(|| format!("failed to write {}", output.display()))?;
+        }
+        Command::Decompile { input, output } => {
+            let bytes =
+                fs::read(&input).with_context(|| format!("failed to read {}", input.display()))?;
+            let module = mercury_swc::decompile(&bytes)?;
+            let text = module.print();
+            if let Some(output) = output {
+                fs::write(&output, text)
+                    .with_context(|| format!("failed to write {}", output.display()))?;
+            } else {
+                print!("{text}");
+            }
+        }
         Command::Versions => {
             for version in supported_versions() {
                 println!("{version}");
@@ -75,8 +129,8 @@ fn main() -> anyhow::Result<()> {
             output,
             format,
         } => {
-            let bytes = fs::read(&input)
-                .with_context(|| format!("failed to read {}", input.display()))?;
+            let bytes =
+                fs::read(&input).with_context(|| format!("failed to read {}", input.display()))?;
             let version = detect_bytecode_version(&bytes)?;
             let spec = load_spec(version)
                 .with_context(|| format!("no embedded spec for bytecode version {version}"))?;
@@ -112,8 +166,18 @@ fn main() -> anyhow::Result<()> {
             let target_version = target_version
                 .or(module.bytecode_version)
                 .ok_or_else(|| anyhow::anyhow!("target bytecode version is required"))?;
-            let spec = load_spec(target_version)
-                .with_context(|| format!("no embedded spec for bytecode version {target_version}"))?;
+            if target_version != 96 {
+                bail!("semantic assembly supports only bytecode version 96");
+            }
+            if module
+                .bytecode_version
+                .is_some_and(|version| version != target_version)
+            {
+                bail!("cross-version semantic rebuilding is not supported");
+            }
+            let spec = load_spec(target_version).with_context(|| {
+                format!("no embedded spec for bytecode version {target_version}")
+            })?;
             let raised = raise_module(&module, &spec.bytecode)
                 .with_context(|| format!("failed to raise {}", input.display()))?;
 
@@ -140,10 +204,7 @@ fn main() -> anyhow::Result<()> {
                 let spec = extractor.extract_tag(&tag)?;
                 let output_path = format!("{output_dir}/hbc{}.json", spec.bytecode_version);
                 extractor.write_json(&spec, &output_path)?;
-                println!(
-                    "wrote {}",
-                    output_path,
-                );
+                println!("wrote {}", output_path,);
                 println!(
                     "bytecode_version={} source_tag={} instructions={} file_header_fields={} function_header_fields={}",
                     spec.bytecode_version,
@@ -205,14 +266,15 @@ fn build_minimal_module_from_semantic(
         version: target_version,
         global_code_index: 0,
         strings: raised.strings.clone(),
-        string_kinds: module
-            .string_kinds
+        string_kinds: raised
+            .strings
             .iter()
-            .map(|kind| match kind {
-                mercury_asm::AssemblyStringKind::String => mercury_binary::StringKind::String,
-                mercury_asm::AssemblyStringKind::Identifier => {
+            .enumerate()
+            .map(|(index, _)| match module.string_kinds.get(index) {
+                Some(mercury_asm::AssemblyStringKind::Identifier) => {
                     mercury_binary::StringKind::Identifier
                 }
+                _ => mercury_binary::StringKind::String,
             })
             .collect(),
         literal_value_buffer: module.literal_value_buffer.clone(),
@@ -294,7 +356,11 @@ fn render_raw_module(
     let _ = writeln!(out, "input {}", input.display());
     let _ = writeln!(out, "bytecode_version {}", raw.version);
     let _ = writeln!(out, "function_count {}", raw.function_count);
-    let _ = writeln!(out, "function_bodies_start {}", raw.sections.function_bodies_start);
+    let _ = writeln!(
+        out,
+        "function_bodies_start {}",
+        raw.sections.function_bodies_start
+    );
     let _ = writeln!(out);
 
     for function in &raw.functions {
@@ -353,12 +419,16 @@ fn render_semantic_module(
     let _ = writeln!(out, "function_count {}", semantic.functions.len());
     let _ = writeln!(out);
 
+    for feature in unsupported_rebuild_features(container) {
+        let _ = writeln!(out, ".unsupported {feature}");
+    }
+
     if !container.small_string_table_entries.is_empty() {
         let _ = writeln!(out, ".strings");
         let string_kinds = expand_string_kinds(container);
         for string_id in 0..container.small_string_table_entries.len() as u32 {
             let rendered = resolve_string(string_id, container)
-                .map(|value| format!("{value:?}"))
+                .map(|value| serde_json::to_string(&value).expect("string serialization"))
                 .unwrap_or_else(|| format!("<missing:{string_id}>"));
             let prefix = match string_kinds.get(string_id as usize) {
                 Some(mercury_binary::StringKind::Identifier) => 'i',
@@ -379,8 +449,10 @@ fn render_semantic_module(
     render_shape_table_section(&mut out, &container.object_shape_table);
 
     for function in &semantic.functions {
-        let raw_function = &raw.functions[function.function_index];
-        let function_name = render_function_name(raw_function, raw, container);
+        let header = &container.function_headers[function.function_index];
+        let function_name = resolve_string(header.function_name, container)
+            .map(|name| serde_json::to_string(&name).expect("string serialization"))
+            .unwrap_or_else(|| "\"\"".into());
         let labels = collect_semantic_labels(function);
         let _ = writeln!(
             out,
@@ -398,8 +470,7 @@ fn render_semantic_module(
             }
             let _ = writeln!(
                 out,
-                "  {:04x}: {}",
-                instruction.offset,
+                "  {}",
                 render_semantic_instruction(instruction, &labels, raw, container)
             );
         }
@@ -409,6 +480,44 @@ fn render_semantic_module(
     }
 
     out
+}
+
+// Decoding remains useful for inspection even when the minimal writer cannot
+// reproduce runtime metadata. Mark such text so assembly fails explicitly.
+fn unsupported_rebuild_features(container: &mercury_binary::HbcContainer) -> Vec<String> {
+    let h = &container.header;
+    let mut features = Vec::new();
+    for (present, name) in [
+        (h.version != 96, "bytecode versions other than 96"),
+        (h.global_code_index != 0, "a nonzero entry function"),
+        (
+            h.big_int_count != 0 || h.big_int_storage_size != 0,
+            "bigint tables",
+        ),
+        (
+            h.reg_exp_count != 0 || h.reg_exp_storage_size != 0,
+            "regular expression tables",
+        ),
+        (h.cjs_module_count != 0, "CommonJS module tables"),
+        (h.num_string_switch_imms != 0, "string switch tables"),
+        (h.segment_id != 0, "segmented modules"),
+        (h.options.raw != 0, "non-default bytecode options"),
+    ] {
+        if present {
+            features.push(name.to_owned());
+        }
+    }
+    for (index, f) in container.function_headers.iter().enumerate() {
+        if f.flags.strict_mode || f.flags.prohibit_invoke != 2 || f.flags.has_exception_handler {
+            features.push(format!(
+                "runtime flags or exception handlers in function @f{index}"
+            ));
+        }
+    }
+    if (0..h.string_count).any(|id| resolve_string(id, container).is_none()) {
+        features.push("strings that cannot be represented as Unicode text".into());
+    }
+    features
 }
 
 fn render_hex_section(out: &mut String, name: &str, bytes: &[u8]) {
@@ -435,7 +544,9 @@ fn render_shape_table_section(out: &mut String, entries: &[ShapeTableEntry]) {
     let _ = writeln!(out);
 }
 
-fn expand_string_kinds(container: &mercury_binary::HbcContainer) -> Vec<mercury_binary::StringKind> {
+fn expand_string_kinds(
+    container: &mercury_binary::HbcContainer,
+) -> Vec<mercury_binary::StringKind> {
     let mut expanded = Vec::new();
     for entry in &container.string_kind_entries {
         for _ in 0..entry.count {
@@ -463,7 +574,8 @@ fn collect_labels(
         };
 
         for (operand, operand_spec) in instruction.operands.iter().zip(instr_spec.operands.iter()) {
-            let Some(target) = branch_target(instruction.offset, operand, &operand_spec.kind) else {
+            let Some(target) = branch_target(instruction.offset, operand, &operand_spec.kind)
+            else {
                 continue;
             };
             labels.entry(target).or_insert_with(|| {
@@ -664,7 +776,11 @@ fn render_semantic_instruction(
         }
         SemanticOp::LoadThisNS { dst } => format!("load_this_ns {}", render_register(*dst)),
         SemanticOp::Move { dst, src } => {
-            format!("move {}, {}", render_register(*dst), render_semantic_value(src))
+            format!(
+                "move {}, {}",
+                render_register(*dst),
+                render_semantic_value(src)
+            )
         }
         SemanticOp::NewArray { dst } => format!("new_array {}", render_register(*dst)),
         SemanticOp::NewArrayWithBuffer {
@@ -687,7 +803,12 @@ fn render_semantic_instruction(
             "new_object_with_buffer {}, {key_count}, {value_count}, {key_buffer_index}, {shape_table_index}",
             render_register(*dst)
         ),
-        SemanticOp::Binary { kind, dst, lhs, rhs } => {
+        SemanticOp::Binary {
+            kind,
+            dst,
+            lhs,
+            rhs,
+        } => {
             let mnemonic = match kind {
                 BinaryOpKind::Add => "add",
                 BinaryOpKind::AddN => "add_n",
@@ -845,7 +966,11 @@ fn render_semantic_instruction(
                 render_string_ref(*key, container)
             )
         }
-        SemanticOp::PropertyPutIndex { object, value, index } => {
+        SemanticOp::PropertyPutIndex {
+            object,
+            value,
+            index,
+        } => {
             format!(
                 "put_own_by_index {}, {}, {index}",
                 render_register(*object),
@@ -853,7 +978,11 @@ fn render_semantic_instruction(
             )
         }
         SemanticOp::Increment { dst, src } => {
-            format!("increment {}, {}", render_register(*dst), render_semantic_value(src))
+            format!(
+                "increment {}, {}",
+                render_register(*dst),
+                render_semantic_value(src)
+            )
         }
         SemanticOp::Catch { dst } => format!("catch {}", render_register(*dst)),
         SemanticOp::CompleteGenerator => "complete_generator".to_owned(),
@@ -1010,13 +1139,13 @@ fn render_immediate(value: Immediate) -> String {
         Immediate::Bool(value) => value.to_string(),
         Immediate::U32(value) => value.to_string(),
         Immediate::I32(value) => value.to_string(),
-        Immediate::F64(value) => value.to_string(),
+        Immediate::F64(value) => format!("{value:?}"),
     }
 }
 
 fn render_string_ref(string_id: u32, container: &mercury_binary::HbcContainer) -> String {
     resolve_string(string_id, container)
-        .map(|value| format!("{value:?}"))
+        .map(|value| serde_json::to_string(&value).expect("string serialization"))
         .unwrap_or_else(|| format!("s{string_id}"))
 }
 
@@ -1121,8 +1250,12 @@ fn render_operand(
             _ => render_raw_operand(operand),
         },
         _ => match operand_spec.meaning {
-            Some(mercury_spec::OperandMeaning::StringId) => resolve_string_operand(operand, container),
-            Some(mercury_spec::OperandMeaning::FunctionId) => resolve_function_operand(operand, raw, container),
+            Some(mercury_spec::OperandMeaning::StringId) => {
+                resolve_string_operand(operand, container)
+            }
+            Some(mercury_spec::OperandMeaning::FunctionId) => {
+                resolve_function_operand(operand, raw, container)
+            }
             _ => render_raw_operand(operand),
         },
     }
@@ -1179,7 +1312,7 @@ fn resolve_string_operand(
     };
 
     resolve_string(string_id, container)
-        .map(|value| format!("{value:?}"))
+        .map(|value| serde_json::to_string(&value).expect("string serialization"))
         .unwrap_or_else(|| string_id.to_string())
 }
 
@@ -1195,7 +1328,10 @@ fn resolve_function_operand(
     let Some(function) = raw.functions.get(function_id as usize) else {
         return function_id.to_string();
     };
-    format!("Function<{}>", render_function_name(function, raw, container).trim_matches('"'))
+    format!(
+        "Function<{}>",
+        render_function_name(function, raw, container).trim_matches('"')
+    )
 }
 
 fn raw_u32_value(operand: &RawOperand) -> Option<u32> {
@@ -1208,7 +1344,9 @@ fn raw_u32_value(operand: &RawOperand) -> Option<u32> {
 }
 
 fn resolve_string(string_id: u32, container: &mercury_binary::HbcContainer) -> Option<String> {
-    let entry = container.small_string_table_entries.get(string_id as usize)?;
+    let entry = container
+        .small_string_table_entries
+        .get(string_id as usize)?;
     let (offset, length) = if entry.is_overflowed {
         let overflow = container
             .overflow_string_table_entries
@@ -1225,9 +1363,9 @@ fn resolve_string(string_id: u32, container: &mercury_binary::HbcContainer) -> O
             .chunks_exact(2)
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect::<Vec<_>>();
-        Some(String::from_utf16_lossy(&words))
+        String::from_utf16(&words).ok()
     } else {
         let slice = container.string_storage.get(offset..offset + length)?;
-        Some(String::from_utf8_lossy(slice).into_owned())
+        String::from_utf8(slice.to_vec()).ok()
     }
 }

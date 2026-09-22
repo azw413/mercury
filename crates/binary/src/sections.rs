@@ -256,6 +256,7 @@ mod tests {
 
     fn sample_header() -> HbcVersionedFileHeader {
         HbcVersionedFileHeader {
+            layout: crate::header::HbcHeaderLayout::Pre96,
             magic: HERMES_MAGIC,
             version: 94,
             source_hash: [0; 20],
