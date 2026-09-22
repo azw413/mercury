@@ -62,7 +62,7 @@ fn source_bytecode_ast_edit_bytecode_executes() {
 }
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
-fn typescript_compilation_executes_and_unsupported_closures_are_diagnosed() {
+fn typescript_and_captured_closures_compile_and_execute() {
     let compiler = compiler();
     let ts = SwcModule::parse(
         "example.ts",
@@ -80,10 +80,43 @@ fn typescript_compilation_executes_and_unsupported_closures_are_diagnosed() {
     )
     .unwrap();
     let bytes = compiler.compile(&closure).unwrap();
-    let error = decompile(&bytes)
-        .err()
-        .expect("captured environments must be rejected");
-    assert!(error.to_string().contains("environment"), "{error}");
+    assert_eq!(execute(&bytes), "3\n");
+    let rebuilt = compiler.compile(&decompile(&bytes).unwrap()).unwrap();
+    assert_eq!(execute(&rebuilt), "3\n");
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn mutable_sibling_and_multilevel_closures_preserve_environment_identity() {
+    let compiler = compiler();
+    for (source, expected) in [
+        (
+            "function make(start) { var value = start; return function(delta) { value = value + delta; return value; }; } var a = make(10); var b = make(100); print(a(1)); print(a(2)); print(b(5)); print(a(3));",
+            "11\n13\n105\n16\n",
+        ),
+        (
+            "function outer(a) { var x = a; return function middle(b) { var y = b; return function inner(c) { x = x + c; y = y + 1; return x + y; }; }; } var f = outer(10)(20); print(f(2)); print(f(3));",
+            "33\n37\n",
+        ),
+        (
+            "function pair(start) { var value = start; function one() { value = value + 1; return value; } function ten() { value = value + 10; return value; } return function(which) { if (which) return ten(); return one(); }; } var p = pair(0); print(p(0)); print(p(1)); print(p(0));",
+            "1\n11\n12\n",
+        ),
+    ] {
+        let module = SwcModule::parse(
+            "closures.js",
+            source,
+            SourceLanguage::JavaScript,
+            SourceKind::Script,
+        )
+        .unwrap();
+        let original = compiler.compile(&module).unwrap();
+        assert_eq!(execute(&original), expected, "original: {source}");
+        let rebuilt = compiler
+            .compile(&decompile(&original).unwrap_or_else(|err| panic!("{source}: {err}")))
+            .unwrap();
+        assert_eq!(execute(&rebuilt), expected, "rebuilt: {source}");
+    }
 }
 
 #[test]

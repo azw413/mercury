@@ -69,19 +69,24 @@ This preserves instruction order and handles conditional branches and loops
 without guessing high-level structure. A later analysis pass can recover
 expressions and structured `if`/`while` statements.
 
-The initial subset includes constants, parameter loads, ordinary uncaptured
-functions, global access, property reads/writes, fixed-arity calls, common
-arithmetic/comparisons, conditional/unconditional branches, returns, and throws
-without handlers. Function names and strictness are retained. Unknown opcodes
-fail with function index and instruction offset; malformed branch targets fail
-before emitting a tree.
+The initial subset includes constants, parameter loads, functions with mutable
+captured variables, global access, property reads/writes, fixed-arity and general
+calls, common arithmetic/comparisons, conditional/unconditional branches,
+returns, and throws without handlers. Function names and strictness are retained.
+Unknown opcodes fail with function index and instruction offset; malformed branch
+targets fail before emitting a tree.
 
-Captured environments, exception handlers, async/generators, switch tables,
-buffer-backed object/array construction, dynamic eval, general calls, regexp and
-bigint tables are not implemented. The decompiler also rejects non-finite
-literal doubles, unpaired UTF-16 surrogates and function/global names outside its
-supported identifier subset. Source comments, original variable names, original
-TypeScript types, and byte-identical recompilation cannot be recovered from HBC.
+Closure environments are reconstructed as a private parent-linked slot structure.
+This preserves mutation shared by sibling closures, independent environments from
+separate outer calls, and captures across multiple lexical levels. The structure
+is an implementation detail rather than part of the module interface.
+
+Exception handlers, async/generators, switch tables, array literals and
+buffer-backed object/array construction, dynamic eval, regexp and bigint tables
+are not implemented. The decompiler also rejects non-finite literal doubles,
+unpaired UTF-16 surrogates and function/global names outside its supported
+identifier subset. Source comments, original variable names, original TypeScript
+types, and byte-identical recompilation cannot be recovered from HBC.
 
 Generated calls assume the standard, unmodified `Reflect.apply` intrinsic.
 Global lookups assume ordinary globals; proxy/global interception and mutated
@@ -105,9 +110,11 @@ HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
 
 The execution tests cover arithmetic, calls, an if/else and loop, short-circuit
 logic, a receiver whose `.call` property has been replaced, side effects, NaN-like
-relational comparisons, helper-name collisions, and TS enum lowering. The main
-loop prints `18` after recompilation; an SWC numeric-literal visitor changes it
-to print `28`. Captured closures must produce an explicit unsupported error.
+relational comparisons, helper-name collisions, TS enum lowering, and mutable
+captured variables. Closure checks cover independent outer calls, sibling
+closures sharing one environment, and captures across multiple lexical levels.
+The main loop prints `18` after recompilation; an SWC numeric-literal visitor
+changes it to print `28`.
 
 `tests/fixtures/control_flow.hbc` was generated from the adjacent authored JS
 fixture with the local compiler reporting Hermes release 0.12.0 / HBC 96:

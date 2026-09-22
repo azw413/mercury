@@ -67,10 +67,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 "decompiler register budget exceeded".into(),
             ));
         }
-        if f.environment_size != 0 || f.flags.has_exception_handler || f.flags.prohibit_invoke != 2
-        {
+        if f.flags.has_exception_handler || f.flags.prohibit_invoke != 2 {
             return Err(Error::Unsupported(format!(
-                "function {}: captured environments, exception handlers or invocation flags",
+                "function {}: exception handlers or invocation flags",
                 f.function_index
             )));
         }
@@ -108,7 +107,11 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         );
         factories.push(b::var(
             &format!("_make{}", f.function_index),
-            Some(b::function(None, vec![], vec![b::ret(function)])),
+            Some(b::function(
+                None,
+                vec!["_env".into()],
+                vec![b::ret(function)],
+            )),
         ));
     }
     // Global var declarations stay at script scope, retaining global binding
@@ -272,13 +275,40 @@ impl Lower<'_> {
         let r = |i| register(f, op, i);
         let value = match op.name.as_str() {
             "DeclareGlobalVar" => return Ok(vec![]),
-            "CreateEnvironment" => b::undefined(), // Empty, unobservable environment only.
+            // Environment arrays store their parent at index 0 and bytecode
+            // slots at index + 1. Passing the exact same array to each child
+            // preserves shared mutation between sibling closures.
+            "CreateEnvironment" => {
+                let mut values = Vec::with_capacity(f.environment_size as usize + 1);
+                values.push(b::id("_env"));
+                values.extend((0..f.environment_size).map(|_| b::undefined()));
+                b::array(values)
+            }
             "CreateClosure" | "CreateClosureLongIndex" => {
                 let target = uint(op, 2)?;
                 if target as usize >= self.raw.functions.len() {
                     return Err(Error::Bytecode("invalid closure target".into()));
                 }
-                b::call(b::id(&format!("_make{target}")), vec![])
+                b::call(b::id(&format!("_make{target}")), vec![r(1)?])
+            }
+            "GetEnvironment" => {
+                let mut environment = b::id("_env");
+                for _ in 0..uint(op, 1)? {
+                    environment = b::member(environment, b::number(0.0));
+                }
+                environment
+            }
+            "LoadFromEnvironment" | "LoadFromEnvironmentL" => {
+                b::member(r(1)?, environment_slot(op, 2)?)
+            }
+            "StoreToEnvironment"
+            | "StoreToEnvironmentL"
+            | "StoreNPToEnvironment"
+            | "StoreNPToEnvironmentL" => {
+                return Ok(vec![b::assign(
+                    b::member(r(0)?, environment_slot(op, 1)?),
+                    r(2)?,
+                )]);
             }
             "GetGlobalObject" => b::id("_g"),
             "LoadParam" | "LoadParamLong" => {
@@ -360,6 +390,28 @@ impl Lower<'_> {
                     .collect::<Result<Vec<_>, _>>()?;
                 b::call(b::id("_apply"), vec![r(1)?, r(2)?, b::array(args)])
             }
+            "Call" | "CallLong" => {
+                let argument_count = uint(op, 2)?;
+                if argument_count == 0 {
+                    return Err(unsupported(f, op, "call has no this argument"));
+                }
+                // HBC 96 reserves six VM registers after the reverse-ordered
+                // argument area at the end of the frame.
+                const CALL_EXTRA_REGISTERS: u32 = 6;
+                let first = f
+                    .frame_size
+                    .checked_sub(CALL_EXTRA_REGISTERS + 1)
+                    .ok_or_else(|| unsupported(f, op, "frame is too small for call arguments"))?;
+                let last = first.checked_sub(argument_count - 1).ok_or_else(|| {
+                    unsupported(f, op, "argument count exceeds the function frame")
+                })?;
+                let this_arg = register_number(f, first)?;
+                let args = (last..first)
+                    .rev()
+                    .map(|register| register_number(f, register))
+                    .collect::<Result<Vec<_>, _>>()?;
+                b::call(b::id("_apply"), vec![r(1)?, this_arg, b::array(args)])
+            }
             "NewObject" => Box::new(Expr::Object(ObjectLit {
                 span: DUMMY_SP,
                 props: vec![],
@@ -387,6 +439,10 @@ fn uint(op: &RawInstruction, index: usize) -> Result<u32, Error> {
 }
 fn register(f: &RawFunction, op: &RawInstruction, index: usize) -> Result<Box<Expr>, Error> {
     let r = uint(op, index)?;
+    register_number(f, r)
+}
+fn register_number(f: &RawFunction, register: u32) -> Result<Box<Expr>, Error> {
+    let r = register;
     if r >= f.frame_size {
         return Err(Error::Bytecode(format!(
             "register {r} outside function {} frame",
@@ -394,6 +450,13 @@ fn register(f: &RawFunction, op: &RawInstruction, index: usize) -> Result<Box<Ex
         )));
     }
     Ok(b::id(&format!("_r{r}")))
+}
+fn environment_slot(op: &RawInstruction, index: usize) -> Result<Box<Expr>, Error> {
+    let slot = uint(op, index)?;
+    let index = slot
+        .checked_add(1)
+        .ok_or_else(|| Error::Bytecode("environment slot overflows address space".into()))?;
+    Ok(b::number(f64::from(index)))
 }
 fn unsupported(f: &RawFunction, op: &RawInstruction, reason: &str) -> Error {
     Error::Unsupported(format!(
