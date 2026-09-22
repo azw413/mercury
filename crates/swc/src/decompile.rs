@@ -1,4 +1,4 @@
-use crate::{Error, SwcModule, ast_builder as b, cfg};
+use crate::{Error, SwcModule, ast_builder as b, cfg, literal};
 use mercury_binary::{HbcContainer, decode_raw_module, parse_hbc_container_with_spec};
 use mercury_ir::{RawFunction, RawInstruction, RawModule, RawOperand};
 use std::collections::HashSet;
@@ -49,6 +49,11 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         container: &container,
         raw: &raw,
     };
+    let needs_define = raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .any(|op| is_define_own(&op.name));
     let mut globals = Vec::new();
     let mut seen_globals = HashSet::new();
     let names = container
@@ -125,18 +130,24 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             b::array(vec![]),
         ],
     )));
-    let mut wrapper = b::function(None, vec!["_g".into(), "_apply".into()], factories);
+    let mut wrapper_params = vec!["_g".into(), "_apply".into()];
+    let mut wrapper_args = vec![
+        b::this(),
+        b::member(
+            b::member(b::this(), b::string("Reflect")),
+            b::string("apply"),
+        ),
+    ];
+    if needs_define {
+        wrapper_params.push("_define".into());
+        wrapper_args.push(b::member(
+            b::member(b::this(), b::string("Reflect")),
+            b::string("defineProperty"),
+        ));
+    }
+    let mut wrapper = b::function(None, wrapper_params, factories);
     wrapper.visit_mut_with(&mut Namespace(prefix));
-    body.push(b::expr(b::call(
-        wrapper,
-        vec![
-            b::this(),
-            b::member(
-                b::member(b::this(), b::string("Reflect")),
-                b::string("apply"),
-            ),
-        ],
-    )));
+    body.push(b::expr(b::call(wrapper, wrapper_args)));
     Ok(SwcModule::generated(Program::Script(Script {
         span: DUMMY_SP,
         body,
@@ -211,6 +222,9 @@ impl Lower<'_> {
         }
         for r in 0..f.frame_size {
             body.push(b::var(&format!("_r{r}"), None));
+        }
+        if f.instructions.iter().any(|op| is_define_own(&op.name)) {
+            body.push(b::var("_desc", None));
         }
         body.push(b::var("_pc", Some(b::number(0.0))));
         let mut cases = Vec::new();
@@ -333,7 +347,7 @@ impl Lower<'_> {
             "LoadConstTrue" => b::boolean(true),
             "LoadConstFalse" => b::boolean(false),
             "LoadConstUndefined" => b::undefined(),
-            "LoadConstNull" => Box::new(Expr::Lit(Lit::Null(Null { span: DUMMY_SP }))),
+            "LoadConstNull" => b::null(),
             "LoadConstString" | "LoadConstStringLongIndex" => {
                 b::string(&self.string(uint(op, 1)?)?)
             }
@@ -412,13 +426,54 @@ impl Lower<'_> {
                     .collect::<Result<Vec<_>, _>>()?;
                 b::call(b::id("_apply"), vec![r(1)?, this_arg, b::array(args)])
             }
-            // An array literal with empty elements creates holes without
-            // consulting a replaceable global Array constructor.
-            "NewArray" => b::sparse_array(uint(op, 1)? as usize),
-            "NewObject" => Box::new(Expr::Object(ObjectLit {
-                span: DUMMY_SP,
-                props: vec![],
-            })),
+            // Array literals create intrinsic arrays without consulting a
+            // replaceable global Array constructor.
+            "NewArray" => b::sparse_array(
+                usize::try_from(uint(op, 1)?)
+                    .map_err(|_| unsupported(f, op, "array length does not fit this platform"))?,
+            ),
+            "NewArrayWithBuffer" | "NewArrayWithBufferLong" => {
+                let length = uint(op, 1)?;
+                let literal_count = uint(op, 2)?;
+                if literal_count > length {
+                    return Err(unsupported(f, op, "literal count exceeds the array length"));
+                }
+                let values = self.literal_values(f, op, uint(op, 3)?, literal_count)?;
+                b::array_with_trailing_holes(
+                    values,
+                    usize::try_from(length).map_err(|_| {
+                        unsupported(f, op, "array length does not fit this platform")
+                    })?,
+                )
+            }
+            "PutOwnByIndex"
+            | "PutOwnByIndexL"
+            | "DefineOwnByIndex"
+            | "DefineOwnByIndexL"
+            | "DefineOwnInDenseArray"
+            | "DefineOwnInDenseArrayL" => {
+                return Ok(vec![
+                    b::assign(b::id("_desc"), b::empty_object()),
+                    b::assign(b::member(b::id("_desc"), b::string("value")), r(1)?),
+                    b::assign(
+                        b::member(b::id("_desc"), b::string("writable")),
+                        b::boolean(true),
+                    ),
+                    b::assign(
+                        b::member(b::id("_desc"), b::string("enumerable")),
+                        b::boolean(true),
+                    ),
+                    b::assign(
+                        b::member(b::id("_desc"), b::string("configurable")),
+                        b::boolean(true),
+                    ),
+                    b::expr(b::call(
+                        b::id("_define"),
+                        vec![r(0)?, b::number(f64::from(uint(op, 2)?)), b::id("_desc")],
+                    )),
+                ]);
+            }
+            "NewObject" => b::empty_object(),
             name if binary_op(name).is_some() => b::binary(binary_op(name).unwrap(), r(1)?, r(2)?),
             "Not" => b::unary(UnaryOp::Bang, r(1)?),
             "Negate" => b::unary(UnaryOp::Minus, r(1)?),
@@ -427,6 +482,27 @@ impl Lower<'_> {
             _ => return Err(unsupported(f, op, "opcode has no verified SWC lowering")),
         };
         Ok(vec![b::assign(r(0)?, value)])
+    }
+
+    fn literal_values(
+        &self,
+        f: &RawFunction,
+        op: &RawInstruction,
+        offset: u32,
+        count: u32,
+    ) -> Result<Vec<Expr>, Error> {
+        literal::decode_value_buffer(&self.container.literal_value_buffer, offset, count)?
+            .into_iter()
+            .map(|value| match value {
+                literal::LiteralValue::Null => Ok(*b::null()),
+                literal::LiteralValue::Bool(value) => Ok(*b::boolean(value)),
+                literal::LiteralValue::Number(value) if value.is_finite() => Ok(*b::number(value)),
+                literal::LiteralValue::Number(_) => {
+                    Err(unsupported(f, op, "non-finite buffered number"))
+                }
+                literal::LiteralValue::String(id) => Ok(*b::string(&self.string(id)?)),
+            })
+            .collect()
     }
 }
 fn uint(op: &RawInstruction, index: usize) -> Result<u32, Error> {
@@ -466,6 +542,17 @@ fn unsupported(f: &RawFunction, op: &RawInstruction, reason: &str) -> Error {
         "function {} offset 0x{:x}: {}: {reason}",
         f.function_index, op.offset, op.name
     ))
+}
+fn is_define_own(name: &str) -> bool {
+    matches!(
+        name,
+        "PutOwnByIndex"
+            | "PutOwnByIndexL"
+            | "DefineOwnByIndex"
+            | "DefineOwnByIndexL"
+            | "DefineOwnInDenseArray"
+            | "DefineOwnInDenseArrayL"
+    )
 }
 fn set_pc(target: u32) -> Stmt {
     b::assign(b::id("_pc"), b::number(f64::from(target)))

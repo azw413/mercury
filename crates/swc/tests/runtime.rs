@@ -138,6 +138,39 @@ fn new_array_preserves_length_holes_and_mutation() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn populated_arrays_recover_buffered_and_dynamic_elements() {
+    let compiler = compiler();
+    for (source, expected) in [
+        (
+            "var flags = [null, true, false]; var numbers = [7, 3.5]; var strings = ['text', 'more']; var missing = [void 0]; print(flags.length, flags[0], flags[1], flags[2], numbers[0], numbers[1], strings[0], strings[1], missing[0], 0 in missing);",
+            "3 null true false 7 3.5 text more undefined true\n",
+        ),
+        (
+            "var hits = 0; Array.prototype.__defineSetter__('0', function(value) { hits = hits + 1; }); function wrap(value) { return [value, 2]; } var dynamic = wrap(42); print(hits, dynamic.hasOwnProperty('0'), dynamic[0], dynamic[1]);",
+            "0 true 42 2\n",
+        ),
+        (
+            "function pair(start) { var value = start; function one() { value = value + 1; return value; } function ten() { value = value + 10; return value; } return [one, ten]; } var p = pair(0); print(p[0](), p[1](), p[0]());",
+            "1 11 12\n",
+        ),
+    ] {
+        let module = SwcModule::parse(
+            "populated-array.js",
+            source,
+            SourceLanguage::JavaScript,
+            SourceKind::Script,
+        )
+        .unwrap();
+        let original = compiler.compile(&module).unwrap();
+        assert_eq!(execute(&original), expected, "original: {source}");
+        let recovered = decompile(&original).unwrap_or_else(|err| panic!("{source}: {err}"));
+        let rebuilt = compiler.compile(&recovered).unwrap();
+        assert_eq!(execute(&rebuilt), expected, "rebuilt: {source}");
+    }
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn decompilation_preserves_receiver_side_effects_and_nan_comparisons() {
     let compiler = compiler();
     for (source, expected) in [

@@ -117,8 +117,8 @@ AST structs, prints/transforms them, compiles scripts through a configured
 version-96 `hermesc`, and decompiles a deliberately limited bytecode subset into
 executable SWC trees. The first decompiler uses register temporaries and a
 basic-block dispatcher. It reconstructs mutable captured environments, including
-siblings and multiple lexical levels, and preserves empty and sparse array
-allocation. Exception handlers remain unsupported.
+siblings and multiple lexical levels, and preserves empty, sparse, buffered, and
+dynamically populated arrays. Exception handlers remain unsupported.
 
 ```sh
 cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js --hermesc /path/to/hermesc -o /tmp/example.hbc

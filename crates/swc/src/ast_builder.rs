@@ -31,6 +31,9 @@ pub fn boolean(value: bool) -> Box<Expr> {
         value,
     })))
 }
+pub fn null() -> Box<Expr> {
+    Box::new(Expr::Lit(Lit::Null(Null { span: DUMMY_SP })))
+}
 pub fn undefined() -> Box<Expr> {
     unary(UnaryOp::Void, number(0.0))
 }
@@ -144,10 +147,32 @@ pub fn array(values: Vec<Box<Expr>>) -> Box<Expr> {
             .collect(),
     }))
 }
+pub fn array_with_trailing_holes(values: Vec<Expr>, length: usize) -> Box<Expr> {
+    let mut elems = values
+        .into_iter()
+        .map(|expr| {
+            Some(ExprOrSpread {
+                spread: None,
+                expr: Box::new(expr),
+            })
+        })
+        .collect::<Vec<_>>();
+    elems.resize_with(length, || None);
+    Box::new(Expr::Array(ArrayLit {
+        span: DUMMY_SP,
+        elems,
+    }))
+}
 pub fn sparse_array(length: usize) -> Box<Expr> {
     Box::new(Expr::Array(ArrayLit {
         span: DUMMY_SP,
         elems: vec![None; length],
+    }))
+}
+pub fn empty_object() -> Box<Expr> {
+    Box::new(Expr::Object(ObjectLit {
+        span: DUMMY_SP,
+        props: vec![],
     }))
 }
 pub fn this() -> Box<Expr> {

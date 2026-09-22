@@ -4,6 +4,7 @@ mod ast_builder;
 mod cfg;
 mod compiler;
 mod decompile;
+mod literal;
 mod source;
 
 pub use compiler::HermesCompiler;
