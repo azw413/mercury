@@ -4,9 +4,9 @@ use crate::header::{
     BytecodeOptions, FILE_HEADER_SIZE, HERMES_MAGIC, HbcVersionedFileHeader, write_file_header,
 };
 use crate::tables::{
-    OverflowStringTableEntry, ShapeTableEntry, SmallStringTableEntry, StringKind, StringKindEntry,
-    write_overflow_string_table_entries, write_shape_table_entries,
-    write_small_string_table_entries, write_string_kind_entries,
+    OverflowStringTableEntry, SmallStringTableEntry, StringKind, StringKindEntry,
+    write_overflow_string_table_entries, write_small_string_table_entries,
+    write_string_kind_entries,
 };
 use crate::{DecodedInstruction, DecodedOperand};
 use mercury_spec::BytecodeSpec;
@@ -28,7 +28,7 @@ pub struct MinimalModule {
     pub string_kinds: Vec<StringKind>,
     pub literal_value_buffer: Vec<u8>,
     pub object_key_buffer: Vec<u8>,
-    pub object_shape_table: Vec<ShapeTableEntry>,
+    pub object_value_buffer: Vec<u8>,
     pub functions: Vec<MinimalFunction>,
 }
 
@@ -211,13 +211,13 @@ pub fn build_minimal_module(
         BYTECODE_ALIGNMENT,
     );
     let object_key_buffer_bytes = module.object_key_buffer.clone();
-    let object_shape_table_start = align_up(
+    let object_value_buffer_start = align_up(
         object_key_buffer_start + object_key_buffer_bytes.len(),
         BYTECODE_ALIGNMENT,
     );
-    let object_shape_table_bytes = write_shape_table_entries(&module.object_shape_table);
+    let object_value_buffer_bytes = module.object_value_buffer.clone();
     let function_bodies_start = align_up(
-        object_shape_table_start + object_shape_table_bytes.len(),
+        object_value_buffer_start + object_value_buffer_bytes.len(),
         BYTECODE_ALIGNMENT,
     );
 
@@ -249,8 +249,8 @@ pub fn build_minimal_module(
     bytes.extend_from_slice(&literal_value_buffer_bytes);
     pad_to(&mut bytes, object_key_buffer_start);
     bytes.extend_from_slice(&object_key_buffer_bytes);
-    pad_to(&mut bytes, object_shape_table_start);
-    bytes.extend_from_slice(&object_shape_table_bytes);
+    pad_to(&mut bytes, object_value_buffer_start);
+    bytes.extend_from_slice(&object_value_buffer_bytes);
     pad_to(&mut bytes, function_bodies_start);
 
     for body in &encoded_bodies {
@@ -282,7 +282,7 @@ pub fn build_minimal_module(
         reg_exp_storage_size: 0,
         literal_value_buffer_size: literal_value_buffer_bytes.len() as u32,
         obj_key_buffer_size: object_key_buffer_bytes.len() as u32,
-        obj_shape_table_count: module.object_shape_table.len() as u32,
+        obj_value_buffer_size: object_value_buffer_bytes.len() as u32,
         num_string_switch_imms: 0,
         segment_id: 0,
         cjs_module_count: 0,
@@ -618,16 +618,7 @@ mod tests {
             ],
             literal_value_buffer: vec![0xaa],
             object_key_buffer: vec![0xbb, 0xcc],
-            object_shape_table: vec![
-                ShapeTableEntry {
-                    key_buffer_offset: 0xdd,
-                    num_props: 0xee,
-                },
-                ShapeTableEntry {
-                    key_buffer_offset: 0xff,
-                    num_props: 1,
-                },
-            ],
+            object_value_buffer: vec![0xdd, 0xee, 0xff, 1],
             functions: vec![
                 MinimalFunction {
                     name: "global".into(),
@@ -704,19 +695,7 @@ mod tests {
         assert_eq!(container.header.string_count, 4);
         assert_eq!(container.literal_value_buffer, vec![0xaa]);
         assert_eq!(container.object_key_buffer, vec![0xbb, 0xcc]);
-        assert_eq!(
-            container.object_shape_table,
-            vec![
-                ShapeTableEntry {
-                    key_buffer_offset: 0xdd,
-                    num_props: 0xee,
-                },
-                ShapeTableEntry {
-                    key_buffer_offset: 0xff,
-                    num_props: 1,
-                },
-            ]
-        );
+        assert_eq!(container.object_value_buffer, vec![0xdd, 0xee, 0xff, 1]);
         assert_eq!(
             container.header.debug_info_offset as usize + empty_debug_info_section(96).len() + 20,
             bytes.len()

@@ -132,10 +132,10 @@ pub enum SemanticOp {
     },
     NewObjectWithBuffer {
         dst: Register,
-        key_count: u32,
-        value_count: u32,
-        key_buffer_index: u32,
-        shape_table_index: u32,
+        preallocation_size: u32,
+        static_count: u32,
+        key_buffer_offset: u32,
+        value_buffer_offset: u32,
     },
     Binary {
         kind: BinaryOpKind,

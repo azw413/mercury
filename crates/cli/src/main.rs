@@ -6,8 +6,8 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use mercury_asm::{parse_semantic_assembly, raise_module};
 use mercury_binary::{
-    MinimalFunction, MinimalModule, ShapeTableEntry, build_minimal_module, decode_raw_module,
-    encode_instructions, parse_hbc_container_with_spec,
+    MinimalFunction, MinimalModule, build_minimal_module, decode_raw_module, encode_instructions,
+    parse_hbc_container_with_spec,
 };
 use mercury_ir::{
     BinaryOpKind, BranchKind, Immediate, PropertyAccessKind, PropertyDefineKind, RawFunction,
@@ -279,14 +279,7 @@ fn build_minimal_module_from_semantic(
             .collect(),
         literal_value_buffer: module.literal_value_buffer.clone(),
         object_key_buffer: module.object_key_buffer.clone(),
-        object_shape_table: module
-            .object_shape_table
-            .iter()
-            .map(|entry| ShapeTableEntry {
-                key_buffer_offset: entry.key_buffer_offset,
-                num_props: entry.num_props,
-            })
-            .collect(),
+        object_value_buffer: module.object_value_buffer.clone(),
         functions,
     }
 }
@@ -446,7 +439,11 @@ fn render_semantic_module(
         &container.literal_value_buffer,
     );
     render_hex_section(&mut out, ".object_key_buffer", &container.object_key_buffer);
-    render_shape_table_section(&mut out, &container.object_shape_table);
+    render_hex_section(
+        &mut out,
+        ".object_value_buffer",
+        &container.object_value_buffer,
+    );
 
     for function in &semantic.functions {
         let header = &container.function_headers[function.function_index];
@@ -527,18 +524,6 @@ fn render_hex_section(out: &mut String, name: &str, bytes: &[u8]) {
     let _ = writeln!(out, "{name}");
     for chunk in bytes.chunks(16) {
         let _ = writeln!(out, "  {}", render_hex_bytes(chunk));
-    }
-    let _ = writeln!(out, ".end");
-    let _ = writeln!(out);
-}
-
-fn render_shape_table_section(out: &mut String, entries: &[ShapeTableEntry]) {
-    if entries.is_empty() {
-        return;
-    }
-    let _ = writeln!(out, ".object_shape_table");
-    for entry in entries {
-        let _ = writeln!(out, "  {}, {}", entry.key_buffer_offset, entry.num_props);
     }
     let _ = writeln!(out, ".end");
     let _ = writeln!(out);
@@ -795,12 +780,12 @@ fn render_semantic_instruction(
         SemanticOp::NewObject { dst } => format!("new_object {}", render_register(*dst)),
         SemanticOp::NewObjectWithBuffer {
             dst,
-            key_count,
-            value_count,
-            key_buffer_index,
-            shape_table_index,
+            preallocation_size,
+            static_count,
+            key_buffer_offset,
+            value_buffer_offset,
         } => format!(
-            "new_object_with_buffer {}, {key_count}, {value_count}, {key_buffer_index}, {shape_table_index}",
+            "new_object_with_buffer {}, {preallocation_size}, {static_count}, {key_buffer_offset}, {value_buffer_offset}",
             render_register(*dst)
         ),
         SemanticOp::Binary {

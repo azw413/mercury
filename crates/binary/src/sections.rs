@@ -19,7 +19,7 @@ pub struct HbcSectionBoundaries {
     pub string_storage: Range<usize>,
     pub literal_value_buffer: Range<usize>,
     pub obj_key_buffer: Range<usize>,
-    pub obj_shape_table: Range<usize>,
+    pub obj_value_buffer: Range<usize>,
     pub big_int_table: Range<usize>,
     pub big_int_storage: Range<usize>,
     pub reg_exp_table: Range<usize>,
@@ -58,8 +58,8 @@ pub(crate) fn compute_section_boundaries(
     let obj_key_buffer = offset..offset + header.obj_key_buffer_size as usize;
     offset = align_up(obj_key_buffer.end, BYTECODE_ALIGNMENT);
 
-    let obj_shape_table = offset..offset + (header.obj_shape_table_count as usize * 8);
-    offset = align_up(obj_shape_table.end, BYTECODE_ALIGNMENT);
+    let obj_value_buffer = offset..offset + header.obj_value_buffer_size as usize;
+    offset = align_up(obj_value_buffer.end, BYTECODE_ALIGNMENT);
 
     let big_int_table = offset..offset + (header.big_int_count as usize * 8);
     offset = align_up(big_int_table.end, BYTECODE_ALIGNMENT);
@@ -93,7 +93,7 @@ pub(crate) fn compute_section_boundaries(
         string_storage,
         literal_value_buffer,
         obj_key_buffer,
-        obj_shape_table,
+        obj_value_buffer,
         big_int_table,
         big_int_storage,
         reg_exp_table,
@@ -120,7 +120,7 @@ pub(crate) fn compute_section_boundaries_with_spec(
         string_storage: 0..0,
         literal_value_buffer: 0..0,
         obj_key_buffer: 0..0,
-        obj_shape_table: 0..0,
+        obj_value_buffer: 0..0,
         big_int_table: 0..0,
         big_int_storage: 0..0,
         reg_exp_table: 0..0,
@@ -168,9 +168,7 @@ fn resolve_section_size(
         "string_storage" => Ok(header.string_storage_size as usize),
         "array_buffer" | "literal_value_buffer" => Ok(header.literal_value_buffer_size as usize),
         "object_key_buffer" => Ok(header.obj_key_buffer_size as usize),
-        "object_value_buffer" | "object_shape_table" => {
-            Ok(header.obj_shape_table_count as usize * 8)
-        }
+        "object_value_buffer" => Ok(header.obj_value_buffer_size as usize),
         "bigint_table" => Ok(
             header.big_int_count as usize
                 * table_entry_size("bigint_table", &container_spec.raw_module.bigint_table)?,
@@ -223,7 +221,7 @@ fn apply_section_range(
         "string_storage" => boundaries.string_storage = range,
         "array_buffer" | "literal_value_buffer" => boundaries.literal_value_buffer = range,
         "object_key_buffer" => boundaries.obj_key_buffer = range,
-        "object_value_buffer" | "object_shape_table" => boundaries.obj_shape_table = range,
+        "object_value_buffer" => boundaries.obj_value_buffer = range,
         "bigint_table" => boundaries.big_int_table = range,
         "bigint_storage" => boundaries.big_int_storage = range,
         "regexp_table" => boundaries.reg_exp_table = range,
@@ -274,7 +272,7 @@ mod tests {
             reg_exp_storage_size: 66,
             literal_value_buffer_size: 0,
             obj_key_buffer_size: 0,
-            obj_shape_table_count: 0,
+            obj_value_buffer_size: 0,
             num_string_switch_imms: 0,
             segment_id: 0,
             cjs_module_count: 0,

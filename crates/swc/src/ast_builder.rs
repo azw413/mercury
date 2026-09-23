@@ -175,6 +175,23 @@ pub fn empty_object() -> Box<Expr> {
         props: vec![],
     }))
 }
+pub fn object(entries: Vec<(Expr, Expr)>) -> Box<Expr> {
+    Box::new(Expr::Object(ObjectLit {
+        span: DUMMY_SP,
+        props: entries
+            .into_iter()
+            .map(|(key, value)| {
+                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                    key: PropName::Computed(ComputedPropName {
+                        span: DUMMY_SP,
+                        expr: Box::new(key),
+                    }),
+                    value: Box::new(value),
+                })))
+            })
+            .collect(),
+    }))
+}
 pub fn this() -> Box<Expr> {
     Box::new(Expr::This(ThisExpr { span: DUMMY_SP }))
 }

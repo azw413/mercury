@@ -446,32 +446,43 @@ impl Lower<'_> {
                     })?,
                 )
             }
+            "NewObjectWithBuffer" | "NewObjectWithBufferLong" => {
+                // Operand 1 is only a preallocation hint. The static property
+                // count and the two serialized-buffer offsets are authoritative.
+                b::object(self.object_entries(f, op, uint(op, 2)?, uint(op, 3)?, uint(op, 4)?)?)
+            }
             "PutOwnByIndex"
             | "PutOwnByIndexL"
             | "DefineOwnByIndex"
             | "DefineOwnByIndexL"
             | "DefineOwnInDenseArray"
             | "DefineOwnInDenseArrayL" => {
-                return Ok(vec![
-                    b::assign(b::id("_desc"), b::empty_object()),
-                    b::assign(b::member(b::id("_desc"), b::string("value")), r(1)?),
-                    b::assign(
-                        b::member(b::id("_desc"), b::string("writable")),
-                        b::boolean(true),
-                    ),
-                    b::assign(
-                        b::member(b::id("_desc"), b::string("enumerable")),
-                        b::boolean(true),
-                    ),
-                    b::assign(
-                        b::member(b::id("_desc"), b::string("configurable")),
-                        b::boolean(true),
-                    ),
-                    b::expr(b::call(
-                        b::id("_define"),
-                        vec![r(0)?, b::number(f64::from(uint(op, 2)?)), b::id("_desc")],
-                    )),
-                ]);
+                return Ok(define_own(
+                    r(0)?,
+                    b::number(f64::from(uint(op, 2)?)),
+                    r(1)?,
+                    true,
+                ));
+            }
+            "PutNewOwnByIdShort"
+            | "PutNewOwnById"
+            | "PutNewOwnByIdLong"
+            | "PutNewOwnNEById"
+            | "PutNewOwnNEByIdLong" => {
+                return Ok(define_own(
+                    r(0)?,
+                    b::string(&self.string(uint(op, 2)?)?),
+                    r(1)?,
+                    !op.name.starts_with("PutNewOwnNE"),
+                ));
+            }
+            "PutOwnByVal" => {
+                let enumerable = match uint(op, 3)? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(unsupported(f, op, "invalid enumerable flag")),
+                };
+                return Ok(define_own(r(0)?, r(2)?, r(1)?, enumerable));
             }
             "NewObject" => b::empty_object(),
             name if binary_op(name).is_some() => b::binary(binary_op(name).unwrap(), r(1)?, r(2)?),
@@ -491,7 +502,24 @@ impl Lower<'_> {
         offset: u32,
         count: u32,
     ) -> Result<Vec<Expr>, Error> {
-        literal::decode_value_buffer(&self.container.literal_value_buffer, offset, count)?
+        self.buffer_values(
+            f,
+            op,
+            &self.container.literal_value_buffer,
+            offset,
+            count,
+        )
+    }
+
+    fn buffer_values(
+        &self,
+        f: &RawFunction,
+        op: &RawInstruction,
+        buffer: &[u8],
+        offset: u32,
+        count: u32,
+    ) -> Result<Vec<Expr>, Error> {
+        literal::decode_buffer(buffer, offset, count)?
             .into_iter()
             .map(|value| match value {
                 literal::LiteralValue::Null => Ok(*b::null()),
@@ -501,6 +529,42 @@ impl Lower<'_> {
                     Err(unsupported(f, op, "non-finite buffered number"))
                 }
                 literal::LiteralValue::String(id) => Ok(*b::string(&self.string(id)?)),
+            })
+            .collect()
+    }
+
+    fn object_entries(
+        &self,
+        f: &RawFunction,
+        op: &RawInstruction,
+        count: u32,
+        key_offset: u32,
+        value_offset: u32,
+    ) -> Result<Vec<(Expr, Expr)>, Error> {
+        let keys = literal::decode_buffer(&self.container.object_key_buffer, key_offset, count)?;
+        let values = self.buffer_values(
+            f,
+            op,
+            &self.container.object_value_buffer,
+            value_offset,
+            count,
+        )?;
+        keys.into_iter()
+            .zip(values)
+            .map(|(key, value)| {
+                let key = match key {
+                    literal::LiteralValue::String(id) => *b::string(&self.string(id)?),
+                    literal::LiteralValue::Number(number)
+                        if number.is_finite()
+                            && number >= 0.0
+                            && number <= f64::from(u32::MAX)
+                            && number.fract() == 0.0 =>
+                    {
+                        *b::number(number)
+                    }
+                    _ => return Err(unsupported(f, op, "invalid buffered object key")),
+                };
+                Ok((key, value))
             })
             .collect()
     }
@@ -552,7 +616,32 @@ fn is_define_own(name: &str) -> bool {
             | "DefineOwnByIndexL"
             | "DefineOwnInDenseArray"
             | "DefineOwnInDenseArrayL"
+            | "PutNewOwnByIdShort"
+            | "PutNewOwnById"
+            | "PutNewOwnByIdLong"
+            | "PutNewOwnNEById"
+            | "PutNewOwnNEByIdLong"
+            | "PutOwnByVal"
     )
+}
+fn define_own(object: Box<Expr>, key: Box<Expr>, value: Box<Expr>, enumerable: bool) -> Vec<Stmt> {
+    vec![
+        b::assign(b::id("_desc"), b::empty_object()),
+        b::assign(b::member(b::id("_desc"), b::string("value")), value),
+        b::assign(
+            b::member(b::id("_desc"), b::string("writable")),
+            b::boolean(true),
+        ),
+        b::assign(
+            b::member(b::id("_desc"), b::string("enumerable")),
+            b::boolean(enumerable),
+        ),
+        b::assign(
+            b::member(b::id("_desc"), b::string("configurable")),
+            b::boolean(true),
+        ),
+        b::expr(b::call(b::id("_define"), vec![object, key, b::id("_desc")])),
+    ]
 }
 fn set_pc(target: u32) -> Stmt {
     b::assign(b::id("_pc"), b::number(f64::from(target)))

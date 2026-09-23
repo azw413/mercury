@@ -607,17 +607,25 @@ fn lower_new_object_with_buffer(raw: &RawInstruction) -> Result<Option<SemanticO
     })?;
     Ok(Some(SemanticOp::NewObjectWithBuffer {
         dst,
-        key_count: raw_u32(&raw.operands[1]).ok_or_else(|| LoweringError::InvalidOperandShape {
-            name: raw.name.clone(),
+        preallocation_size: raw_u32(&raw.operands[1]).ok_or_else(|| {
+            LoweringError::InvalidOperandShape {
+                name: raw.name.clone(),
+            }
         })?,
-        value_count: raw_u32(&raw.operands[2]).ok_or_else(|| LoweringError::InvalidOperandShape {
-            name: raw.name.clone(),
+        static_count: raw_u32(&raw.operands[2]).ok_or_else(|| {
+            LoweringError::InvalidOperandShape {
+                name: raw.name.clone(),
+            }
         })?,
-        key_buffer_index: raw_u32(&raw.operands[3]).ok_or_else(|| LoweringError::InvalidOperandShape {
-            name: raw.name.clone(),
+        key_buffer_offset: raw_u32(&raw.operands[3]).ok_or_else(|| {
+            LoweringError::InvalidOperandShape {
+                name: raw.name.clone(),
+            }
         })?,
-        shape_table_index: raw_u32(&raw.operands[4]).ok_or_else(|| LoweringError::InvalidOperandShape {
-            name: raw.name.clone(),
+        value_buffer_offset: raw_u32(&raw.operands[4]).ok_or_else(|| {
+            LoweringError::InvalidOperandShape {
+                name: raw.name.clone(),
+            }
         })?,
     }))
 }
@@ -2332,10 +2340,10 @@ mod tests {
             .op,
             SemanticOp::NewObjectWithBuffer {
                 dst: Register(5),
-                key_count: 7,
-                value_count: 6,
-                key_buffer_index: 6350,
-                shape_table_index: 65579,
+                preallocation_size: 7,
+                static_count: 6,
+                key_buffer_offset: 6350,
+                value_buffer_offset: 65579,
             }
         );
 

@@ -1,6 +1,6 @@
 use crate::ast::{
     AssemblyStringKind, SemanticAssemblyFunction, SemanticAssemblyInstruction,
-    SemanticAssemblyModule, SemanticAssemblyStatement, SemanticObjectShapeEntry, SemanticOperand,
+    SemanticAssemblyModule, SemanticAssemblyStatement, SemanticOperand,
 };
 use thiserror::Error;
 
@@ -28,7 +28,7 @@ enum Section {
     Strings,
     LiteralValueBuffer,
     ObjectKeyBuffer,
-    ObjectShapeTable,
+    ObjectValueBuffer,
     Function,
 }
 
@@ -40,7 +40,7 @@ pub fn parse_semantic_assembly(input: &str) -> Result<SemanticAssemblyModule, As
         string_kinds: Vec::new(),
         literal_value_buffer: Vec::new(),
         object_key_buffer: Vec::new(),
-        object_shape_table: Vec::new(),
+        object_value_buffer: Vec::new(),
         functions: Vec::new(),
     };
     let mut section: Option<Section> = None;
@@ -116,14 +116,14 @@ pub fn parse_semantic_assembly(input: &str) -> Result<SemanticAssemblyModule, As
             continue;
         }
 
-        if matches!(line, ".object_shape_table" | ".object_value_buffer") {
+        if line == ".object_value_buffer" {
             if section.is_some() {
                 return Err(AssemblyParseError::InvalidDirective {
                     line: line_no,
                     text: line.to_owned(),
                 });
             }
-            section = Some(Section::ObjectShapeTable);
+            section = Some(Section::ObjectValueBuffer);
             continue;
         }
 
@@ -144,7 +144,7 @@ pub fn parse_semantic_assembly(input: &str) -> Result<SemanticAssemblyModule, As
                 Some(Section::Strings) => {}
                 Some(Section::LiteralValueBuffer) => {}
                 Some(Section::ObjectKeyBuffer) => {}
-                Some(Section::ObjectShapeTable) => {}
+                Some(Section::ObjectValueBuffer) => {}
                 Some(Section::Function) => {
                     module.functions.push(
                         current_function
@@ -181,10 +181,8 @@ pub fn parse_semantic_assembly(input: &str) -> Result<SemanticAssemblyModule, As
             Some(Section::ObjectKeyBuffer) => {
                 parse_hex_bytes_into(line_no, line, &mut module.object_key_buffer)?;
             }
-            Some(Section::ObjectShapeTable) => {
-                module
-                    .object_shape_table
-                    .push(parse_shape_table_entry(line_no, line)?);
+            Some(Section::ObjectValueBuffer) => {
+                parse_hex_bytes_into(line_no, line, &mut module.object_value_buffer)?;
             }
             Some(Section::Function) => {
                 let function = current_function
@@ -424,37 +422,6 @@ fn parse_hex_bytes_into(
         out.push(byte);
     }
     Ok(())
-}
-
-fn parse_shape_table_entry(
-    line_no: usize,
-    line: &str,
-) -> Result<SemanticObjectShapeEntry, AssemblyParseError> {
-    let mut parts = line.split(',').map(str::trim);
-    let key_buffer_offset = parts
-        .next()
-        .and_then(|value| value.parse::<u32>().ok())
-        .ok_or_else(|| AssemblyParseError::InvalidDirective {
-            line: line_no,
-            text: line.to_owned(),
-        })?;
-    let num_props = parts
-        .next()
-        .and_then(|value| value.parse::<u32>().ok())
-        .ok_or_else(|| AssemblyParseError::InvalidDirective {
-            line: line_no,
-            text: line.to_owned(),
-        })?;
-    if parts.next().is_some() {
-        return Err(AssemblyParseError::InvalidDirective {
-            line: line_no,
-            text: line.to_owned(),
-        });
-    }
-    Ok(SemanticObjectShapeEntry {
-        key_buffer_offset,
-        num_props,
-    })
 }
 
 fn push_operand(

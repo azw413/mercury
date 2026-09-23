@@ -6,7 +6,7 @@ pub struct SemanticAssemblyModule {
     pub string_kinds: Vec<AssemblyStringKind>,
     pub literal_value_buffer: Vec<u8>,
     pub object_key_buffer: Vec<u8>,
-    pub object_shape_table: Vec<SemanticObjectShapeEntry>,
+    pub object_value_buffer: Vec<u8>,
     pub functions: Vec<SemanticAssemblyFunction>,
 }
 
@@ -15,13 +15,6 @@ pub struct SemanticAssemblyModule {
 pub enum AssemblyStringKind {
     String,
     Identifier,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// Entry in the preserved object-shape table section.
-pub struct SemanticObjectShapeEntry {
-    pub key_buffer_offset: u32,
-    pub num_props: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

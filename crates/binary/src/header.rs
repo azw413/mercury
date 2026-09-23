@@ -33,7 +33,7 @@ pub struct HbcVersionedFileHeader {
     pub reg_exp_storage_size: u32,
     pub literal_value_buffer_size: u32,
     pub obj_key_buffer_size: u32,
-    pub obj_shape_table_count: u32,
+    pub obj_value_buffer_size: u32,
     pub num_string_switch_imms: u32,
     pub segment_id: u32,
     pub cjs_module_count: u32,
@@ -77,7 +77,7 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
     };
 
     let (
-        obj_shape_table_count,
+        obj_value_buffer_size,
         num_string_switch_imms,
         segment_id,
         cjs_module_count,
@@ -135,7 +135,7 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
         reg_exp_storage_size: read_u32(bytes, 76),
         literal_value_buffer_size: read_u32(bytes, 80),
         obj_key_buffer_size: read_u32(bytes, 84),
-        obj_shape_table_count,
+        obj_value_buffer_size,
         num_string_switch_imms,
         segment_id,
         cjs_module_count,
@@ -171,7 +171,7 @@ pub fn write_file_header(header: &HbcVersionedFileHeader) -> [u8; FILE_HEADER_SI
     bytes[80..84].copy_from_slice(&header.literal_value_buffer_size.to_le_bytes());
     bytes[84..88].copy_from_slice(&header.obj_key_buffer_size.to_le_bytes());
     if header.layout != HbcHeaderLayout::Pre96 {
-        bytes[88..92].copy_from_slice(&header.obj_shape_table_count.to_le_bytes());
+        bytes[88..92].copy_from_slice(&header.obj_value_buffer_size.to_le_bytes());
         bytes[92..96].copy_from_slice(&header.num_string_switch_imms.to_le_bytes());
         bytes[96..100].copy_from_slice(&header.segment_id.to_le_bytes());
         bytes[100..104].copy_from_slice(&header.cjs_module_count.to_le_bytes());
@@ -184,7 +184,7 @@ pub fn write_file_header(header: &HbcVersionedFileHeader) -> [u8; FILE_HEADER_SI
             bytes[108] = header.options.raw;
         }
     } else {
-        bytes[88..92].copy_from_slice(&header.obj_shape_table_count.to_le_bytes());
+        bytes[88..92].copy_from_slice(&header.obj_value_buffer_size.to_le_bytes());
         bytes[92..96].copy_from_slice(&header.segment_id.to_le_bytes());
         bytes[96..100].copy_from_slice(&header.cjs_module_count.to_le_bytes());
         bytes[100..104].copy_from_slice(&header.function_source_count.to_le_bytes());
@@ -240,7 +240,7 @@ mod tests {
             reg_exp_storage_size: 66,
             literal_value_buffer_size: 20,
             obj_key_buffer_size: 30,
-            obj_shape_table_count: 5,
+            obj_value_buffer_size: 5,
             num_string_switch_imms: 11,
             segment_id: 7,
             cjs_module_count: 3,

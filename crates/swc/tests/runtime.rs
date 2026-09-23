@@ -171,6 +171,39 @@ fn populated_arrays_recover_buffered_and_dynamic_elements() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn buffered_objects_recover_static_and_dynamic_properties() {
+    let compiler = compiler();
+    for (source, expected) in [
+        (
+            "var buffered = { alpha: null, beta: true, gamma: false, integer: 7, double: 3.5, text: 'value' }; print(buffered.alpha, buffered.beta, buffered.gamma, buffered.integer, buffered.double, buffered.text, Object.keys(buffered).join(','));",
+            "null true false 7 3.5 value alpha,beta,gamma,integer,double,text\n",
+        ),
+        (
+            "var hits = 0; Object.prototype.__defineSetter__('dynamic', function(value) { hits = hits + 1; }); function make(value) { return { fixed: 1, dynamic: value }; } var object = make(42); var descriptor = Object.getOwnPropertyDescriptor(object, 'dynamic'); print(hits, object.hasOwnProperty('dynamic'), object.dynamic, descriptor.enumerable, descriptor.writable, descriptor.configurable);",
+            "0 true 42 true true true\n",
+        ),
+        (
+            "var key = 'computed'; var object = { 2: 'two', 1: 'one', fixed: 2, [key]: 3, a: 1, a: 4, ['__proto__']: 7 }; print(Object.keys(object).join(','), object[1], object[2], object.computed, object.a, object.hasOwnProperty('__proto__'), object.__proto__);",
+            "1,2,fixed,computed,a,__proto__ one two 3 4 true 7\n",
+        ),
+    ] {
+        let module = SwcModule::parse(
+            "buffered-object.js",
+            source,
+            SourceLanguage::JavaScript,
+            SourceKind::Script,
+        )
+        .unwrap();
+        let original = compiler.compile(&module).unwrap();
+        assert_eq!(execute(&original), expected, "original: {source}");
+        let recovered = decompile(&original).unwrap_or_else(|err| panic!("{source}: {err}"));
+        let rebuilt = compiler.compile(&recovered).unwrap();
+        assert_eq!(execute(&rebuilt), expected, "rebuilt: {source}");
+    }
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn decompilation_preserves_receiver_side_effects_and_nan_comparisons() {
     let compiler = compiler();
     for (source, expected) in [

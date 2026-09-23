@@ -8,10 +8,9 @@ use crate::sections::{
     compute_section_boundaries_with_spec,
 };
 use crate::tables::{
-    OverflowStringTableEntry, PairTableEntry, ShapeTableEntry, SmallStringTableEntry,
-    StringKindEntry, parse_overflow_string_table_entries, parse_pair_table_entries,
-    parse_shape_table_entries, parse_small_string_table_entries, parse_string_kind_entries,
-    parse_u32_array,
+    OverflowStringTableEntry, PairTableEntry, SmallStringTableEntry, StringKindEntry,
+    parse_overflow_string_table_entries, parse_pair_table_entries, parse_small_string_table_entries,
+    parse_string_kind_entries, parse_u32_array,
 };
 use mercury_spec::ContainerSpec;
 use thiserror::Error;
@@ -30,7 +29,7 @@ pub struct HbcContainer {
     pub string_storage: Vec<u8>,
     pub literal_value_buffer: Vec<u8>,
     pub object_key_buffer: Vec<u8>,
-    pub object_shape_table: Vec<ShapeTableEntry>,
+    pub object_value_buffer: Vec<u8>,
     pub cjs_module_entries: Vec<PairTableEntry>,
     pub function_source_entries: Vec<PairTableEntry>,
     function_bodies: Vec<FunctionBody>,
@@ -130,8 +129,7 @@ fn parse_hbc_container_impl(
     let string_storage = bytes[section_boundaries.string_storage.clone()].to_vec();
     let literal_value_buffer = bytes[section_boundaries.literal_value_buffer.clone()].to_vec();
     let object_key_buffer = bytes[section_boundaries.obj_key_buffer.clone()].to_vec();
-    let object_shape_table =
-        parse_shape_table_entries(bytes, section_boundaries.obj_shape_table.clone())?;
+    let object_value_buffer = bytes[section_boundaries.obj_value_buffer.clone()].to_vec();
     let cjs_module_entries =
         parse_pair_table_entries(bytes, section_boundaries.cjs_module_table.clone())?;
     let function_source_entries =
@@ -151,7 +149,7 @@ fn parse_hbc_container_impl(
         string_storage,
         literal_value_buffer,
         object_key_buffer,
-        object_shape_table,
+        object_value_buffer,
         cjs_module_entries,
         function_source_entries,
         function_bodies,

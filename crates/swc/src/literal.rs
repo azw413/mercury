@@ -10,11 +10,7 @@ pub enum LiteralValue {
     String(u32),
 }
 
-pub fn decode_value_buffer(
-    buffer: &[u8],
-    offset: u32,
-    count: u32,
-) -> Result<Vec<LiteralValue>, Error> {
+pub fn decode_buffer(buffer: &[u8], offset: u32, count: u32) -> Result<Vec<LiteralValue>, Error> {
     let mut cursor = usize::try_from(offset)
         .map_err(|_| Error::Bytecode("literal buffer offset does not fit this platform".into()))?;
     if cursor > buffer.len() {
@@ -110,7 +106,7 @@ mod tests {
         buffer.extend_from_slice(&[0x61, 7]);
 
         assert_eq!(
-            decode_value_buffer(&buffer, 0, 9).unwrap(),
+            decode_buffer(&buffer, 0, 9).unwrap(),
             vec![
                 LiteralValue::Null,
                 LiteralValue::Null,
@@ -128,17 +124,17 @@ mod tests {
     #[test]
     fn supports_extended_runs_and_rejects_malformed_buffers() {
         let buffer = [0x80, 0x10];
-        assert_eq!(decode_value_buffer(&buffer, 0, 16).unwrap().len(), 16);
+        assert_eq!(decode_buffer(&buffer, 0, 16).unwrap().len(), 16);
 
         let mut long_offset = vec![0; 70_000];
         long_offset.push(0x11);
         assert_eq!(
-            decode_value_buffer(&long_offset, 70_000, 1).unwrap(),
+            decode_buffer(&long_offset, 70_000, 1).unwrap(),
             vec![LiteralValue::Bool(true)]
         );
 
-        assert!(decode_value_buffer(&[0x00], 0, 1).is_err());
-        assert!(decode_value_buffer(&[0x31, 0], 0, 1).is_err());
-        assert!(decode_value_buffer(&[], 1, 1).is_err());
+        assert!(decode_buffer(&[0x00], 0, 1).is_err());
+        assert!(decode_buffer(&[0x31, 0], 0, 1).is_err());
+        assert!(decode_buffer(&[], 1, 1).is_err());
     }
 }
