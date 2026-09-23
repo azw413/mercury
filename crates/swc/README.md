@@ -123,10 +123,11 @@ ordinary own-property semantics. Global lookups assume ordinary globals;
 proxy/global interception and mutated intrinsics are outside this first contract.
 Regular expressions and BigInts use captured standard `RegExp` and `BigInt`
 constructors; BigInt table bytes are decoded as signed little-endian values before
-JavaScript generation. Constructor recovery also captures `Reflect.construct`,
-`Object.create`, `Object.prototype`, `WeakSet`, and `TypeError`. External
-constructors are invoked with `Reflect.construct`; this can perform a second
-observable prototype lookup after Hermes' preceding `CreateThis` sequence.
+JavaScript generation. Constructor recovery also captures `Object.create`,
+`Object.prototype`, `WeakSet`, and `TypeError`. Each external construction uses a
+generated direct `new` thunk with its complete argument list, so proxy construct
+traps, `newTarget`, `ConstructLong`, non-constructable failures, and Hermes'
+observable prototype access sequence remain intact without array iteration.
 Reflective details such as function source text and caller stacks will differ.
 Reading/rebuilding arbitrary HBC is not implied by successful source compilation;
 supported compilation syntax is broader than the decompiler subset.
@@ -165,9 +166,10 @@ actions, the iterator protocol, and `yield*` delegation. Async fixtures cover
 multiple fulfilled awaits, rejection through a bytecode catch, captured locals,
 and receiver preservation. Constructor fixtures cover primitive and object
 returns, native constructors, prototype inheritance, `new.target`, prohibited
-arrow construction, and more than 255 arguments. Class fixtures cover base and
-derived construction, `super`, instance and static methods, getters, setters,
-method names, and `instanceof`. Every runtime case compares authored HBC
+arrow construction, more than 255 arguments, proxy trap selection, exact
+prototype-read counts, and non-constructable proxy failures. Class fixtures cover
+base and derived construction, `super`, instance and static methods, getters,
+setters, method names, and `instanceof`. Every runtime case compares authored HBC
 execution with execution after HBC-to-SWC-to-HBC reconstruction. The runtime
 harness enables Hermes' experimental `-Xes6-class` support required by HBC 96
 class helper calls.

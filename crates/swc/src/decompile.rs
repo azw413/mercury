@@ -206,13 +206,6 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     if needs_construction {
         for (name, value) in [
             (
-                "_reflect_construct",
-                b::member(
-                    b::member(b::this(), b::string("Reflect")),
-                    b::string("construct"),
-                ),
-            ),
-            (
                 "_object_create",
                 b::member(
                     b::member(b::this(), b::string("Object")),
@@ -371,6 +364,31 @@ impl Lower<'_> {
             body.push(b::var("_suspended", Some(b::boolean(false))));
             body.push(b::var("_delegated", Some(b::boolean(false))));
         }
+        let deferred_constructor_prototypes = f
+            .instructions
+            .windows(2)
+            .filter_map(|pair| {
+                let get = &pair[0];
+                let create = &pair[1];
+                if !matches!(
+                    get.name.as_str(),
+                    "GetById" | "GetByIdShort" | "GetByIdLong"
+                ) || create.name != "CreateThis"
+                {
+                    return None;
+                }
+                Some((get, create))
+            })
+            .map(|(get, create)| {
+                let is_constructor_prototype = uint(get, 0)? == uint(create, 1)?
+                    && uint(get, 1)? == uint(create, 2)?
+                    && self.string(uint(get, 3)?)? == "prototype";
+                Ok(is_constructor_prototype.then_some(get.offset))
+            })
+            .collect::<Result<Vec<_>, Error>>()?
+            .into_iter()
+            .flatten()
+            .collect::<HashSet<_>>();
         let mut cases = Vec::new();
         for block in cfg::blocks(f)? {
             let mut stmts = Vec::new();
@@ -441,7 +459,12 @@ impl Lower<'_> {
                     }));
                     terminated = true;
                 } else {
-                    stmts.extend(self.instruction(f, op, resumable)?);
+                    stmts.extend(self.instruction(
+                        f,
+                        op,
+                        resumable,
+                        deferred_constructor_prototypes.contains(&op.offset),
+                    )?);
                     terminated = matches!(op.name.as_str(), "Ret" | "Throw");
                 }
             }
@@ -533,6 +556,7 @@ impl Lower<'_> {
         f: &RawFunction,
         op: &RawInstruction,
         resumable: bool,
+        deferred_constructor_prototype: bool,
     ) -> Result<Vec<Stmt>, Error> {
         let r = |i| register(f, op, i);
         let value = match op.name.as_str() {
@@ -672,7 +696,11 @@ impl Lower<'_> {
             }
             "GetById" | "GetByIdShort" | "GetByIdLong" | "TryGetById" | "TryGetByIdLong" => {
                 let key = self.string(uint(op, 3)?)?;
-                let value = b::member(r(1)?, b::string(&key));
+                let value = if deferred_constructor_prototype {
+                    b::call(b::id("_constructor_prototype"), vec![r(1)?])
+                } else {
+                    b::member(r(1)?, b::string(&key))
+                };
                 if op.name.starts_with("Try") {
                     return Ok(vec![
                         Stmt::If(IfStmt {
@@ -751,9 +779,11 @@ impl Lower<'_> {
                     .rev()
                     .map(|register| register_number(f, register))
                     .collect::<Result<Vec<_>, _>>()?;
+                let external_construct =
+                    b::function(None, vec![], vec![b::ret(b::new(r(1)?, args.clone()))]);
                 b::call(
                     b::id("_construct_value"),
-                    vec![r(1)?, this_arg, b::array(args)],
+                    vec![r(1)?, this_arg, b::array(args), external_construct],
                 )
             }
             "CallBuiltin" | "CallBuiltinLong" => {
@@ -1105,6 +1135,7 @@ fn construction_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
 var _recovered_functions = new _weak_set();
 var _new_target_stack = [];
+var _external_constructor = {};
 function _mark_function(_function) {
     _recovered_functions["add"](_function);
     return _function;
@@ -1117,7 +1148,7 @@ function _enter_function() {
     }
     return void 0;
 }
-function _construct_value(_function, _this_value, _arguments_value) {
+function _construct_value(_function, _this_value, _arguments_value, _external_construct) {
     if (_recovered_functions["has"](_function)) {
         _new_target_stack["push"]({ target: _function, pending: true });
         try {
@@ -1126,9 +1157,16 @@ function _construct_value(_function, _this_value, _arguments_value) {
             _new_target_stack["pop"]();
         }
     }
-    return _reflect_construct(_function, _arguments_value, _function);
+    return _external_construct();
+}
+function _constructor_prototype(_function) {
+    if (_recovered_functions["has"](_function)) {
+        return _function["prototype"];
+    }
+    return _external_constructor;
 }
 function _create_this(_prototype) {
+    if (_prototype === _external_constructor) return _prototype;
     if (_prototype === null || typeof _prototype === "object" || typeof _prototype === "function") {
         return _object_create(_prototype);
     }

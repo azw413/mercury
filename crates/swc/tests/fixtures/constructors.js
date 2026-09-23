@@ -63,3 +63,65 @@ try {
 } catch (error) {
   print("arrow", error instanceof TypeError);
 }
+
+function proxyConstruction(label, prototype) {
+  var prototypeReads = 0;
+  var constructTraps = 0;
+  var applyTraps = 0;
+
+  function ExternalTarget(value) {
+    this.value = value;
+    return 17;
+  }
+
+  ExternalTarget.prototype = prototype;
+  var Wrapped;
+  Wrapped = new Proxy(ExternalTarget, {
+    get: function (target, key, receiver) {
+      if (key === "prototype") {
+        prototypeReads = prototypeReads + 1;
+      }
+      return Reflect.get(target, key, receiver);
+    },
+    construct: function (target, args, newTarget) {
+      constructTraps = constructTraps + 1;
+      print("new-target", newTarget === Wrapped);
+      return Reflect.construct(target, args, newTarget);
+    },
+    apply: function (target, receiver, args) {
+      applyTraps = applyTraps + 1;
+      return Reflect.apply(target, receiver, args);
+    },
+  });
+
+  var value = new Wrapped(8);
+  print(
+    label,
+    prototypeReads,
+    constructTraps,
+    applyTraps,
+    value.value,
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+proxyConstruction("object-prototype", { marker: 11 });
+proxyConstruction("primitive-prototype", 9);
+
+var failedPrototypeReads = 0;
+var notConstructor = new Proxy(
+  {},
+  {
+    get: function (target, key, receiver) {
+      if (key === "prototype") {
+        failedPrototypeReads = failedPrototypeReads + 1;
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  }
+);
+try {
+  new notConstructor();
+} catch (error) {
+  print("not-constructor", failedPrototypeReads, error instanceof TypeError);
+}

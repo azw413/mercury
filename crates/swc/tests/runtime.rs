@@ -332,7 +332,7 @@ fn constructors_preserve_receivers_returns_prototypes_and_new_target() {
     assert_runtime_roundtrip(
         "constructors.js",
         include_str!("fixtures/constructors.js"),
-        "3 4 6 true true 7 6 true true false\narrow true\n",
+        "3 4 6 true true 7 6 true true false\narrow true\nnew-target true\nobject-prototype 2 1 0 8 false\nnew-target true\nprimitive-prototype 2 1 0 8 true\nnot-constructor 1 true\n",
     );
 }
 
