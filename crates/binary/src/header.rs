@@ -94,16 +94,6 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
             field_108,
             bytes[112],
         )
-    } else if layout == HbcHeaderLayout::V96 {
-        (
-            read_u32(bytes, 88),
-            read_u32(bytes, 92),
-            read_u32(bytes, 96),
-            read_u32(bytes, 100),
-            0,
-            field_104,
-            bytes[108],
-        )
     } else {
         (
             read_u32(bytes, 88),
@@ -170,19 +160,14 @@ pub fn write_file_header(header: &HbcVersionedFileHeader) -> [u8; FILE_HEADER_SI
     bytes[76..80].copy_from_slice(&header.reg_exp_storage_size.to_le_bytes());
     bytes[80..84].copy_from_slice(&header.literal_value_buffer_size.to_le_bytes());
     bytes[84..88].copy_from_slice(&header.obj_key_buffer_size.to_le_bytes());
-    if header.layout != HbcHeaderLayout::Pre96 {
+    if header.layout == HbcHeaderLayout::V96WithFunctionSources {
         bytes[88..92].copy_from_slice(&header.obj_value_buffer_size.to_le_bytes());
         bytes[92..96].copy_from_slice(&header.num_string_switch_imms.to_le_bytes());
         bytes[96..100].copy_from_slice(&header.segment_id.to_le_bytes());
         bytes[100..104].copy_from_slice(&header.cjs_module_count.to_le_bytes());
-        if header.layout == HbcHeaderLayout::V96WithFunctionSources {
-            bytes[104..108].copy_from_slice(&header.function_source_count.to_le_bytes());
-            bytes[108..112].copy_from_slice(&header.debug_info_offset.to_le_bytes());
-            bytes[112] = header.options.raw;
-        } else {
-            bytes[104..108].copy_from_slice(&header.debug_info_offset.to_le_bytes());
-            bytes[108] = header.options.raw;
-        }
+        bytes[104..108].copy_from_slice(&header.function_source_count.to_le_bytes());
+        bytes[108..112].copy_from_slice(&header.debug_info_offset.to_le_bytes());
+        bytes[112] = header.options.raw;
     } else {
         bytes[88..92].copy_from_slice(&header.obj_value_buffer_size.to_le_bytes());
         bytes[92..96].copy_from_slice(&header.segment_id.to_le_bytes());
@@ -217,6 +202,25 @@ mod tests {
         assert_eq!(parsed.function_source_count, 0);
         assert_eq!(parsed.debug_info_offset, 740);
         assert_eq!(&write_file_header(&parsed), &bytes[..FILE_HEADER_SIZE]);
+    }
+
+    #[test]
+    fn compact_v96_header_preserves_function_sources_and_async_flag() {
+        let mut bytes = [0u8; FILE_HEADER_SIZE];
+        bytes[0..8].copy_from_slice(&HERMES_MAGIC.to_le_bytes());
+        bytes[8..12].copy_from_slice(&96u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&1_000u32.to_le_bytes());
+        bytes[100..104].copy_from_slice(&2u32.to_le_bytes());
+        bytes[104..108].copy_from_slice(&748u32.to_le_bytes());
+        bytes[108] = 0b100;
+
+        let parsed = parse_file_header(&bytes).unwrap();
+        assert_eq!(parsed.layout, HbcHeaderLayout::V96);
+        assert_eq!(parsed.cjs_module_count, 0);
+        assert_eq!(parsed.function_source_count, 2);
+        assert_eq!(parsed.debug_info_offset, 748);
+        assert!(parsed.options.has_async);
+        assert_eq!(write_file_header(&parsed), bytes);
     }
 
     #[test]

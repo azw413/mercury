@@ -32,6 +32,16 @@ fn execute(bytes: &[u8]) -> String {
     );
     String::from_utf8(output.stdout).unwrap()
 }
+fn assert_runtime_roundtrip(name: &str, source: &str, expected: &str) {
+    let compiler = compiler();
+    let module =
+        SwcModule::parse(name, source, SourceLanguage::JavaScript, SourceKind::Script).unwrap();
+    let original = compiler.compile(&module).unwrap();
+    assert_eq!(execute(&original), expected, "original source");
+    let recovered = decompile(&original).unwrap();
+    let rebuilt = compiler.compile(&recovered).unwrap();
+    assert_eq!(execute(&rebuilt), expected, "decompiled source");
+}
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn source_bytecode_ast_edit_bytecode_executes() {
@@ -293,6 +303,26 @@ fn regexp_and_bigint_constants_recover_runtime_values() {
     let recovered = decompile(&original).unwrap_or_else(|err| panic!("{source}: {err}"));
     let rebuilt = compiler.compile(&recovered).unwrap();
     assert_eq!(execute(&rebuilt), expected);
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn generator_frames_support_next_throw_return_closures_and_delegation() {
+    assert_runtime_roundtrip(
+        "generator-suspension.js",
+        include_str!("fixtures/generator_suspension.js"),
+        "first-1 4 false\nsecond-1 10 false\nfirst-2 7 false\nfinally 7\nfirst-3 8 true\nfirst-4 undefined true\nfinally 10\nsecond-return 44 true\nsecond-after undefined true\niterator true\nthrow-1 ready false\nthrow-2 caught:boom false\nthrow-3 finished true\ndelegate-1 1 false\ndelegate-2 delegated-catch:x false\ninner-finally\ndelegate-3 outer:7 true\ndelegate-4 undefined true\nreturn-1 1 false\ninner-finally\nreturn-2 9 true\nreturn-3 undefined true\nbefore-start-return 5 true\nbefore-start-catch before-start-throw\n",
+    );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn async_frames_support_fulfilled_and_rejected_awaits_with_captures_and_receivers() {
+    assert_runtime_roundtrip(
+        "async-suspension.js",
+        include_str!("fixtures/async_suspension.js"),
+        "rejected caught:no\nreceiver 14\nresolved 7\n",
+    );
 }
 
 #[test]

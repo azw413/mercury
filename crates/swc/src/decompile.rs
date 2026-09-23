@@ -4,9 +4,10 @@ use mercury_ir::{RawFunction, RawInstruction, RawModule, RawOperand};
 use num_bigint::BigInt;
 use std::collections::HashSet;
 use swc_core::{
-    common::DUMMY_SP,
+    common::{DUMMY_SP, FileName, SourceMap, sync::Lrc},
     ecma::{
         ast::*,
+        parser::{Parser, StringInput, Syntax, lexer::Lexer},
         visit::{VisitMut, VisitMutWith},
     },
 };
@@ -30,7 +31,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let container = parse_hbc_container_with_spec(bytes, &spec.container)
         .map_err(|e| Error::Bytecode(e.to_string()))?;
     let h = &container.header;
-    if h.options.raw != 0
+    // The async bit records the presence of async functions; unlike static
+    // builtins and statically resolved modules it does not change opcode meaning.
+    if h.options.raw & !0b100 != 0
         || h.cjs_module_count != 0
         || h.segment_id != 0
         || h.num_string_switch_imms != 0
@@ -62,6 +65,27 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             )
         })
     });
+    let resumable_functions = raw
+        .functions
+        .iter()
+        .map(|function| has_function_opcode(function, "StartGenerator"))
+        .collect::<Vec<_>>();
+    let needs_suspension = resumable_functions.iter().any(|value| *value);
+    let special_closure_targets = raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .filter(|op| {
+            matches!(
+                op.name.as_str(),
+                "CreateGeneratorClosure"
+                    | "CreateGeneratorClosureLongIndex"
+                    | "CreateAsyncClosure"
+                    | "CreateAsyncClosureLongIndex"
+            )
+        })
+        .map(|op| uint(op, 2))
+        .collect::<Result<HashSet<_>, _>>()?;
     let mut globals = Vec::new();
     let mut seen_globals = HashSet::new();
     let names = container
@@ -73,14 +97,21 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     while names.iter().any(|name| name.starts_with(&prefix)) {
         prefix.push('_');
     }
-    let mut factories = Vec::new();
+    let mut factories = if needs_suspension {
+        suspension_runtime()
+    } else {
+        Vec::new()
+    };
     for f in &raw.functions {
         if f.frame_size > 65_536 {
             return Err(Error::Unsupported(
                 "decompiler register budget exceeded".into(),
             ));
         }
-        if f.flags.prohibit_invoke != 2 {
+        if f.flags.prohibit_invoke != 2
+            && !(f.flags.prohibit_invoke == 1
+                && special_closure_targets.contains(&(f.function_index as u32)))
+        {
             return Err(Error::Unsupported(format!(
                 "function {}: invocation flags",
                 f.function_index
@@ -109,14 +140,19 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             }
         }
         let name = lower.string(container.function_headers[f.function_index].function_name)?;
-        if !name.is_empty() && !valid_name(&name) {
+        let generated_name = name.starts_with("?anon_");
+        if !name.is_empty() && !generated_name && !valid_name(&name) {
             return Err(Error::Unsupported(format!("function name {name:?}")));
         }
         let params = (1..f.param_count).map(|i| format!("_a{i}")).collect();
         let function = b::function(
-            if name.is_empty() { None } else { Some(&name) },
+            if name.is_empty() || generated_name {
+                None
+            } else {
+                Some(&name)
+            },
             params,
-            lower.function(f)?,
+            lower.function(f, resumable_functions[f.function_index])?,
         );
         factories.push(b::var(
             &format!("_make{}", f.function_index),
@@ -160,6 +196,16 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     if needs_bigint {
         wrapper_params.push("_bigint".into());
         wrapper_args.push(b::member(b::this(), b::string("BigInt")));
+    }
+    if needs_suspension {
+        for (name, global) in [
+            ("_promise", "Promise"),
+            ("_symbol", "Symbol"),
+            ("_type_error", "TypeError"),
+        ] {
+            wrapper_params.push(name.into());
+            wrapper_args.push(b::member(b::this(), b::string(global)));
+        }
     }
     let mut wrapper = b::function(None, wrapper_params, factories);
     wrapper.visit_mut_with(&mut Namespace(prefix));
@@ -231,10 +277,14 @@ impl Lower<'_> {
             String::from_utf8(data.to_vec()).map_err(|_| error())
         }
     }
-    fn function(&self, f: &RawFunction) -> Result<Vec<Stmt>, Error> {
+    fn function(&self, f: &RawFunction, resumable: bool) -> Result<Vec<Stmt>, Error> {
         let mut body = Vec::new();
         if f.flags.strict_mode {
             body.push(b::expr(b::string("use strict")));
+        }
+        if resumable {
+            body.push(b::var("_this", Some(b::this())));
+            body.push(b::var("_args", Some(b::id("arguments"))));
         }
         for r in 0..f.frame_size {
             body.push(b::var(&format!("_r{r}"), None));
@@ -246,6 +296,10 @@ impl Lower<'_> {
             body.push(b::var("_thrown", None));
         }
         body.push(b::var("_pc", Some(b::number(0.0))));
+        if resumable {
+            body.push(b::var("_suspended", Some(b::boolean(false))));
+            body.push(b::var("_delegated", Some(b::boolean(false))));
+        }
         let mut cases = Vec::new();
         for block in cfg::blocks(f)? {
             let mut stmts = Vec::new();
@@ -262,9 +316,10 @@ impl Lower<'_> {
                         .iter()
                         .enumerate()
                         .map(|(index, displacement)| {
-                            let value = table.min_case.checked_add(index as u32).ok_or_else(|| {
-                                unsupported(f, op, "switch case value overflows")
-                            })?;
+                            let value = table
+                                .min_case
+                                .checked_add(index as u32)
+                                .ok_or_else(|| unsupported(f, op, "switch case value overflows"))?;
                             Ok(SwitchCase {
                                 span: DUMMY_SP,
                                 test: Some(b::number(f64::from(value))),
@@ -315,7 +370,7 @@ impl Lower<'_> {
                     }));
                     terminated = true;
                 } else {
-                    stmts.extend(self.instruction(f, op)?);
+                    stmts.extend(self.instruction(f, op, resumable)?);
                     terminated = matches!(op.name.as_str(), "Ret" | "Throw");
                 }
             }
@@ -386,14 +441,28 @@ impl Lower<'_> {
                 finalizer: None,
             }))]
         };
-        body.push(Stmt::While(WhileStmt {
+        let dispatch_loop = Stmt::While(WhileStmt {
             span: DUMMY_SP,
             test: b::boolean(true),
             body: Box::new(Stmt::Block(b::block(loop_body))),
-        }));
+        });
+        if resumable {
+            body.push(b::ret(b::function(
+                None,
+                vec!["_action".into(), "_resume".into()],
+                vec![dispatch_loop],
+            )));
+        } else {
+            body.push(dispatch_loop);
+        }
         Ok(body)
     }
-    fn instruction(&self, f: &RawFunction, op: &RawInstruction) -> Result<Vec<Stmt>, Error> {
+    fn instruction(
+        &self,
+        f: &RawFunction,
+        op: &RawInstruction,
+        resumable: bool,
+    ) -> Result<Vec<Stmt>, Error> {
         let r = |i| register(f, op, i);
         let value = match op.name.as_str() {
             "DeclareGlobalVar" => return Ok(vec![]),
@@ -406,7 +475,12 @@ impl Lower<'_> {
                 values.extend((0..f.environment_size).map(|_| b::undefined()));
                 b::array(values)
             }
-            "CreateClosure" | "CreateClosureLongIndex" => {
+            "CreateClosure"
+            | "CreateClosureLongIndex"
+            | "CreateGeneratorClosure"
+            | "CreateGeneratorClosureLongIndex"
+            | "CreateAsyncClosure"
+            | "CreateAsyncClosureLongIndex" => {
                 let target = uint(op, 2)?;
                 if target as usize >= self.raw.functions.len() {
                     return Err(Error::Bytecode("invalid closure target".into()));
@@ -436,12 +510,25 @@ impl Lower<'_> {
             "LoadParam" | "LoadParamLong" => {
                 let index = uint(op, 1)?;
                 if index == 0 {
-                    b::this()
+                    if resumable { b::id("_this") } else { b::this() }
                 } else {
-                    b::member(b::id("arguments"), b::number(f64::from(index - 1)))
+                    b::member(
+                        if resumable {
+                            b::id("_args")
+                        } else {
+                            b::id("arguments")
+                        },
+                        b::number(f64::from(index - 1)),
+                    )
                 }
             }
-            "LoadThisNS" => b::this(),
+            "LoadThisNS" => {
+                if resumable {
+                    b::id("_this")
+                } else {
+                    b::this()
+                }
+            }
             "LoadConstZero" => b::number(0.0),
             "LoadConstUInt8" => b::number(f64::from(uint(op, 1)?)),
             "LoadConstInt" => match op.operands.get(1) {
@@ -452,9 +539,10 @@ impl Lower<'_> {
                 Some(RawOperand::F64(v)) if v.is_finite() => b::number(*v),
                 _ => return Err(unsupported(f, op, "non-finite double")),
             },
-            "LoadConstBigInt" | "LoadConstBigIntLongIndex" => {
-                b::call(b::id("_bigint"), vec![b::string(&self.big_int(uint(op, 1)?)?)])
-            }
+            "LoadConstBigInt" | "LoadConstBigIntLongIndex" => b::call(
+                b::id("_bigint"),
+                vec![b::string(&self.big_int(uint(op, 1)?)?)],
+            ),
             "LoadConstTrue" => b::boolean(true),
             "LoadConstFalse" => b::boolean(false),
             "LoadConstUndefined" => b::undefined(),
@@ -477,6 +565,26 @@ impl Lower<'_> {
             }
             "Mov" | "MovLong" => r(1)?,
             "Catch" => b::id("_thrown"),
+            "Ret" if resumable => {
+                return Ok(vec![Stmt::If(IfStmt {
+                    span: DUMMY_SP,
+                    test: b::id("_suspended"),
+                    cons: Box::new(Stmt::Block(b::block(vec![
+                        b::assign(b::id("_suspended"), b::boolean(false)),
+                        Stmt::If(IfStmt {
+                            span: DUMMY_SP,
+                            test: b::id("_delegated"),
+                            cons: Box::new(Stmt::Block(b::block(vec![
+                                b::assign(b::id("_delegated"), b::boolean(false)),
+                                b::ret(r(0)?),
+                            ]))),
+                            alt: None,
+                        }),
+                        b::ret(iterator_result(*r(0)?, false)),
+                    ]))),
+                    alt: Some(Box::new(b::ret(iterator_result(*r(0)?, true)))),
+                })]);
+            }
             "Ret" => return Ok(vec![b::ret(r(0)?)]),
             "Throw" => {
                 return Ok(vec![Stmt::Throw(ThrowStmt {
@@ -550,6 +658,129 @@ impl Lower<'_> {
                     .map(|register| register_number(f, register))
                     .collect::<Result<Vec<_>, _>>()?;
                 b::call(b::id("_apply"), vec![r(1)?, this_arg, b::array(args)])
+            }
+            "CallBuiltin" | "CallBuiltinLong" => {
+                let builtin = uint(op, 1)?;
+                let argument_count = uint(op, 2)?;
+                if argument_count == 0 {
+                    return Err(unsupported(f, op, "builtin call has no this argument"));
+                }
+                const CALL_EXTRA_REGISTERS: u32 = 6;
+                let first = f
+                    .frame_size
+                    .checked_sub(CALL_EXTRA_REGISTERS + 1)
+                    .ok_or_else(|| {
+                        unsupported(f, op, "frame is too small for builtin arguments")
+                    })?;
+                let last = first.checked_sub(argument_count - 1).ok_or_else(|| {
+                    unsupported(f, op, "builtin argument count exceeds the function frame")
+                })?;
+                let args = (last..first)
+                    .rev()
+                    .map(|register| register_number(f, register))
+                    .collect::<Result<Vec<_>, _>>()?;
+                // HBC remained at version 96 across Hermes 0.12 and 0.13 even
+                // though four private builtins moved from 40..=43 to 45..=48.
+                // A yield* body always contains generatorSetDelegated, so that
+                // sentinel identifies the producer's contiguous builtin range.
+                let modern_yield_builtins = f.instructions.iter().any(|instruction| {
+                    matches!(instruction.name.as_str(), "CallBuiltin" | "CallBuiltinLong")
+                        && matches!(
+                            instruction.operands.get(1),
+                            Some(RawOperand::U8(48) | RawOperand::U32(48))
+                        )
+                });
+                let ensure_object = if modern_yield_builtins { 45 } else { 40 };
+                match builtin {
+                    value if resumable && value == ensure_object => {
+                        b::call(b::id("_ensure_object"), args)
+                    }
+                    value if resumable && value == ensure_object + 1 => {
+                        b::call(b::id("_get_method"), args)
+                    }
+                    value if resumable && value == ensure_object + 2 => {
+                        b::call(b::id("_throw_type_error"), args)
+                    }
+                    value if resumable && value == ensure_object + 3 => {
+                        return Ok(vec![
+                            b::assign(b::id("_delegated"), b::boolean(true)),
+                            b::assign(r(0)?, b::undefined()),
+                        ]);
+                    }
+                    _ => return Err(unsupported(f, op, "unsupported builtin call")),
+                }
+            }
+            "GetBuiltinClosure" => {
+                let async_driver = f
+                    .instructions
+                    .iter()
+                    .any(|instruction| instruction.name == "ReifyArguments")
+                    && f.instructions.iter().any(|instruction| {
+                        matches!(
+                            instruction.name.as_str(),
+                            "CreateGeneratorClosure" | "CreateGeneratorClosureLongIndex"
+                        )
+                    });
+                if !async_driver {
+                    return Err(unsupported(f, op, "unsupported builtin closure"));
+                }
+                b::id("_spawn_async")
+            }
+            "ReifyArguments" => {
+                if resumable {
+                    b::id("_args")
+                } else {
+                    b::id("arguments")
+                }
+            }
+            "CreateGenerator" | "CreateGeneratorLongIndex" => {
+                let target = uint(op, 2)?;
+                if target as usize >= self.raw.functions.len() {
+                    return Err(Error::Bytecode("invalid generator target".into()));
+                }
+                b::call(
+                    b::id("_generator"),
+                    vec![
+                        b::call(b::id(&format!("_make{target}")), vec![r(1)?]),
+                        if resumable { b::id("_this") } else { b::this() },
+                        if resumable {
+                            b::id("_args")
+                        } else {
+                            b::id("arguments")
+                        },
+                    ],
+                )
+            }
+            "StartGenerator" | "CompleteGenerator" => return Ok(vec![]),
+            "ResumeGenerator" => {
+                if !resumable {
+                    return Err(unsupported(f, op, "resume outside a resumable function"));
+                }
+                return Ok(vec![
+                    Stmt::If(IfStmt {
+                        span: DUMMY_SP,
+                        test: b::binary(BinaryOp::EqEqEq, b::id("_action"), b::string("throw")),
+                        cons: Box::new(Stmt::Throw(ThrowStmt {
+                            span: DUMMY_SP,
+                            arg: b::id("_resume"),
+                        })),
+                        alt: None,
+                    }),
+                    b::assign(r(0)?, b::id("_resume")),
+                    b::assign(
+                        r(1)?,
+                        b::binary(BinaryOp::EqEqEq, b::id("_action"), b::string("return")),
+                    ),
+                ]);
+            }
+            "SaveGenerator" => {
+                if !resumable {
+                    return Err(unsupported(f, op, "save outside a resumable function"));
+                }
+                return Ok(vec![
+                    set_pc(cfg::relative_target(op, 0)?),
+                    b::assign(b::id("_suspended"), b::boolean(true)),
+                ]);
             }
             // Array literals create intrinsic arrays without consulting a
             // replaceable global Array constructor.
@@ -628,13 +859,7 @@ impl Lower<'_> {
         offset: u32,
         count: u32,
     ) -> Result<Vec<Expr>, Error> {
-        self.buffer_values(
-            f,
-            op,
-            &self.container.literal_value_buffer,
-            offset,
-            count,
-        )
+        self.buffer_values(f, op, &self.container.literal_value_buffer, offset, count)
     }
 
     fn big_int(&self, id: u32) -> Result<String, Error> {
@@ -773,6 +998,107 @@ fn has_opcode(raw: &RawModule, name: &str) -> bool {
         .iter()
         .flat_map(|function| &function.instructions)
         .any(|op| op.name == name)
+}
+fn has_function_opcode(function: &RawFunction, name: &str) -> bool {
+    function.instructions.iter().any(|op| op.name == name)
+}
+fn suspension_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _generator(_init, _this_value, _arguments_value) {
+    var _step = _apply(_init, _this_value, _arguments_value);
+    var _done = false;
+    var _started = false;
+    var _running = false;
+    var _iterator = {};
+    function _resume_generator(_action_value, _sent_value) {
+        if (_running) throw new _type_error("Generator is already running");
+        if (_done) {
+            if (_action_value === "throw") throw _sent_value;
+            return { value: _action_value === "return" ? _sent_value : void 0, done: true };
+        }
+        if (!_started) {
+            _started = true;
+            if (_action_value === "next") _sent_value = void 0;
+        }
+        _running = true;
+        try {
+            var _result = _step(_action_value, _sent_value);
+            _done = _result["done"];
+            return _result;
+        } catch (_error) {
+            _done = true;
+            throw _error;
+        } finally {
+            _running = false;
+        }
+    }
+    _iterator["next"] = function(_value) { return _resume_generator("next", _value); };
+    _iterator["throw"] = function(_value) { return _resume_generator("throw", _value); };
+    _iterator["return"] = function(_value) { return _resume_generator("return", _value); };
+    _iterator[_symbol["iterator"]] = function() { return this; };
+    return _iterator;
+}
+function _spawn_async(_generator_function, _this_value, _arguments_value) {
+    return new _promise(function(_resolve, _reject) {
+        var _iterator = _apply(_generator_function, _this_value, _arguments_value);
+        function _advance(_action_value, _sent_value) {
+            var _result;
+            try {
+                _result = _iterator[_action_value](_sent_value);
+            } catch (_error) {
+                _reject(_error);
+                return;
+            }
+            if (_result["done"]) {
+                _resolve(_result["value"]);
+                return;
+            }
+            _promise["resolve"](_result["value"])["then"](
+                function(_value) { _advance("next", _value); },
+                function(_error) { _advance("throw", _error); }
+            );
+        }
+        _advance("next", void 0);
+    });
+}
+function _ensure_object(_value, _message) {
+    if (_value === null || (typeof _value !== "object" && typeof _value !== "function")) {
+        throw new _type_error(_message);
+    }
+    return _value;
+}
+function _get_method(_value, _key) {
+    var _method = _value[_key];
+    if (_method === null || _method === void 0) return void 0;
+    if (typeof _method !== "function") throw new _type_error(_key + " is not callable");
+    return _method;
+}
+function _throw_type_error(_message) {
+    throw new _type_error(_message);
+}
+"#;
+    let source_map: Lrc<SourceMap> = Default::default();
+    let file = source_map.new_source_file(
+        FileName::Custom("mercury-suspension-runtime.js".into()).into(),
+        SOURCE,
+    );
+    let lexer = Lexer::new(
+        Syntax::Es(Default::default()),
+        EsVersion::latest(),
+        StringInput::from(&*file),
+        None,
+    );
+    let mut parser = Parser::new_from(lexer);
+    parser
+        .parse_script()
+        .expect("embedded suspension runtime must parse")
+        .body
+}
+fn iterator_result(value: Expr, done: bool) -> Box<Expr> {
+    b::object(vec![
+        (*b::string("value"), value),
+        (*b::string("done"), *b::boolean(done)),
+    ])
 }
 fn define_own(object: Box<Expr>, key: Box<Expr>, value: Box<Expr>, enumerable: bool) -> Vec<Stmt> {
     vec![

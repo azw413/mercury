@@ -24,8 +24,9 @@ SWC nodes.
   and returns bytes. It never executes the program. Temporary files are isolated
   per invocation and removed automatically. Compiler stderr is included on error.
 - `decompile(&bytes)` constructs SWC nodes directly from Mercury's decoded raw
-  IR and a private basic-block graph. It does not generate text and parse that
-  text back into an AST.
+  IR and a private basic-block graph. Opcode lowering does not generate text and
+  parse that text back into an AST; generator support adds a fixed embedded
+  runtime as SWC statements around those directly constructed nodes.
 
 SWC 75 is selected as a compatible family through `swc_core`; Cargo.lock records
 its resolved dependencies. SWC Rust interfaces are version-sensitive, so callers
@@ -90,11 +91,19 @@ This preserves mutation shared by sibling closures, independent environments fro
 separate outer calls, and captures across multiple lexical levels. The structure
 is an implementation detail rather than part of the module interface.
 
-Async/generators, string-switch metadata, and dynamic eval are not implemented.
-The decompiler also rejects non-finite literal doubles, unpaired UTF-16 surrogates
-and function/global names outside its supported identifier subset. Source comments,
-original variable names, original TypeScript types, and byte-identical
-recompilation cannot be recovered from HBC.
+Generator and async frames retain their registers, arguments, receiver, and
+closure environment across suspension. The generated iterator adapter implements
+`next`, `throw`, `return`, completion, re-entry checks, and `Symbol.iterator`;
+Hermes' delegated-yield builtins preserve `yield*` forwarding. Async wrappers
+drive the same frames through captured Promises, including fulfilled and rejected
+awaits. Exact native generator/async function prototypes and reflective source
+text are not reconstructed.
+
+String-switch metadata and dynamic eval are not implemented. The decompiler also
+rejects non-finite literal doubles, unpaired UTF-16 surrogates and function/global
+names outside its supported identifier subset. Source comments, original variable
+names, original TypeScript types, and byte-identical recompilation cannot be
+recovered from HBC.
 
 Generated calls assume the standard, unmodified `Reflect.apply` intrinsic;
 dynamic array and object initializers also use `Reflect.defineProperty` to preserve
@@ -137,7 +146,12 @@ targets, and non-integer inputs. Exception checks cover nested catches, exceptio
 crossing function calls, and finally cleanup on normal and exceptional paths. An
 additional runtime-data check covers stateful regular expressions and large
 positive and negative BigInt constants. An SWC numeric-literal visitor changes the
-main loop to print `28`.
+main loop to print `28`. Generator fixtures cover independent suspended frames,
+captured locals, `next`/`throw`/`return`, cleanup paths, completion, pre-start
+actions, the iterator protocol, and `yield*` delegation. Async fixtures cover
+multiple fulfilled awaits, rejection through a bytecode catch, captured locals,
+and receiver preservation. Every runtime case compares authored HBC execution
+with execution after HBC-to-SWC-to-HBC reconstruction.
 
 `tests/fixtures/control_flow.hbc` was generated from the adjacent authored JS
 fixture with the local compiler reporting Hermes release 0.12.0 / HBC 96:
@@ -148,11 +162,12 @@ hermesc -O -g0 -emit-binary \
   crates/swc/tests/fixtures/control_flow.js
 ```
 
-The integration exposed a compact-header bug affecting small HBC-96 files. The
-binary layer now distinguishes its two observed version-96 header tails by the
-debug-offset location, retains the selected layout for writing, and tests header
-byte equality against `hex.hbc`. Modelling producer variants explicitly in the
-generated specs remains future work.
+The integration exposed compact-header bugs affecting small HBC-96 files and
+files with preserved generator/async function sources. The binary layer now
+distinguishes its two observed version-96 header tails by the debug-offset
+location, retains the selected layout for writing, and tests both compact
+function-source fields and header byte equality against `hex.hbc`. Modelling
+producer variants explicitly in the generated specs remains future work.
 
 References: [SWC parser](https://docs.rs/swc_ecma_parser/43.0.0/swc_ecma_parser/),
 [TypeScript transform](https://docs.rs/swc_ecma_transforms_typescript/53.0.0/swc_ecma_transforms_typescript/),
