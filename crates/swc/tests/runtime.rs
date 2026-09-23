@@ -257,6 +257,26 @@ fn integer_switch_tables_recover_all_targets_and_default() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn exception_handlers_recover_catches_calls_and_finally() {
+    let source = "function fail() { throw 7; } function called() { try { return fail(); } catch (error) { return error + 1; } } function nested(flag) { var out = ''; try { try { if (flag) throw 'x'; out = out + 'a'; } catch (error) { out = out + 'inner' + error; throw 'y'; } finally { out = out + 'f'; } } catch (error) { out = out + 'outer' + error; } return out; } print(called(), nested(false), nested(true));";
+    let expected = "8 af innerxfoutery\n";
+    let compiler = compiler();
+    let module = SwcModule::parse(
+        "exceptions.js",
+        source,
+        SourceLanguage::JavaScript,
+        SourceKind::Script,
+    )
+    .unwrap();
+    let original = compiler.compile(&module).unwrap();
+    assert_eq!(execute(&original), expected);
+    let recovered = decompile(&original).unwrap_or_else(|err| panic!("{source}: {err}"));
+    let rebuilt = compiler.compile(&recovered).unwrap();
+    assert_eq!(execute(&rebuilt), expected);
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn decompilation_preserves_receiver_side_effects_and_nan_comparisons() {
     let compiler = compiler();
     for (source, expected) in [

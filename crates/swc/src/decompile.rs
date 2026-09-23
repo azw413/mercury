@@ -72,9 +72,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 "decompiler register budget exceeded".into(),
             ));
         }
-        if f.flags.has_exception_handler || f.flags.prohibit_invoke != 2 {
+        if f.flags.prohibit_invoke != 2 {
             return Err(Error::Unsupported(format!(
-                "function {}: exception handlers or invocation flags",
+                "function {}: invocation flags",
                 f.function_index
             )));
         }
@@ -226,6 +226,9 @@ impl Lower<'_> {
         if f.instructions.iter().any(|op| is_define_own(&op.name)) {
             body.push(b::var("_desc", None));
         }
+        if !f.exception_handlers.is_empty() {
+            body.push(b::var("_thrown", None));
+        }
         body.push(b::var("_pc", Some(b::number(0.0))));
         let mut cases = Vec::new();
         for block in cfg::blocks(f)? {
@@ -316,14 +319,61 @@ impl Lower<'_> {
                 cons: stmts,
             });
         }
+        let dispatch = Stmt::Switch(SwitchStmt {
+            span: DUMMY_SP,
+            discriminant: b::id("_pc"),
+            cases,
+        });
+        let loop_body = if f.exception_handlers.is_empty() {
+            vec![dispatch]
+        } else {
+            let mut catch_body = Vec::new();
+            for handler in &f.exception_handlers {
+                catch_body.push(Stmt::If(IfStmt {
+                    span: DUMMY_SP,
+                    test: b::binary(
+                        BinaryOp::LogicalAnd,
+                        b::binary(
+                            BinaryOp::LtEq,
+                            b::number(f64::from(handler.start)),
+                            b::id("_pc"),
+                        ),
+                        b::binary(
+                            BinaryOp::Lt,
+                            b::id("_pc"),
+                            b::number(f64::from(handler.end)),
+                        ),
+                    ),
+                    cons: Box::new(Stmt::Block(b::block(vec![
+                        b::assign(b::id("_thrown"), b::id("_caught")),
+                        set_pc(handler.target),
+                        Stmt::Continue(ContinueStmt {
+                            span: DUMMY_SP,
+                            label: None,
+                        }),
+                    ]))),
+                    alt: None,
+                }));
+            }
+            catch_body.push(Stmt::Throw(ThrowStmt {
+                span: DUMMY_SP,
+                arg: b::id("_caught"),
+            }));
+            vec![Stmt::Try(Box::new(TryStmt {
+                span: DUMMY_SP,
+                block: b::block(vec![dispatch]),
+                handler: Some(CatchClause {
+                    span: DUMMY_SP,
+                    param: Some(Pat::Ident(b::ident("_caught").into())),
+                    body: b::block(catch_body),
+                }),
+                finalizer: None,
+            }))]
+        };
         body.push(Stmt::While(WhileStmt {
             span: DUMMY_SP,
             test: b::boolean(true),
-            body: Box::new(Stmt::Block(b::block(vec![Stmt::Switch(SwitchStmt {
-                span: DUMMY_SP,
-                discriminant: b::id("_pc"),
-                cases,
-            })]))),
+            body: Box::new(Stmt::Block(b::block(loop_body))),
         }));
         Ok(body)
     }
@@ -394,6 +444,7 @@ impl Lower<'_> {
                 b::string(&self.string(uint(op, 1)?)?)
             }
             "Mov" | "MovLong" => r(1)?,
+            "Catch" => b::id("_thrown"),
             "Ret" => return Ok(vec![b::ret(r(0)?)]),
             "Throw" => {
                 return Ok(vec![Stmt::Throw(ThrowStmt {

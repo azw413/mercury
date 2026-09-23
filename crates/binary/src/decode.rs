@@ -1,8 +1,8 @@
 use crate::functions::FunctionHeader;
 use crate::parse::HbcContainer;
 use mercury_ir::{
-    RawFunction, RawFunctionFlags, RawInstruction, RawModule, RawOperand, RawSectionBoundaries,
-    RawSwitchTable,
+    RawExceptionHandler, RawFunction, RawFunctionFlags, RawInstruction, RawModule, RawOperand,
+    RawSectionBoundaries, RawSwitchTable,
 };
 use mercury_spec::BytecodeSpec;
 use thiserror::Error;
@@ -98,12 +98,25 @@ pub fn decode_raw_function(
         .ok_or(HbcDecodeError::TruncatedInstruction)?;
 
     let switch_tables = decode_switch_tables(bytes, header, &decoded)?;
+    let exception_handlers = container
+        .function_infos
+        .get(function_index)
+        .ok_or(HbcDecodeError::TruncatedInstruction)?
+        .exception_handlers
+        .iter()
+        .map(|handler| RawExceptionHandler {
+            start: handler.start,
+            end: handler.end,
+            target: handler.target,
+        })
+        .collect();
 
     Ok(raw_function_from_decoded(
         function_index,
         header,
         decoded,
         switch_tables,
+        exception_handlers,
     ))
 }
 
@@ -138,6 +151,7 @@ fn raw_function_from_decoded(
     header: &FunctionHeader,
     decoded: Vec<DecodedInstruction>,
     switch_tables: Vec<RawSwitchTable>,
+    exception_handlers: Vec<RawExceptionHandler>,
 ) -> RawFunction {
     RawFunction {
         function_index,
@@ -177,6 +191,7 @@ fn raw_function_from_decoded(
             })
             .collect(),
         switch_tables,
+        exception_handlers,
     }
 }
 

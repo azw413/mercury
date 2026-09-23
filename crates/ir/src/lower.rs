@@ -1678,6 +1678,7 @@ mod tests {
                     overflowed: false,
                 },
                 switch_tables: vec![],
+                exception_handlers: vec![],
                 instructions: vec![
                     RawInstruction {
                         offset: 100,

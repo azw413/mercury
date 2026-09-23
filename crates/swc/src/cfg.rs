@@ -36,6 +36,33 @@ pub fn blocks(function: &RawFunction) -> Result<Vec<Block<'_>>, Error> {
         .map(|(i, op)| (op.offset, i))
         .collect();
     let mut leaders = BTreeSet::from([0]);
+    for handler in &function.exception_handlers {
+        for boundary in [handler.start, handler.target] {
+            if !offsets.contains_key(&boundary) {
+                return Err(Error::Bytecode(format!(
+                    "exception handler boundary {boundary} is not an instruction"
+                )));
+            }
+            leaders.insert(boundary);
+        }
+        if handler.end < function.bytecode_size_in_bytes {
+            if !offsets.contains_key(&handler.end) {
+                return Err(Error::Bytecode(format!(
+                    "exception handler boundary {} is not an instruction",
+                    handler.end
+                )));
+            }
+            leaders.insert(handler.end);
+        } else if handler.end != function.bytecode_size_in_bytes {
+            return Err(Error::Bytecode(format!(
+                "exception handler end {} is outside the function",
+                handler.end
+            )));
+        }
+        if handler.start >= handler.end {
+            return Err(Error::Bytecode("empty exception handler range".into()));
+        }
+    }
     for (i, op) in function.instructions.iter().enumerate() {
         if op.name.starts_with('J') {
             let dest = target(op)?;

@@ -27,6 +27,15 @@ pub struct RawFunction {
     pub flags: RawFunctionFlags,
     pub instructions: Vec<RawInstruction>,
     pub switch_tables: Vec<RawSwitchTable>,
+    pub exception_handlers: Vec<RawExceptionHandler>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Protected instruction range and catch target from function metadata.
+pub struct RawExceptionHandler {
+    pub start: u32,
+    pub end: u32,
+    pub target: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
