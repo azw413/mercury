@@ -237,6 +237,26 @@ fn custom_object_prototypes_preserve_parent_selection() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn integer_switch_tables_recover_all_targets_and_default() {
+    let source = "function choose(value) { switch (value) { case 2: return 'two'; case 3: case 4: return 'three-four'; case 6: return 'six'; default: return 'other'; } } print(choose(2), choose(3), choose(4), choose(5), choose(6), choose(7), choose('3'), choose(3.5));";
+    let expected = "two three-four three-four other six other other other\n";
+    let compiler = compiler();
+    let module = SwcModule::parse(
+        "integer-switch.js",
+        source,
+        SourceLanguage::JavaScript,
+        SourceKind::Script,
+    )
+    .unwrap();
+    let original = compiler.compile(&module).unwrap();
+    assert_eq!(execute(&original), expected);
+    let recovered = decompile(&original).unwrap_or_else(|err| panic!("{source}: {err}"));
+    let rebuilt = compiler.compile(&recovered).unwrap();
+    assert_eq!(execute(&rebuilt), expected);
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn decompilation_preserves_receiver_side_effects_and_nan_comparisons() {
     let compiler = compiler();
     for (source, expected) in [

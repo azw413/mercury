@@ -74,20 +74,23 @@ captured variables, global access, property reads/writes, fixed-arity and genera
 calls, common arithmetic/comparisons, conditional/unconditional branches,
 empty, sparse, buffered, and dynamically populated array allocation, returns,
 buffer-backed object literals, dynamic own-property definitions, and throws
-without handlers. Function names and strictness are retained. Unknown opcodes
-fail with function index and instruction offset; malformed branch targets and
-literal buffers fail before emitting a tree.
+without handlers. Dense integer switch tables are decoded from their trailing
+function data and lowered into the dispatcher. Function names and strictness are
+retained. Unknown opcodes fail with function index and instruction offset;
+malformed branch targets, switch tables, and literal buffers fail before emitting
+a tree.
 
 Closure environments are reconstructed as a private parent-linked slot structure.
 This preserves mutation shared by sibling closures, independent environments from
 separate outer calls, and captures across multiple lexical levels. The structure
 is an implementation detail rather than part of the module interface.
 
-Exception handlers, async/generators, switch tables, dynamic eval, regexp and
-bigint tables are not implemented. The decompiler also rejects non-finite literal
-doubles, unpaired UTF-16 surrogates and function/global names outside its supported
-identifier subset. Source comments, original variable names, original TypeScript
-types, and byte-identical recompilation cannot be recovered from HBC.
+Exception handlers, async/generators, string-switch metadata, dynamic eval,
+regexp and bigint tables are not implemented. The decompiler also rejects
+non-finite literal doubles, unpaired UTF-16 surrogates and function/global names
+outside its supported identifier subset. Source comments, original variable names,
+original TypeScript types, and byte-identical recompilation cannot be recovered
+from HBC.
 
 Generated calls assume the standard, unmodified `Reflect.apply` intrinsic;
 dynamic array and object initializers also use `Reflect.defineProperty` to preserve
@@ -122,7 +125,9 @@ kind, dynamic elements, closure elements, and inherited index setters. The main
 Object checks cover serialized primitive values, key order, numeric and computed
 keys, duplicate keys, `__proto__`, descriptor flags, inherited setters, and
 custom, null, or primitive prototype operands. The main loop prints `18` after
-recompilation; an SWC numeric-literal visitor changes it to print `28`.
+recompilation; integer-switch checks cover shared targets, in-range gaps, default
+targets, and non-integer inputs. An SWC numeric-literal visitor changes the main
+loop to print `28`.
 
 `tests/fixtures/control_flow.hbc` was generated from the adjacent authored JS
 fixture with the local compiler reporting Hermes release 0.12.0 / HBC 96:

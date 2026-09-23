@@ -26,6 +26,16 @@ pub struct RawFunction {
     pub highest_write_cache_index: u8,
     pub flags: RawFunctionFlags,
     pub instructions: Vec<RawInstruction>,
+    pub switch_tables: Vec<RawSwitchTable>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Signed branch displacements stored in a `SwitchImm` jump table.
+pub struct RawSwitchTable {
+    pub instruction_offset: u32,
+    pub min_case: u32,
+    pub max_case: u32,
+    pub displacements: Vec<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

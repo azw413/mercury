@@ -1029,13 +1029,15 @@ fn lower_switch_imm(
         table_offset: raw_u32(&raw.operands[1]).ok_or_else(|| LoweringError::InvalidOperandShape {
             name: raw.name.clone(),
         })?,
-        default_offset: raw_u32(&raw.operands[2]).ok_or_else(|| LoweringError::InvalidOperandShape {
+        default_displacement: raw_i32(&raw.operands[2]).ok_or_else(|| {
+            LoweringError::InvalidOperandShape {
+                name: raw.name.clone(),
+            }
+        })?,
+        min_case: raw_u32(&raw.operands[3]).ok_or_else(|| LoweringError::InvalidOperandShape {
             name: raw.name.clone(),
         })?,
-        min_case: raw_i32(&raw.operands[3]).ok_or_else(|| LoweringError::InvalidOperandShape {
-            name: raw.name.clone(),
-        })?,
-        max_case: raw_i32(&raw.operands[4]).ok_or_else(|| LoweringError::InvalidOperandShape {
+        max_case: raw_u32(&raw.operands[4]).ok_or_else(|| LoweringError::InvalidOperandShape {
             name: raw.name.clone(),
         })?,
     }))
@@ -1675,6 +1677,7 @@ mod tests {
                     has_debug_info: false,
                     overflowed: false,
                 },
+                switch_tables: vec![],
                 instructions: vec![
                     RawInstruction {
                         offset: 100,
@@ -2992,8 +2995,8 @@ mod tests {
                     offset: 215,
                     opcode: 58,
                     name: "SwitchImm".to_string(),
-                    size: 9,
-                    operands: vec![RawOperand::U8(1), RawOperand::U16(320), RawOperand::U16(316), RawOperand::I32(0), RawOperand::I32(25)],
+                    size: 18,
+                    operands: vec![RawOperand::U8(1), RawOperand::U32(320), RawOperand::I32(316), RawOperand::U32(0), RawOperand::U32(25)],
                 },
                 &spec,
             )
@@ -3002,7 +3005,7 @@ mod tests {
             SemanticOp::SwitchImm {
                 input: Value::Register(Register(1)),
                 table_offset: 320,
-                default_offset: 316,
+                default_displacement: 316,
                 min_case: 0,
                 max_case: 25,
             }

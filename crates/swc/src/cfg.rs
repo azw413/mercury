@@ -9,7 +9,10 @@ pub struct Block<'a> {
     pub next: Option<u32>,
 }
 pub fn target(instruction: &RawInstruction) -> Result<u32, Error> {
-    let displacement = match instruction.operands.first() {
+    relative_target(instruction, 0)
+}
+pub fn relative_target(instruction: &RawInstruction, operand: usize) -> Result<u32, Error> {
+    let displacement = match instruction.operands.get(operand) {
         Some(RawOperand::I8(value)) => i64::from(*value),
         Some(RawOperand::I32(value)) => i64::from(*value),
         _ => {
@@ -44,7 +47,31 @@ pub fn blocks(function: &RawFunction) -> Result<Vec<Block<'_>>, Error> {
             }
             leaders.insert(dest);
         }
-        if (op.name.starts_with('J') || matches!(op.name.as_str(), "Ret" | "Throw"))
+        if op.name == "SwitchImm" {
+            let table = function
+                .switch_tables
+                .iter()
+                .find(|table| table.instruction_offset == op.offset)
+                .ok_or_else(|| Error::Bytecode(format!("missing switch table at {}", op.offset)))?;
+            let mut targets = table
+                .displacements
+                .iter()
+                .map(|displacement| switch_target(op.offset, *displacement))
+                .collect::<Result<Vec<_>, _>>()?;
+            targets.push(relative_target(op, 2)?);
+            for dest in targets {
+                if !offsets.contains_key(&dest) {
+                    return Err(Error::Bytecode(format!(
+                        "switch at {} targets non-instruction {dest}",
+                        op.offset
+                    )));
+                }
+                leaders.insert(dest);
+            }
+        }
+        if (op.name.starts_with('J')
+            || op.name == "SwitchImm"
+            || matches!(op.name.as_str(), "Ret" | "Throw"))
             && i + 1 < function.instructions.len()
         {
             leaders.insert(function.instructions[i + 1].offset);
@@ -69,4 +96,9 @@ pub fn blocks(function: &RawFunction) -> Result<Vec<Block<'_>>, Error> {
             })
         })
         .collect()
+}
+
+pub fn switch_target(instruction_offset: u32, displacement: i32) -> Result<u32, Error> {
+    u32::try_from(i64::from(instruction_offset) + i64::from(displacement))
+        .map_err(|_| Error::Bytecode("switch target overflows function address space".into()))
 }

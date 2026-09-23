@@ -262,9 +262,9 @@ pub enum SemanticOp {
     SwitchImm {
         input: Value,
         table_offset: u32,
-        default_offset: u32,
-        min_case: i32,
-        max_case: i32,
+        default_displacement: i32,
+        min_case: u32,
+        max_case: u32,
     },
     Call {
         dst: Register,

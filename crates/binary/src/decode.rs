@@ -1,6 +1,9 @@
 use crate::functions::FunctionHeader;
 use crate::parse::HbcContainer;
-use mercury_ir::{RawFunction, RawFunctionFlags, RawInstruction, RawModule, RawOperand, RawSectionBoundaries};
+use mercury_ir::{
+    RawFunction, RawFunctionFlags, RawInstruction, RawModule, RawOperand, RawSectionBoundaries,
+    RawSwitchTable,
+};
 use mercury_spec::BytecodeSpec;
 use thiserror::Error;
 
@@ -34,6 +37,10 @@ pub enum HbcDecodeError {
     UnsupportedOperandKind { kind: String },
     #[error("instruction extends past the end of the function body")]
     TruncatedInstruction,
+    #[error("malformed SwitchImm instruction at offset {offset}")]
+    MalformedSwitch { offset: u32 },
+    #[error("jump table for SwitchImm at offset {offset} extends past the container")]
+    SwitchTableOutOfRange { offset: u32 },
 }
 
 /// Decodes a raw function-body byte slice into concrete instructions.
@@ -90,7 +97,14 @@ pub fn decode_raw_function(
         .get(function_index)
         .ok_or(HbcDecodeError::TruncatedInstruction)?;
 
-    Ok(raw_function_from_decoded(function_index, header, decoded))
+    let switch_tables = decode_switch_tables(bytes, header, &decoded)?;
+
+    Ok(raw_function_from_decoded(
+        function_index,
+        header,
+        decoded,
+        switch_tables,
+    ))
 }
 
 /// Decodes every function in a parsed container into Mercury's raw IR.
@@ -123,6 +137,7 @@ fn raw_function_from_decoded(
     function_index: usize,
     header: &FunctionHeader,
     decoded: Vec<DecodedInstruction>,
+    switch_tables: Vec<RawSwitchTable>,
 ) -> RawFunction {
     RawFunction {
         function_index,
@@ -161,6 +176,92 @@ fn raw_function_from_decoded(
                     .collect(),
             })
             .collect(),
+        switch_tables,
+    }
+}
+
+fn decode_switch_tables(
+    bytes: &[u8],
+    header: &FunctionHeader,
+    instructions: &[DecodedInstruction],
+) -> Result<Vec<RawSwitchTable>, HbcDecodeError> {
+    let mut tables = Vec::new();
+    for instruction in instructions
+        .iter()
+        .filter(|instruction| instruction.name == "SwitchImm")
+    {
+        let (
+            Some(DecodedOperand::U32(table_offset)),
+            Some(DecodedOperand::U32(min_case)),
+            Some(DecodedOperand::U32(max_case)),
+        ) = (
+            instruction.operands.get(1),
+            instruction.operands.get(3),
+            instruction.operands.get(4),
+        )
+        else {
+            return Err(HbcDecodeError::MalformedSwitch {
+                offset: instruction.offset,
+            });
+        };
+        let count = max_case
+            .checked_sub(*min_case)
+            .and_then(|count| count.checked_add(1))
+            .ok_or(HbcDecodeError::MalformedSwitch {
+                offset: instruction.offset,
+            })?;
+        let instruction_start = (header.offset as usize)
+            .checked_add(instruction.offset as usize)
+            .ok_or(HbcDecodeError::SwitchTableOutOfRange {
+                offset: instruction.offset,
+            })?;
+        let unaligned_start = instruction_start
+            .checked_add(*table_offset as usize)
+            .ok_or(HbcDecodeError::SwitchTableOutOfRange {
+                offset: instruction.offset,
+            })?;
+        let table_start = align_up(unaligned_start, 4).ok_or(
+            HbcDecodeError::SwitchTableOutOfRange {
+                offset: instruction.offset,
+            },
+        )?;
+        let table_size = usize::try_from(count)
+            .map_err(|_| HbcDecodeError::SwitchTableOutOfRange {
+                offset: instruction.offset,
+            })?
+            .checked_mul(4)
+            .ok_or(HbcDecodeError::SwitchTableOutOfRange {
+                offset: instruction.offset,
+            })?;
+        let table_end = table_start
+            .checked_add(table_size)
+            .ok_or(HbcDecodeError::SwitchTableOutOfRange {
+                offset: instruction.offset,
+            })?;
+        let table_bytes = bytes
+            .get(table_start..table_end)
+            .ok_or(HbcDecodeError::SwitchTableOutOfRange {
+                offset: instruction.offset,
+            })?;
+        let displacements = table_bytes
+            .chunks_exact(4)
+            .map(|entry| i32::from_le_bytes(entry.try_into().expect("four-byte switch entry")))
+            .collect();
+        tables.push(RawSwitchTable {
+            instruction_offset: instruction.offset,
+            min_case: *min_case,
+            max_case: *max_case,
+            displacements,
+        });
+    }
+    Ok(tables)
+}
+
+fn align_up(value: usize, alignment: usize) -> Option<usize> {
+    if value.is_multiple_of(alignment) {
+        Some(value)
+    } else {
+        value.checked_add(alignment - (value % alignment))
     }
 }
 

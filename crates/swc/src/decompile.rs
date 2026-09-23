@@ -232,7 +232,49 @@ impl Lower<'_> {
             let mut stmts = Vec::new();
             let mut terminated = false;
             for op in block.instructions {
-                if op.name.starts_with('J') {
+                if op.name == "SwitchImm" {
+                    let table = f
+                        .switch_tables
+                        .iter()
+                        .find(|table| table.instruction_offset == op.offset)
+                        .ok_or_else(|| unsupported(f, op, "missing switch table"))?;
+                    let mut switch_cases = table
+                        .displacements
+                        .iter()
+                        .enumerate()
+                        .map(|(index, displacement)| {
+                            let value = table.min_case.checked_add(index as u32).ok_or_else(|| {
+                                unsupported(f, op, "switch case value overflows")
+                            })?;
+                            Ok(SwitchCase {
+                                span: DUMMY_SP,
+                                test: Some(b::number(f64::from(value))),
+                                cons: vec![
+                                    set_pc(cfg::switch_target(op.offset, *displacement)?),
+                                    Stmt::Break(BreakStmt {
+                                        span: DUMMY_SP,
+                                        label: None,
+                                    }),
+                                ],
+                            })
+                        })
+                        .collect::<Result<Vec<_>, Error>>()?;
+                    switch_cases.push(SwitchCase {
+                        span: DUMMY_SP,
+                        test: None,
+                        cons: vec![set_pc(cfg::relative_target(op, 2)?)],
+                    });
+                    stmts.push(Stmt::Switch(SwitchStmt {
+                        span: DUMMY_SP,
+                        discriminant: register(f, op, 0)?,
+                        cases: switch_cases,
+                    }));
+                    stmts.push(Stmt::Continue(ContinueStmt {
+                        span: DUMMY_SP,
+                        label: None,
+                    }));
+                    terminated = true;
+                } else if op.name.starts_with('J') {
                     let target = cfg::target(op)?;
                     let name = op.name.strip_suffix("Long").unwrap_or(&op.name);
                     if name == "Jmp" {

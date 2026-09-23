@@ -1063,11 +1063,11 @@ fn render_semantic_instruction(
         SemanticOp::SwitchImm {
             input,
             table_offset,
-            default_offset,
+            default_displacement,
             min_case,
             max_case,
         } => format!(
-            "switch_imm {}, {table_offset}, {default_offset}, {min_case}, {max_case}",
+            "switch_imm {}, {table_offset}, {default_displacement}, {min_case}, {max_case}",
             render_semantic_value(input)
         ),
         SemanticOp::Call {

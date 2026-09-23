@@ -120,7 +120,8 @@ basic-block dispatcher. It reconstructs mutable captured environments, including
 siblings and multiple lexical levels, and preserves empty, sparse, buffered, and
 dynamically populated arrays. It also recovers buffer-backed object literals and
 later own-property definitions, including computed keys and custom prototypes.
-Exception handlers remain unsupported.
+Dense integer switch tables are also recovered. Exception handlers remain
+unsupported.
 
 ```sh
 cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js --hermesc /path/to/hermesc -o /tmp/example.hbc
