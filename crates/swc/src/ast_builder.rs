@@ -192,6 +192,17 @@ pub fn object(entries: Vec<(Expr, Expr)>) -> Box<Expr> {
             .collect(),
     }))
 }
+pub fn object_with_parent(parent: Box<Expr>) -> Box<Expr> {
+    Box::new(Expr::Object(ObjectLit {
+        span: DUMMY_SP,
+        props: vec![PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+            // A non-computed __proto__ entry uses the object-literal prototype
+            // setter, whose null/object/primitive behavior matches HBC 96.
+            key: PropName::Ident(ident("__proto__").into()),
+            value: parent,
+        })))],
+    }))
+}
 pub fn this() -> Box<Expr> {
     Box::new(Expr::This(ThisExpr { span: DUMMY_SP }))
 }

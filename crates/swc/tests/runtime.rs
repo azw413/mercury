@@ -204,6 +204,39 @@ fn buffered_objects_recover_static_and_dynamic_properties() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn custom_object_prototypes_preserve_parent_selection() {
+    let compiler = compiler();
+    for (source, expected) in [
+        (
+            "var parent = { inherited: 7 }; var object = { __proto__: parent, own: 3 }; var descriptor = Object.getOwnPropertyDescriptor(object, 'own'); print(parent.isPrototypeOf(object), object.inherited, object.own, object.hasOwnProperty('__proto__'), descriptor.enumerable, descriptor.writable, descriptor.configurable);",
+            "true 7 3 false true true true\n",
+        ),
+        (
+            "var object = { __proto__: null, own: 4 }; print(object.toString === undefined, object.own, object.__proto__ === undefined);",
+            "true 4 true\n",
+        ),
+        (
+            "var object = { __proto__: 9, own: 5 }; print(object.toString !== undefined, object.own, object.hasOwnProperty('__proto__'));",
+            "true 5 false\n",
+        ),
+    ] {
+        let module = SwcModule::parse(
+            "object-parent.js",
+            source,
+            SourceLanguage::JavaScript,
+            SourceKind::Script,
+        )
+        .unwrap();
+        let original = compiler.compile(&module).unwrap();
+        assert_eq!(execute(&original), expected, "original: {source}");
+        let recovered = decompile(&original).unwrap_or_else(|err| panic!("{source}: {err}"));
+        let rebuilt = compiler.compile(&recovered).unwrap();
+        assert_eq!(execute(&rebuilt), expected, "rebuilt: {source}");
+    }
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn decompilation_preserves_receiver_side_effects_and_nan_comparisons() {
     let compiler = compiler();
     for (source, expected) in [

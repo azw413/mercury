@@ -451,6 +451,7 @@ impl Lower<'_> {
                 // count and the two serialized-buffer offsets are authoritative.
                 b::object(self.object_entries(f, op, uint(op, 2)?, uint(op, 3)?, uint(op, 4)?)?)
             }
+            "NewObjectWithParent" => b::object_with_parent(r(1)?),
             "PutOwnByIndex"
             | "PutOwnByIndexL"
             | "DefineOwnByIndex"
