@@ -20,9 +20,10 @@ SWC nodes.
   Parsing already runs SWC's resolver. Source maps are retained as input context;
   exporting a generated source-map file is not implemented yet.
 - `HermesCompiler::new(executable, 96).compile(&module)` invokes that compiler
-  with `-O -g0 -emit-binary`, validates the returned HBC version and container,
-  and returns bytes. It never executes the program. Temporary files are isolated
-  per invocation and removed automatically. Compiler stderr is included on error.
+  with `-Xes6-class -O -g0 -emit-binary`, validates the returned HBC version and
+  container, and returns bytes. It never executes the program. Temporary files
+  are isolated per invocation and removed automatically. Compiler stderr is
+  included on error.
 - `decompile(&bytes)` constructs SWC nodes directly from Mercury's decoded raw
   IR and a private basic-block graph. Opcode lowering does not generate text and
   parse that text back into an AST; generator support adds a fixed embedded
@@ -99,6 +100,15 @@ drive the same frames through captured Promises, including fulfilled and rejecte
 awaits. Exact native generator/async function prototypes and reflective source
 text are not reconstructed.
 
+Construction preserves Hermes' separate allocation, invocation, and return-value
+selection steps. `CreateThis`, `Construct`, `ConstructLong`, `SelectObject`, and
+`GetNewTarget` recover ordinary and native constructors, explicit object and
+primitive returns, constructor prototypes, and `new.target`. Function-header
+invocation restrictions are enforced by the generated adapter. Hermes' class
+helper calls remain bytecode-driven; class inheritance, instance and static
+methods, accessors, observable method names, and `super` constructor calls round
+trip through the HBC 96 ES6-class runtime.
+
 String-switch metadata and dynamic eval are not implemented. The decompiler also
 rejects non-finite literal doubles, unpaired UTF-16 surrogates and function/global
 names outside its supported identifier subset. Source comments, original variable
@@ -113,7 +123,10 @@ ordinary own-property semantics. Global lookups assume ordinary globals;
 proxy/global interception and mutated intrinsics are outside this first contract.
 Regular expressions and BigInts use captured standard `RegExp` and `BigInt`
 constructors; BigInt table bytes are decoded as signed little-endian values before
-JavaScript generation.
+JavaScript generation. Constructor recovery also captures `Reflect.construct`,
+`Object.create`, `Object.prototype`, `WeakSet`, and `TypeError`. External
+constructors are invoked with `Reflect.construct`; this can perform a second
+observable prototype lookup after Hermes' preceding `CreateThis` sequence.
 Reflective details such as function source text and caller stacks will differ.
 Reading/rebuilding arbitrary HBC is not implied by successful source compilation;
 supported compilation syntax is broader than the decompiler subset.
@@ -150,8 +163,14 @@ main loop to print `28`. Generator fixtures cover independent suspended frames,
 captured locals, `next`/`throw`/`return`, cleanup paths, completion, pre-start
 actions, the iterator protocol, and `yield*` delegation. Async fixtures cover
 multiple fulfilled awaits, rejection through a bytecode catch, captured locals,
-and receiver preservation. Every runtime case compares authored HBC execution
-with execution after HBC-to-SWC-to-HBC reconstruction.
+and receiver preservation. Constructor fixtures cover primitive and object
+returns, native constructors, prototype inheritance, `new.target`, prohibited
+arrow construction, and more than 255 arguments. Class fixtures cover base and
+derived construction, `super`, instance and static methods, getters, setters,
+method names, and `instanceof`. Every runtime case compares authored HBC
+execution with execution after HBC-to-SWC-to-HBC reconstruction. The runtime
+harness enables Hermes' experimental `-Xes6-class` support required by HBC 96
+class helper calls.
 
 `tests/fixtures/control_flow.hbc` was generated from the adjacent authored JS
 fixture with the local compiler reporting Hermes release 0.12.0 / HBC 96:

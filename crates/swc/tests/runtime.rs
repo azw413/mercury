@@ -21,6 +21,7 @@ fn execute(bytes: &[u8]) -> String {
     let output = Command::new(
         std::env::var_os("HERMES_BIN").expect("set HERMES_BIN to a version-96 runtime"),
     )
+    .arg("-Xes6-class")
     .arg("-b")
     .arg(path)
     .output()
@@ -323,6 +324,43 @@ fn async_frames_support_fulfilled_and_rejected_awaits_with_captures_and_receiver
         include_str!("fixtures/async_suspension.js"),
         "rejected caught:no\nreceiver 14\nresolved 7\n",
     );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn constructors_preserve_receivers_returns_prototypes_and_new_target() {
+    assert_runtime_roundtrip(
+        "constructors.js",
+        include_str!("fixtures/constructors.js"),
+        "3 4 6 true true 7 6 true true false\narrow true\n",
+    );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn classes_preserve_inheritance_methods_accessors_static_methods_and_super_calls() {
+    assert_runtime_roundtrip(
+        "classes.js",
+        include_str!("fixtures/classes.js"),
+        "7 6 7 13 true true method total\n3 make\n9\n",
+    );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn construct_long_preserves_more_than_255_arguments() {
+    let parameters = (0..260)
+        .map(|index| format!("p{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let arguments = (0..260)
+        .map(|index| index.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "function Many({parameters}) {{ this.first = p0; this.last = p259; }} var value = new Many({arguments}); print(value.first, value.last);"
+    );
+    assert_runtime_roundtrip("construct-long.js", &source, "0 259\n");
 }
 
 #[test]

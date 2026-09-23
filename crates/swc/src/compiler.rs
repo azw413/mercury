@@ -44,7 +44,7 @@ impl HermesCompiler {
         let output = dir.path().join("output.hbc");
         fs::write(&input, javascript)?;
         let result = Command::new(&self.executable)
-            .args(["-O", "-g0", "-emit-binary"])
+            .args(["-Xes6-class", "-O", "-g0", "-emit-binary"])
             .arg(format!("-out={}", output.display()))
             .arg(&input)
             .output()

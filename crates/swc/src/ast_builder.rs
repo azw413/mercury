@@ -219,3 +219,9 @@ pub fn object_with_parent(parent: Box<Expr>) -> Box<Expr> {
 pub fn this() -> Box<Expr> {
     Box::new(Expr::This(ThisExpr { span: DUMMY_SP }))
 }
+pub fn new_target() -> Box<Expr> {
+    Box::new(Expr::MetaProp(MetaPropExpr {
+        span: DUMMY_SP,
+        kind: MetaPropKind::NewTarget,
+    }))
+}

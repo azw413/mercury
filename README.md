@@ -124,7 +124,10 @@ Dense integer switch tables and exception-handler control flow are also recovere
 Regular-expression and BigInt constants are rebuilt from their container tables.
 Generator and async frames preserve suspended registers, captured environments,
 receiver/arguments state, `next`/`throw`/`return`, `yield*`, and fulfilled or
-rejected awaits through a small generated runtime adapter.
+rejected awaits through a small generated runtime adapter. Constructor recovery
+now covers `Construct`, `ConstructLong`, `CreateThis`, `SelectObject`, and
+`GetNewTarget`, including native constructors and Hermes' ES6 class lowering for
+inheritance, methods, accessors, static methods, and `super` calls.
 
 ```sh
 cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js --hermesc /path/to/hermesc -o /tmp/example.hbc
