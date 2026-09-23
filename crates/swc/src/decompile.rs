@@ -1,6 +1,7 @@
 use crate::{Error, SwcModule, ast_builder as b, cfg, literal};
 use mercury_binary::{HbcContainer, decode_raw_module, parse_hbc_container_with_spec};
 use mercury_ir::{RawFunction, RawInstruction, RawModule, RawOperand};
+use num_bigint::BigInt;
 use std::collections::HashSet;
 use swc_core::{
     common::DUMMY_SP,
@@ -32,12 +33,10 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     if h.options.raw != 0
         || h.cjs_module_count != 0
         || h.segment_id != 0
-        || h.reg_exp_count != 0
-        || h.big_int_count != 0
         || h.num_string_switch_imms != 0
     {
         return Err(Error::Unsupported(
-            "bytecode options, modules, regexp/bigint or string-switch tables".into(),
+            "bytecode options, modules or string-switch tables".into(),
         ));
     }
     let raw = decode_raw_module(&container, bytes, &spec.bytecode)
@@ -54,6 +53,15 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         .iter()
         .flat_map(|function| &function.instructions)
         .any(|op| is_define_own(&op.name));
+    let needs_regexp = has_opcode(&raw, "CreateRegExp");
+    let needs_bigint = raw.functions.iter().any(|function| {
+        function.instructions.iter().any(|op| {
+            matches!(
+                op.name.as_str(),
+                "LoadConstBigInt" | "LoadConstBigIntLongIndex"
+            )
+        })
+    });
     let mut globals = Vec::new();
     let mut seen_globals = HashSet::new();
     let names = container
@@ -144,6 +152,14 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             b::member(b::this(), b::string("Reflect")),
             b::string("defineProperty"),
         ));
+    }
+    if needs_regexp {
+        wrapper_params.push("_regexp".into());
+        wrapper_args.push(b::member(b::this(), b::string("RegExp")));
+    }
+    if needs_bigint {
+        wrapper_params.push("_bigint".into());
+        wrapper_args.push(b::member(b::this(), b::string("BigInt")));
     }
     let mut wrapper = b::function(None, wrapper_params, factories);
     wrapper.visit_mut_with(&mut Namespace(prefix));
@@ -436,12 +452,28 @@ impl Lower<'_> {
                 Some(RawOperand::F64(v)) if v.is_finite() => b::number(*v),
                 _ => return Err(unsupported(f, op, "non-finite double")),
             },
+            "LoadConstBigInt" | "LoadConstBigIntLongIndex" => {
+                b::call(b::id("_bigint"), vec![b::string(&self.big_int(uint(op, 1)?)?)])
+            }
             "LoadConstTrue" => b::boolean(true),
             "LoadConstFalse" => b::boolean(false),
             "LoadConstUndefined" => b::undefined(),
             "LoadConstNull" => b::null(),
             "LoadConstString" | "LoadConstStringLongIndex" => {
                 b::string(&self.string(uint(op, 1)?)?)
+            }
+            "CreateRegExp" => {
+                let regexp_id = uint(op, 3)? as usize;
+                if regexp_id >= self.container.reg_exp_entries.len() {
+                    return Err(unsupported(f, op, "invalid regexp table index"));
+                }
+                b::new(
+                    b::id("_regexp"),
+                    vec![
+                        b::string(&self.string(uint(op, 1)?)?),
+                        b::string(&self.string(uint(op, 2)?)?),
+                    ],
+                )
             }
             "Mov" | "MovLong" => r(1)?,
             "Catch" => b::id("_thrown"),
@@ -605,6 +637,24 @@ impl Lower<'_> {
         )
     }
 
+    fn big_int(&self, id: u32) -> Result<String, Error> {
+        let entry = self
+            .container
+            .big_int_entries
+            .get(id as usize)
+            .ok_or_else(|| Error::Bytecode(format!("invalid bigint {id}")))?;
+        let start = entry.first as usize;
+        let end = start
+            .checked_add(entry.second as usize)
+            .ok_or_else(|| Error::Bytecode("bigint storage range overflows".into()))?;
+        let bytes = self
+            .container
+            .big_int_storage
+            .get(start..end)
+            .ok_or_else(|| Error::Bytecode(format!("invalid bigint {id}")))?;
+        Ok(BigInt::from_signed_bytes_le(bytes).to_string())
+    }
+
     fn buffer_values(
         &self,
         f: &RawFunction,
@@ -717,6 +767,12 @@ fn is_define_own(name: &str) -> bool {
             | "PutNewOwnNEByIdLong"
             | "PutOwnByVal"
     )
+}
+fn has_opcode(raw: &RawModule, name: &str) -> bool {
+    raw.functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .any(|op| op.name == name)
 }
 fn define_own(object: Box<Expr>, key: Box<Expr>, value: Box<Expr>, enumerable: bool) -> Vec<Stmt> {
     vec![

@@ -74,6 +74,19 @@ pub fn call(callee: Box<Expr>, args: Vec<Box<Expr>>) -> Box<Expr> {
         type_args: None,
     }))
 }
+pub fn new(callee: Box<Expr>, args: Vec<Box<Expr>>) -> Box<Expr> {
+    Box::new(Expr::New(NewExpr {
+        span: DUMMY_SP,
+        ctxt: SyntaxContext::empty(),
+        callee,
+        args: Some(
+            args.into_iter()
+                .map(|expr| ExprOrSpread { spread: None, expr })
+                .collect(),
+        ),
+        type_args: None,
+    }))
+}
 pub fn expr(expr: Box<Expr>) -> Stmt {
     Stmt::Expr(ExprStmt {
         span: DUMMY_SP,

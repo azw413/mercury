@@ -644,6 +644,7 @@ dependencies = [
  "mercury-binary",
  "mercury-ir",
  "mercury-spec-builtin",
+ "num-bigint",
  "swc_core",
  "tempfile",
  "thiserror",

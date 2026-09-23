@@ -90,11 +90,11 @@ This preserves mutation shared by sibling closures, independent environments fro
 separate outer calls, and captures across multiple lexical levels. The structure
 is an implementation detail rather than part of the module interface.
 
-Async/generators, string-switch metadata, dynamic eval, regexp and bigint tables
-are not implemented. The decompiler also rejects non-finite literal doubles,
-unpaired UTF-16 surrogates and function/global names outside its supported
-identifier subset. Source comments, original variable names, original TypeScript
-types, and byte-identical recompilation cannot be recovered from HBC.
+Async/generators, string-switch metadata, and dynamic eval are not implemented.
+The decompiler also rejects non-finite literal doubles, unpaired UTF-16 surrogates
+and function/global names outside its supported identifier subset. Source comments,
+original variable names, original TypeScript types, and byte-identical
+recompilation cannot be recovered from HBC.
 
 Generated calls assume the standard, unmodified `Reflect.apply` intrinsic;
 dynamic array and object initializers also use `Reflect.defineProperty` to preserve
@@ -102,6 +102,9 @@ Hermes' define-own behavior in the presence of inherited setters. Static buffere
 object properties become computed SWC object properties so a `__proto__` key keeps
 ordinary own-property semantics. Global lookups assume ordinary globals;
 proxy/global interception and mutated intrinsics are outside this first contract.
+Regular expressions and BigInts use captured standard `RegExp` and `BigInt`
+constructors; BigInt table bytes are decoded as signed little-endian values before
+JavaScript generation.
 Reflective details such as function source text and caller stacks will differ.
 Reading/rebuilding arbitrary HBC is not implied by successful source compilation;
 supported compilation syntax is broader than the decompiler subset.
@@ -132,7 +135,9 @@ custom, null, or primitive prototype operands. The main loop prints `18` after
 recompilation; integer-switch checks cover shared targets, in-range gaps, default
 targets, and non-integer inputs. Exception checks cover nested catches, exceptions
 crossing function calls, and finally cleanup on normal and exceptional paths. An
-SWC numeric-literal visitor changes the main loop to print `28`.
+additional runtime-data check covers stateful regular expressions and large
+positive and negative BigInt constants. An SWC numeric-literal visitor changes the
+main loop to print `28`.
 
 `tests/fixtures/control_flow.hbc` was generated from the adjacent authored JS
 fixture with the local compiler reporting Hermes release 0.12.0 / HBC 96:

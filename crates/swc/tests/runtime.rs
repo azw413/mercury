@@ -277,6 +277,26 @@ fn exception_handlers_recover_catches_calls_and_finally() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn regexp_and_bigint_constants_recover_runtime_values() {
+    let source = "var regexp = /a+b/gi; var positive = 123456789012345678901234567890n; var negative = -98765432109876543210987654321n; print(regexp.test('xxAAAb'), regexp.test('ccc'), String(positive + 10n), String(negative));";
+    let expected = "true false 123456789012345678901234567900 -98765432109876543210987654321\n";
+    let compiler = compiler();
+    let module = SwcModule::parse(
+        "runtime-data.js",
+        source,
+        SourceLanguage::JavaScript,
+        SourceKind::Script,
+    )
+    .unwrap();
+    let original = compiler.compile(&module).unwrap();
+    assert_eq!(execute(&original), expected);
+    let recovered = decompile(&original).unwrap_or_else(|err| panic!("{source}: {err}"));
+    let rebuilt = compiler.compile(&recovered).unwrap();
+    assert_eq!(execute(&rebuilt), expected);
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn decompilation_preserves_receiver_side_effects_and_nan_comparisons() {
     let compiler = compiler();
     for (source, expected) in [

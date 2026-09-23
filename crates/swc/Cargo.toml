@@ -10,6 +10,7 @@ repository.workspace = true
 mercury-binary = { path = "../binary" }
 mercury-ir = { path = "../ir" }
 mercury-spec-builtin = { path = "../spec-builtin" }
+num-bigint = "0.4"
 swc_core = { version = "75.0.0", features = ["common", "ecma_ast", "ecma_parser", "ecma_parser_typescript", "ecma_codegen", "ecma_transforms_typescript", "ecma_transforms", "ecma_visit"] }
 tempfile = "3"
 thiserror.workspace = true

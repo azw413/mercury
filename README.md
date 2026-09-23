@@ -121,6 +121,7 @@ siblings and multiple lexical levels, and preserves empty, sparse, buffered, and
 dynamically populated arrays. It also recovers buffer-backed object literals and
 later own-property definitions, including computed keys and custom prototypes.
 Dense integer switch tables and exception-handler control flow are also recovered.
+Regular-expression and BigInt constants are rebuilt from their container tables.
 
 ```sh
 cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js --hermesc /path/to/hermesc -o /tmp/example.hbc

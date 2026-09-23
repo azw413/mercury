@@ -30,6 +30,10 @@ pub struct HbcContainer {
     pub literal_value_buffer: Vec<u8>,
     pub object_key_buffer: Vec<u8>,
     pub object_value_buffer: Vec<u8>,
+    pub big_int_entries: Vec<PairTableEntry>,
+    pub big_int_storage: Vec<u8>,
+    pub reg_exp_entries: Vec<PairTableEntry>,
+    pub reg_exp_storage: Vec<u8>,
     pub cjs_module_entries: Vec<PairTableEntry>,
     pub function_source_entries: Vec<PairTableEntry>,
     function_bodies: Vec<FunctionBody>,
@@ -130,6 +134,12 @@ fn parse_hbc_container_impl(
     let literal_value_buffer = bytes[section_boundaries.literal_value_buffer.clone()].to_vec();
     let object_key_buffer = bytes[section_boundaries.obj_key_buffer.clone()].to_vec();
     let object_value_buffer = bytes[section_boundaries.obj_value_buffer.clone()].to_vec();
+    let big_int_entries =
+        parse_pair_table_entries(bytes, section_boundaries.big_int_table.clone())?;
+    let big_int_storage = bytes[section_boundaries.big_int_storage.clone()].to_vec();
+    let reg_exp_entries =
+        parse_pair_table_entries(bytes, section_boundaries.reg_exp_table.clone())?;
+    let reg_exp_storage = bytes[section_boundaries.reg_exp_storage.clone()].to_vec();
     let cjs_module_entries =
         parse_pair_table_entries(bytes, section_boundaries.cjs_module_table.clone())?;
     let function_source_entries =
@@ -150,6 +160,10 @@ fn parse_hbc_container_impl(
         literal_value_buffer,
         object_key_buffer,
         object_value_buffer,
+        big_int_entries,
+        big_int_storage,
+        reg_exp_entries,
+        reg_exp_storage,
         cjs_module_entries,
         function_source_entries,
         function_bodies,
