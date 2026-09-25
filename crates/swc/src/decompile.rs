@@ -51,7 +51,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         container: &container,
         raw: &raw,
     };
-    let needs_define = raw
+    let mut needs_define = raw
         .functions
         .iter()
         .flat_map(|function| &function.instructions)
@@ -70,7 +70,23 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         .iter()
         .map(|function| has_function_opcode(function, "StartGenerator"))
         .collect::<Vec<_>>();
+    let argument_functions = raw
+        .functions
+        .iter()
+        .map(|function| {
+            function.instructions.iter().any(|op| {
+                matches!(
+                    op.name.as_str(),
+                    "ReifyArguments" | "GetArgumentsPropByVal" | "GetArgumentsLength"
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let needs_arguments = argument_functions.iter().any(|value| *value);
     let needs_suspension = resumable_functions.iter().any(|value| *value);
+    let needs_numeric_runtime = ["Inc", "Dec", "ToNumeric"]
+        .into_iter()
+        .any(|name| has_opcode(&raw, name));
     let needs_construction = raw.functions.iter().any(|function| {
         function.flags.prohibit_invoke != 2
             || function.instructions.iter().any(|op| {
@@ -87,11 +103,19 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         .iter()
         .map(|header| lower.string(header.function_name))
         .collect::<Result<Vec<_>, _>>()?;
+    let needs_function_name_runtime = names.iter().any(|name| accessor_name(name));
+    needs_define |= needs_function_name_runtime;
     let mut prefix = "_mercury".to_owned();
     while names.iter().any(|name| name.starts_with(&prefix)) {
         prefix.push('_');
     }
     let mut factories = Vec::new();
+    if needs_numeric_runtime {
+        factories.extend(numeric_runtime());
+    }
+    if needs_function_name_runtime {
+        factories.extend(function_name_runtime());
+    }
     if needs_construction {
         factories.extend(construction_runtime());
     }
@@ -136,8 +160,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         // Hermes uses non-JavaScript labels such as `#method#` for class
         // method bodies. The class-definition helpers install their observable
         // names, so these labels must not become function-expression bindings.
-        let generated_name =
-            name.starts_with("?anon_") || (name.starts_with('#') && name.ends_with('#'));
+        let generated_name = name.starts_with("?anon_")
+            || (name.starts_with('#') && name.ends_with('#'))
+            || accessor_name(&name);
         if !name.is_empty() && !generated_name && !valid_name(&name) {
             return Err(Error::Unsupported(format!("function name {name:?}")));
         }
@@ -149,8 +174,16 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 Some(&name)
             },
             params,
-            lower.function(f, resumable_functions[f.function_index], needs_construction)?,
+            lower.function(
+                f,
+                resumable_functions[f.function_index],
+                needs_construction,
+                argument_functions[f.function_index],
+            )?,
         );
+        if accessor_name(&name) {
+            function = b::call(b::id("_name_function"), vec![function, b::string(&name)]);
+        }
         if needs_construction {
             function = b::call(b::id("_mark_function"), vec![function]);
         }
@@ -202,6 +235,16 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             wrapper_params.push(name.into());
             wrapper_args.push(b::member(b::this(), b::string(global)));
         }
+    }
+    if needs_arguments {
+        wrapper_params.push("_slice".into());
+        wrapper_args.push(b::member(
+            b::member(
+                b::member(b::this(), b::string("Array")),
+                b::string("prototype"),
+            ),
+            b::string("slice"),
+        ));
     }
     if needs_construction {
         for (name, value) in [
@@ -304,6 +347,7 @@ impl Lower<'_> {
         f: &RawFunction,
         resumable: bool,
         construction_runtime: bool,
+        uses_arguments: bool,
     ) -> Result<Vec<Stmt>, Error> {
         let mut body = Vec::new();
         if f.flags.strict_mode {
@@ -349,6 +393,15 @@ impl Lower<'_> {
         if resumable {
             body.push(b::var("_this", Some(b::this())));
             body.push(b::var("_args", Some(b::id("arguments"))));
+        }
+        if uses_arguments {
+            body.push(b::var(
+                "_param_args",
+                Some(b::call(
+                    b::id("_apply"),
+                    vec![b::id("_slice"), b::id("arguments"), b::array(vec![])],
+                )),
+            ));
         }
         for r in 0..f.frame_size {
             body.push(b::var(&format!("_r{r}"), None));
@@ -463,6 +516,7 @@ impl Lower<'_> {
                         f,
                         op,
                         resumable,
+                        uses_arguments,
                         deferred_constructor_prototypes.contains(&op.offset),
                     )?);
                     terminated = matches!(op.name.as_str(), "Ret" | "Throw");
@@ -556,6 +610,7 @@ impl Lower<'_> {
         f: &RawFunction,
         op: &RawInstruction,
         resumable: bool,
+        uses_arguments: bool,
         deferred_constructor_prototype: bool,
     ) -> Result<Vec<Stmt>, Error> {
         let r = |i| register(f, op, i);
@@ -609,7 +664,9 @@ impl Lower<'_> {
                     if resumable { b::id("_this") } else { b::this() }
                 } else {
                     b::member(
-                        if resumable {
+                        if uses_arguments {
+                            b::id("_param_args")
+                        } else if resumable {
                             b::id("_args")
                         } else {
                             b::id("arguments")
@@ -730,6 +787,11 @@ impl Lower<'_> {
                 value
             }
             "GetByVal" => b::member(r(1)?, r(2)?),
+            "DelById" | "DelByIdLong" => b::unary(
+                UnaryOp::Delete,
+                b::member(r(1)?, b::string(&self.string(uint(op, 2)?)?)),
+            ),
+            "DelByVal" => b::unary(UnaryOp::Delete, b::member(r(1)?, r(2)?)),
             "PutByVal" => return Ok(vec![b::assign(b::member(r(0)?, r(1)?), r(2)?)]),
             "Call1" | "Call2" | "Call3" | "Call4" => {
                 let args = (3..op.operands.len())
@@ -860,6 +922,22 @@ impl Lower<'_> {
                     b::id("arguments")
                 }
             }
+            "GetArgumentsPropByVal" => b::member(
+                if resumable {
+                    b::id("_args")
+                } else {
+                    b::id("arguments")
+                },
+                r(1)?,
+            ),
+            "GetArgumentsLength" => b::member(
+                if resumable {
+                    b::id("_args")
+                } else {
+                    b::id("arguments")
+                },
+                b::string("length"),
+            ),
             "CreateGenerator" | "CreateGeneratorLongIndex" => {
                 let target = uint(op, 2)?;
                 if target as usize >= self.raw.functions.len() {
@@ -970,7 +1048,21 @@ impl Lower<'_> {
                 };
                 return Ok(define_own(r(0)?, r(2)?, r(1)?, enumerable));
             }
+            "PutOwnGetterSetterByVal" => {
+                let enumerable = match uint(op, 4)? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(unsupported(f, op, "invalid enumerable flag")),
+                };
+                return Ok(define_accessor(r(0)?, r(1)?, r(2)?, r(3)?, enumerable));
+            }
             "NewObject" => b::empty_object(),
+            "Inc" => b::call(b::id("_increment"), vec![r(1)?]),
+            "Dec" => b::call(b::id("_decrement"), vec![r(1)?]),
+            "ToNumber" => b::unary(UnaryOp::Plus, r(1)?),
+            "ToNumeric" => b::call(b::id("_to_numeric"), vec![r(1)?]),
+            "ToInt32" => b::binary(BinaryOp::BitOr, r(1)?, b::number(0.0)),
+            "AddEmptyString" => b::binary(BinaryOp::Add, b::string(""), r(1)?),
             name if binary_op(name).is_some() => b::binary(binary_op(name).unwrap(), r(1)?, r(2)?),
             "Not" => b::unary(UnaryOp::Bang, r(1)?),
             "Negate" => b::unary(UnaryOp::Minus, r(1)?),
@@ -1120,7 +1212,11 @@ fn is_define_own(name: &str) -> bool {
             | "PutNewOwnNEById"
             | "PutNewOwnNEByIdLong"
             | "PutOwnByVal"
+            | "PutOwnGetterSetterByVal"
     )
+}
+fn accessor_name(name: &str) -> bool {
+    name.starts_with("get ") || name.starts_with("set ")
 }
 fn has_opcode(raw: &RawModule, name: &str) -> bool {
     raw.functions
@@ -1130,6 +1226,29 @@ fn has_opcode(raw: &RawModule, name: &str) -> bool {
 }
 fn has_function_opcode(function: &RawFunction, name: &str) -> bool {
     function.instructions.iter().any(|op| op.name == name)
+}
+fn numeric_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _increment(_value) {
+    return ++_value;
+}
+function _decrement(_value) {
+    return --_value;
+}
+function _to_numeric(_value) {
+    return _value++;
+}
+"#;
+    embedded_runtime("mercury-numeric-runtime.js", SOURCE)
+}
+fn function_name_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _name_function(_function, _name) {
+    _define(_function, "name", { value: _name, configurable: true });
+    return _function;
+}
+"#;
+    embedded_runtime("mercury-function-name-runtime.js", SOURCE)
 }
 fn construction_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
@@ -1288,6 +1407,28 @@ fn define_own(object: Box<Expr>, key: Box<Expr>, value: Box<Expr>, enumerable: b
             b::member(b::id("_desc"), b::string("writable")),
             b::boolean(true),
         ),
+        b::assign(
+            b::member(b::id("_desc"), b::string("enumerable")),
+            b::boolean(enumerable),
+        ),
+        b::assign(
+            b::member(b::id("_desc"), b::string("configurable")),
+            b::boolean(true),
+        ),
+        b::expr(b::call(b::id("_define"), vec![object, key, b::id("_desc")])),
+    ]
+}
+fn define_accessor(
+    object: Box<Expr>,
+    key: Box<Expr>,
+    getter: Box<Expr>,
+    setter: Box<Expr>,
+    enumerable: bool,
+) -> Vec<Stmt> {
+    vec![
+        b::assign(b::id("_desc"), b::empty_object()),
+        b::assign(b::member(b::id("_desc"), b::string("get")), getter),
+        b::assign(b::member(b::id("_desc"), b::string("set")), setter),
         b::assign(
             b::member(b::id("_desc"), b::string("enumerable")),
             b::boolean(enumerable),

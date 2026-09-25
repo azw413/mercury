@@ -128,6 +128,11 @@ rejected awaits through a small generated runtime adapter. Constructor recovery
 now covers `Construct`, `ConstructLong`, `CreateThis`, `SelectObject`, and
 `GetNewTarget`, including native constructors and Hermes' ES6 class lowering for
 inheritance, methods, accessors, static methods, and `super` calls.
+Increment/decrement, numeric and string coercions, and property deletion complete
+the opcode families used by the committed Box2D fixture; all 983 functions now
+decompile to SWC, recompile to HBC, and produce the original runtime output.
+Native argument-object reads and object-literal getter/setter definitions are
+also recovered with their observable parameter, descriptor, and name semantics.
 
 ```sh
 cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js --hermesc /path/to/hermesc -o /tmp/example.hbc

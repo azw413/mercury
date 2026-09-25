@@ -76,10 +76,14 @@ captured variables, global access, property reads/writes, fixed-arity and genera
 calls, common arithmetic/comparisons, conditional/unconditional branches,
 empty, sparse, buffered, and dynamically populated array allocation, returns,
 buffer-backed object literals, dynamic own-property definitions, returns, and
-throws. Dense integer switch tables are decoded from their trailing function data
-and lowered into the dispatcher. Function names and strictness are retained.
-Unknown opcodes fail with function index and instruction offset; malformed branch
-targets, switch tables, and literal buffers fail before emitting a tree.
+throws. Increment, decrement, number/numeric/int32 coercion, string coercion, and
+named or computed property deletion preserve BigInt and strict-mode behavior.
+Native argument-object reads retain Hermes' unmapped parameter semantics, and
+object-literal accessors retain their descriptors and observable function names.
+Dense integer switch tables are decoded from their trailing function data and
+lowered into the dispatcher. Function names and strictness are retained. Unknown
+opcodes fail with function index and instruction offset; malformed branch targets,
+switch tables, and literal buffers fail before emitting a tree.
 
 Exception-handler ranges are part of the raw IR and split dispatcher blocks at
 every protected boundary. Generated `try`/`catch` routing follows Hermes' table
@@ -172,7 +176,11 @@ base and derived construction, `super`, instance and static methods, getters,
 setters, method names, and `instanceof`. Every runtime case compares authored HBC
 execution with execution after HBC-to-SWC-to-HBC reconstruction. The runtime
 harness enables Hermes' experimental `-Xes6-class` support required by HBC 96
-class helper calls.
+class helper calls. Scalar-opcode coverage also exercises BigInt coercion,
+strict deletion, native arguments, parameter independence, and accessor
+descriptors. Additional committed-fixture checks decompile and rebuild all three
+functions in `hex.hbc` and all 983 functions in `box2d.hbc`, then compare their
+runtime output with the original bytecode.
 
 `tests/fixtures/control_flow.hbc` was generated from the adjacent authored JS
 fixture with the local compiler reporting Hermes release 0.12.0 / HBC 96:

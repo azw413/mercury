@@ -365,6 +365,30 @@ fn construct_long_preserves_more_than_255_arguments() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn common_opcodes_preserve_coercion_arguments_and_accessor_semantics() {
+    assert_runtime_roundtrip(
+        "common-opcodes.js",
+        include_str!("fixtures/common_opcodes.js"),
+        "5 3 7 8 3.5 1 9 true true undefined undefined\n5 3 4 5\nfalse 1\nstrict-delete true 1\narguments 3 7\nreturned-arguments 2 3\nargument-aliasing 1 2\naccessor 3 true true get value set value\nset 9\n",
+    );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn committed_hex_and_box2d_fixtures_recompile_with_identical_output() {
+    let compiler = compiler();
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test");
+    for name in ["hex.hbc", "box2d.hbc"] {
+        let original = fs::read(fixtures.join(name)).unwrap();
+        let expected = execute(&original);
+        let recovered = decompile(&original).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let rebuilt = compiler.compile(&recovered).unwrap();
+        assert_eq!(execute(&rebuilt), expected, "{name}");
+    }
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn decompilation_preserves_receiver_side_effects_and_nan_comparisons() {
     let compiler = compiler();
     for (source, expected) in [
