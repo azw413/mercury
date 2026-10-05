@@ -2,6 +2,7 @@
 #![allow(clippy::vec_box)] // SWC's child-expression fields are boxed.
 
 use swc_core::{
+    atoms::Wtf8Atom,
     common::{DUMMY_SP, SyntaxContext},
     ecma::ast::*,
 };
@@ -19,9 +20,12 @@ pub fn number(value: f64) -> Box<Expr> {
     })))
 }
 pub fn string(value: &str) -> Box<Expr> {
+    wtf8_string(value.into())
+}
+pub fn wtf8_string(value: Wtf8Atom) -> Box<Expr> {
     Box::new(Expr::Lit(Lit::Str(Str {
         span: DUMMY_SP,
-        value: value.into(),
+        value,
         raw: None,
     })))
 }

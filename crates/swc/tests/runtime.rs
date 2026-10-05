@@ -395,6 +395,16 @@ fn object_spread_and_rest_preserve_keys_descriptors_and_proxy_order() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn utf16_strings_preserve_paired_and_unpaired_surrogates() {
+    assert_runtime_roundtrip(
+        "utf16-strings.js",
+        include_str!("fixtures/utf16_strings.js"),
+        "units 1 d800 1 dfff 2 d83d de00 3 d800 41 dfff\nbuffered dfff 2 3 dfff 2 3 d800\nproperty true true true false\n",
+    );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn committed_hex_and_box2d_fixtures_recompile_with_identical_output() {
     let compiler = compiler();
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test");

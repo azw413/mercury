@@ -4,6 +4,7 @@ use mercury_ir::{RawFunction, RawInstruction, RawModule, RawOperand};
 use num_bigint::BigInt;
 use std::collections::HashSet;
 use swc_core::{
+    atoms::Wtf8Atom,
     common::{DUMMY_SP, FileName, SourceMap, sync::Lrc},
     ecma::{
         ast::*,
@@ -126,10 +127,14 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         .iter()
         .map(|header| lower.string(header.function_name))
         .collect::<Result<Vec<_>, _>>()?;
-    let needs_function_name_runtime = names.iter().any(|name| needs_runtime_function_name(name));
+    let needs_function_name_runtime = names.iter().any(needs_runtime_function_name);
     needs_define |= needs_function_name_runtime;
     let mut prefix = "_mercury".to_owned();
-    while names.iter().any(|name| name.starts_with(&prefix)) {
+    while names
+        .iter()
+        .filter_map(|name| name.as_str())
+        .any(|name| name.starts_with(&prefix))
+    {
         prefix.push('_');
     }
     let mut factories = Vec::new();
@@ -169,7 +174,14 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         for op in &f.instructions {
             if op.name == "DeclareGlobalVar" {
                 let name = lower.string(uint(op, 0)?)?;
-                if !valid_name(&name) {
+                let Some(name) = name.as_str() else {
+                    return Err(unsupported(
+                        f,
+                        op,
+                        "global name is not a supported identifier",
+                    ));
+                };
+                if !valid_name(name) {
                     return Err(unsupported(
                         f,
                         op,
@@ -183,8 +195,8 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                         "global declaration outside the entry function",
                     ));
                 }
-                if seen_globals.insert(name.clone()) {
-                    globals.push(name);
+                if seen_globals.insert(name.to_owned()) {
+                    globals.push(name.to_owned());
                 }
             }
         }
@@ -198,7 +210,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             if name.is_empty() || generated_name {
                 None
             } else {
-                Some(&name)
+                name.as_str()
             },
             params,
             lower.function(
@@ -209,7 +221,10 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             )?,
         );
         if needs_runtime_function_name(&name) {
-            function = b::call(b::id("_name_function"), vec![function, b::string(&name)]);
+            function = b::call(
+                b::id("_name_function"),
+                vec![function, b::wtf8_string(name.clone())],
+            );
         }
         if needs_construction {
             function = b::call(b::id("_mark_function"), vec![function]);
@@ -369,7 +384,7 @@ struct Lower<'a> {
     modern_private_builtins: bool,
 }
 impl Lower<'_> {
-    fn string(&self, id: u32) -> Result<String, Error> {
+    fn string(&self, id: u32) -> Result<Wtf8Atom, Error> {
         let error = || Error::Bytecode(format!("invalid string {id}"));
         let entry = self
             .container
@@ -398,17 +413,12 @@ impl Lower<'_> {
             .get(offset..end)
             .ok_or_else(error)?;
         if entry.is_utf16 {
-            String::from_utf16(
-                &data
-                    .chunks_exact(2)
-                    .map(|b| u16::from_le_bytes([b[0], b[1]]))
-                    .collect::<Vec<_>>(),
-            )
-            .map_err(|_| {
-                Error::Unsupported(format!("string {id} contains an unpaired UTF-16 surrogate"))
-            })
+            Ok(wtf8_from_utf16(
+                data.chunks_exact(2)
+                    .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]])),
+            ))
         } else {
-            String::from_utf8(data.to_vec()).map_err(|_| error())
+            Ok(wtf8_from_utf16(data.iter().map(|byte| u16::from(*byte))))
         }
     }
     fn function(
@@ -778,7 +788,7 @@ impl Lower<'_> {
             "LoadConstUndefined" => b::undefined(),
             "LoadConstNull" => b::null(),
             "LoadConstString" | "LoadConstStringLongIndex" => {
-                b::string(&self.string(uint(op, 1)?)?)
+                b::wtf8_string(self.string(uint(op, 1)?)?)
             }
             "CreateRegExp" => {
                 let regexp_id = uint(op, 3)? as usize;
@@ -788,8 +798,8 @@ impl Lower<'_> {
                 b::new(
                     b::id("_regexp"),
                     vec![
-                        b::string(&self.string(uint(op, 1)?)?),
-                        b::string(&self.string(uint(op, 2)?)?),
+                        b::wtf8_string(self.string(uint(op, 1)?)?),
+                        b::wtf8_string(self.string(uint(op, 2)?)?),
                     ],
                 )
             }
@@ -824,7 +834,7 @@ impl Lower<'_> {
             }
             "PutById" | "PutByIdLong" => {
                 return Ok(vec![b::assign(
-                    b::member(r(0)?, b::string(&self.string(uint(op, 3)?)?)),
+                    b::member(r(0)?, b::wtf8_string(self.string(uint(op, 3)?)?)),
                     r(1)?,
                 )]);
             }
@@ -833,7 +843,7 @@ impl Lower<'_> {
                 let value = if deferred_constructor_prototype {
                     b::call(b::id("_constructor_prototype"), vec![r(1)?])
                 } else {
-                    b::member(r(1)?, b::string(&key))
+                    b::member(r(1)?, b::wtf8_string(key.clone()))
                 };
                 if op.name.starts_with("Try") {
                     return Ok(vec![
@@ -841,7 +851,7 @@ impl Lower<'_> {
                             span: DUMMY_SP,
                             test: b::unary(
                                 UnaryOp::Bang,
-                                b::binary(BinaryOp::In, b::string(&key), r(1)?),
+                                b::binary(BinaryOp::In, b::wtf8_string(key.clone()), r(1)?),
                             ),
                             cons: Box::new(Stmt::Throw(ThrowStmt {
                                 span: DUMMY_SP,
@@ -851,7 +861,11 @@ impl Lower<'_> {
                                     callee: b::member(b::id("_g"), b::string("ReferenceError")),
                                     args: Some(vec![ExprOrSpread {
                                         spread: None,
-                                        expr: b::string(&format!("{key} is not defined")),
+                                        expr: b::binary(
+                                            BinaryOp::Add,
+                                            b::wtf8_string(key),
+                                            b::string(" is not defined"),
+                                        ),
                                     }]),
                                     type_args: None,
                                 })),
@@ -914,7 +928,7 @@ impl Lower<'_> {
             }
             "DelById" | "DelByIdLong" => b::unary(
                 UnaryOp::Delete,
-                b::member(r(1)?, b::string(&self.string(uint(op, 2)?)?)),
+                b::member(r(1)?, b::wtf8_string(self.string(uint(op, 2)?)?)),
             ),
             "DelByVal" => b::unary(UnaryOp::Delete, b::member(r(1)?, r(2)?)),
             "PutByVal" => return Ok(vec![b::assign(b::member(r(0)?, r(1)?), r(2)?)]),
@@ -1197,7 +1211,7 @@ impl Lower<'_> {
             | "PutNewOwnNEByIdLong" => {
                 return Ok(define_own(
                     r(0)?,
-                    b::string(&self.string(uint(op, 2)?)?),
+                    b::wtf8_string(self.string(uint(op, 2)?)?),
                     r(1)?,
                     !op.name.starts_with("PutNewOwnNE"),
                 ));
@@ -1277,7 +1291,7 @@ impl Lower<'_> {
                 literal::LiteralValue::Null => Ok(*b::null()),
                 literal::LiteralValue::Bool(value) => Ok(*b::boolean(value)),
                 literal::LiteralValue::Number(value) => Ok(*double(value)),
-                literal::LiteralValue::String(id) => Ok(*b::string(&self.string(id)?)),
+                literal::LiteralValue::String(id) => Ok(*b::wtf8_string(self.string(id)?)),
             })
             .collect()
     }
@@ -1302,7 +1316,7 @@ impl Lower<'_> {
             .zip(values)
             .map(|(key, value)| {
                 let key = match key {
-                    literal::LiteralValue::String(id) => *b::string(&self.string(id)?),
+                    literal::LiteralValue::String(id) => *b::wtf8_string(self.string(id)?),
                     literal::LiteralValue::Number(number)
                         if number.is_finite()
                             && number >= 0.0
@@ -1377,11 +1391,17 @@ fn is_define_own(name: &str) -> bool {
 fn accessor_name(name: &str) -> bool {
     name.starts_with("get ") || name.starts_with("set ")
 }
-fn internal_function_name(name: &str) -> bool {
-    name.starts_with("?anon_") || (name.starts_with('#') && name.ends_with('#'))
+fn internal_function_name(name: &Wtf8Atom) -> bool {
+    name.as_str().is_some_and(|name| {
+        name.starts_with("?anon_") || (name.starts_with('#') && name.ends_with('#'))
+    })
 }
-fn needs_runtime_function_name(name: &str) -> bool {
-    !name.is_empty() && !internal_function_name(name) && (accessor_name(name) || !valid_name(name))
+fn needs_runtime_function_name(name: &Wtf8Atom) -> bool {
+    if name.is_empty() || internal_function_name(name) {
+        return false;
+    }
+    name.as_str()
+        .is_none_or(|name| accessor_name(name) || !valid_name(name))
 }
 fn has_opcode(raw: &RawModule, name: &str) -> bool {
     raw.functions
@@ -1687,6 +1707,40 @@ fn double(value: f64) -> Box<Expr> {
     } else {
         b::number(value)
     }
+}
+fn wtf8_from_utf16(units: impl IntoIterator<Item = u16>) -> Wtf8Atom {
+    let mut units = units.into_iter().peekable();
+    let mut bytes = Vec::new();
+    while let Some(unit) = units.next() {
+        let code_point = if (0xd800..=0xdbff).contains(&unit)
+            && units
+                .peek()
+                .is_some_and(|next| (0xdc00..=0xdfff).contains(next))
+        {
+            let low = units.next().expect("peeked low surrogate");
+            0x10000 + ((u32::from(unit) - 0xd800) << 10) + (u32::from(low) - 0xdc00)
+        } else {
+            u32::from(unit)
+        };
+        if code_point <= 0x7f {
+            bytes.push(code_point as u8);
+        } else if code_point <= 0x7ff {
+            bytes.push((0xc0 | (code_point >> 6)) as u8);
+            bytes.push((0x80 | (code_point & 0x3f)) as u8);
+        } else if code_point <= 0xffff {
+            bytes.push((0xe0 | (code_point >> 12)) as u8);
+            bytes.push((0x80 | ((code_point >> 6) & 0x3f)) as u8);
+            bytes.push((0x80 | (code_point & 0x3f)) as u8);
+        } else {
+            bytes.push((0xf0 | (code_point >> 18)) as u8);
+            bytes.push((0x80 | ((code_point >> 12) & 0x3f)) as u8);
+            bytes.push((0x80 | ((code_point >> 6) & 0x3f)) as u8);
+            bytes.push((0x80 | (code_point & 0x3f)) as u8);
+        }
+    }
+    // The branches above encode Unicode scalar values as UTF-8 and lone
+    // surrogate code points as their canonical three-byte WTF-8 form.
+    unsafe { Wtf8Atom::from_bytes_unchecked(&bytes) }
 }
 fn define_own(object: Box<Expr>, key: Box<Expr>, value: Box<Expr>, enumerable: bool) -> Vec<Stmt> {
     vec![

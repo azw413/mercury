@@ -135,6 +135,8 @@ Native argument-object reads and object-literal getter/setter definitions are
 also recovered with their observable parameter, descriptor, and name semantics.
 Property enumeration, value iteration, iterator closing, object spread/rest,
 exponentiation, and non-finite numeric constants are now covered as well.
+UTF-16 string values and property keys preserve lone surrogates through SWC's
+WTF-8 representation and JavaScript escape emission.
 
 ```sh
 cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js --hermesc /path/to/hermesc -o /tmp/example.hbc
