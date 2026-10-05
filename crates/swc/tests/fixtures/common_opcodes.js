@@ -116,3 +116,38 @@ print(
 );
 accessor.value = 8;
 print("set", accessor.value);
+
+var notANumber = 0 / 0;
+print(
+  "non-finite",
+  notANumber !== notANumber,
+  1 / 0,
+  -1 / 0,
+  1 / -0
+);
+var specialArray = [0 / 0, 1 / 0, -1 / 0];
+var specialObject = { nan: 0 / 0, positive: 1 / 0, negative: -1 / 0 };
+print(
+  "buffered-non-finite",
+  specialArray[0] !== specialArray[0],
+  specialArray[1],
+  specialArray[2],
+  specialObject.nan !== specialObject.nan,
+  specialObject.positive,
+  specialObject.negative
+);
+
+var exponentOrder = "";
+var exponentBase = {
+  valueOf: function () {
+    exponentOrder += "base";
+    return 2;
+  },
+};
+var exponentPower = {
+  valueOf: function () {
+    exponentOrder += ",power";
+    return 3;
+  },
+};
+print("exponent", exponentBase ** exponentPower, exponentOrder);

@@ -47,15 +47,32 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     if h.global_code_index as usize >= raw.functions.len() {
         return Err(Error::Bytecode("invalid entry function".into()));
     }
+    // Some HBC-96 producers inserted five builtins before the private range
+    // without changing the bytecode version. A delegated generator provides
+    // an unambiguous sentinel: generatorSetDelegated moved from 43 to 48.
+    let modern_private_builtins = raw.functions.iter().any(|function| {
+        has_function_opcode(function, "StartGenerator")
+            && function.instructions.iter().any(|op| {
+                matches!(op.name.as_str(), "CallBuiltin" | "CallBuiltinLong")
+                    && matches!(
+                        op.operands.get(1),
+                        Some(RawOperand::U8(48) | RawOperand::U32(48))
+                    )
+            })
+    });
     let lower = Lower {
         container: &container,
         raw: &raw,
+        modern_private_builtins,
     };
     let mut needs_define = raw
         .functions
         .iter()
         .flat_map(|function| &function.instructions)
         .any(|op| is_define_own(&op.name));
+    let copy_data_properties_builtin = if modern_private_builtins { 49 } else { 44 };
+    let needs_copy_data_runtime = has_builtin(&raw, copy_data_properties_builtin);
+    needs_define |= needs_copy_data_runtime;
     let needs_regexp = has_opcode(&raw, "CreateRegExp");
     let needs_bigint = raw.functions.iter().any(|function| {
         function.instructions.iter().any(|op| {
@@ -87,6 +104,12 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let needs_numeric_runtime = ["Inc", "Dec", "ToNumeric"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
+    let needs_property_enumeration = ["GetPNameList", "GetNextPName"]
+        .into_iter()
+        .any(|name| has_opcode(&raw, name));
+    let needs_iterator_runtime = ["IteratorBegin", "IteratorNext", "IteratorClose"]
+        .into_iter()
+        .any(|name| has_opcode(&raw, name));
     let needs_construction = raw.functions.iter().any(|function| {
         function.flags.prohibit_invoke != 2
             || function.instructions.iter().any(|op| {
@@ -103,7 +126,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         .iter()
         .map(|header| lower.string(header.function_name))
         .collect::<Result<Vec<_>, _>>()?;
-    let needs_function_name_runtime = names.iter().any(|name| accessor_name(name));
+    let needs_function_name_runtime = names.iter().any(|name| needs_runtime_function_name(name));
     needs_define |= needs_function_name_runtime;
     let mut prefix = "_mercury".to_owned();
     while names.iter().any(|name| name.starts_with(&prefix)) {
@@ -112,6 +135,15 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let mut factories = Vec::new();
     if needs_numeric_runtime {
         factories.extend(numeric_runtime());
+    }
+    if needs_property_enumeration {
+        factories.extend(property_enumeration_runtime());
+    }
+    if needs_iterator_runtime {
+        factories.extend(iterator_runtime());
+    }
+    if needs_copy_data_runtime {
+        factories.extend(copy_data_properties_runtime());
     }
     if needs_function_name_runtime {
         factories.extend(function_name_runtime());
@@ -160,12 +192,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         // Hermes uses non-JavaScript labels such as `#method#` for class
         // method bodies. The class-definition helpers install their observable
         // names, so these labels must not become function-expression bindings.
-        let generated_name = name.starts_with("?anon_")
-            || (name.starts_with('#') && name.ends_with('#'))
-            || accessor_name(&name);
-        if !name.is_empty() && !generated_name && !valid_name(&name) {
-            return Err(Error::Unsupported(format!("function name {name:?}")));
-        }
+        let generated_name = internal_function_name(&name) || needs_runtime_function_name(&name);
         let params = (1..f.param_count).map(|i| format!("_a{i}")).collect();
         let mut function = b::function(
             if name.is_empty() || generated_name {
@@ -181,7 +208,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 argument_functions[f.function_index],
             )?,
         );
-        if accessor_name(&name) {
+        if needs_runtime_function_name(&name) {
             function = b::call(b::id("_name_function"), vec![function, b::string(&name)]);
         }
         if needs_construction {
@@ -246,6 +273,45 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             b::string("slice"),
         ));
     }
+    if needs_property_enumeration || needs_copy_data_runtime {
+        wrapper_params.push("_object".into());
+        wrapper_args.push(b::member(b::this(), b::string("Object")));
+    }
+    if needs_iterator_runtime && !needs_suspension {
+        wrapper_params.push("_symbol".into());
+        wrapper_args.push(b::member(b::this(), b::string("Symbol")));
+    }
+    if needs_copy_data_runtime {
+        for (name, value) in [
+            (
+                "_own_keys",
+                b::member(
+                    b::member(b::this(), b::string("Reflect")),
+                    b::string("ownKeys"),
+                ),
+            ),
+            (
+                "_get_own_descriptor",
+                b::member(
+                    b::member(b::this(), b::string("Object")),
+                    b::string("getOwnPropertyDescriptor"),
+                ),
+            ),
+            (
+                "_has_own",
+                b::member(
+                    b::member(
+                        b::member(b::this(), b::string("Object")),
+                        b::string("prototype"),
+                    ),
+                    b::string("hasOwnProperty"),
+                ),
+            ),
+        ] {
+            wrapper_params.push(name.into());
+            wrapper_args.push(value);
+        }
+    }
     if needs_construction {
         for (name, value) in [
             (
@@ -268,7 +334,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             wrapper_args.push(value);
         }
     }
-    if needs_suspension || needs_construction {
+    if needs_suspension || needs_construction || needs_iterator_runtime || needs_copy_data_runtime {
         wrapper_params.push("_type_error".into());
         wrapper_args.push(b::member(b::this(), b::string("TypeError")));
     }
@@ -300,6 +366,7 @@ impl VisitMut for Namespace {
 struct Lower<'a> {
     container: &'a HbcContainer,
     raw: &'a RawModule,
+    modern_private_builtins: bool,
 }
 impl Lower<'_> {
     fn string(&self, id: u32) -> Result<String, Error> {
@@ -337,7 +404,9 @@ impl Lower<'_> {
                     .map(|b| u16::from_le_bytes([b[0], b[1]]))
                     .collect::<Vec<_>>(),
             )
-            .map_err(|_| Error::Unsupported("unpaired UTF-16 surrogate".into()))
+            .map_err(|_| {
+                Error::Unsupported(format!("string {id} contains an unpaired UTF-16 surrogate"))
+            })
         } else {
             String::from_utf8(data.to_vec()).map_err(|_| error())
         }
@@ -408,6 +477,14 @@ impl Lower<'_> {
         }
         if f.instructions.iter().any(|op| is_define_own(&op.name)) {
             body.push(b::var("_desc", None));
+        }
+        if f.instructions.iter().any(|op| {
+            matches!(
+                op.name.as_str(),
+                "GetPNameList" | "GetNextPName" | "IteratorBegin" | "IteratorNext"
+            )
+        }) {
+            body.push(b::var("_iteration_result", None));
         }
         if !f.exception_handlers.is_empty() {
             body.push(b::var("_thrown", None));
@@ -689,8 +766,8 @@ impl Lower<'_> {
                 _ => return Err(Error::Bytecode("invalid integer".into())),
             },
             "LoadConstDouble" => match op.operands.get(1) {
-                Some(RawOperand::F64(v)) if v.is_finite() => b::number(*v),
-                _ => return Err(unsupported(f, op, "non-finite double")),
+                Some(RawOperand::F64(value)) => double(*value),
+                _ => return Err(Error::Bytecode("invalid double".into())),
             },
             "LoadConstBigInt" | "LoadConstBigIntLongIndex" => b::call(
                 b::id("_bigint"),
@@ -787,6 +864,54 @@ impl Lower<'_> {
                 value
             }
             "GetByVal" => b::member(r(1)?, r(2)?),
+            "GetPNameList" => {
+                let list = b::member(b::id("_iteration_result"), b::number(0.0));
+                return Ok(vec![
+                    b::assign(
+                        b::id("_iteration_result"),
+                        b::call(b::id("_for_in_begin"), vec![r(1)?]),
+                    ),
+                    Stmt::If(IfStmt {
+                        span: DUMMY_SP,
+                        test: b::binary(BinaryOp::NotEqEq, list, b::undefined()),
+                        cons: Box::new(Stmt::Block(b::block(vec![
+                            b::assign(r(1)?, b::member(b::id("_iteration_result"), b::number(1.0))),
+                            b::assign(r(0)?, b::member(b::id("_iteration_result"), b::number(0.0))),
+                            b::assign(r(2)?, b::number(0.0)),
+                            b::assign(
+                                r(3)?,
+                                b::member(
+                                    b::member(b::id("_iteration_result"), b::number(0.0)),
+                                    b::string("length"),
+                                ),
+                            ),
+                        ]))),
+                        alt: Some(Box::new(b::assign(r(0)?, b::undefined()))),
+                    }),
+                ]);
+            }
+            "GetNextPName" => {
+                return Ok(vec![
+                    b::assign(
+                        b::id("_iteration_result"),
+                        b::call(b::id("_for_in_next"), vec![r(1)?, r(2)?, r(3)?, r(4)?]),
+                    ),
+                    b::assign(r(0)?, b::member(b::id("_iteration_result"), b::number(0.0))),
+                    Stmt::If(IfStmt {
+                        span: DUMMY_SP,
+                        test: b::binary(
+                            BinaryOp::NotEqEq,
+                            b::member(b::id("_iteration_result"), b::number(0.0)),
+                            b::undefined(),
+                        ),
+                        cons: Box::new(b::assign(
+                            r(3)?,
+                            b::member(b::id("_iteration_result"), b::number(1.0)),
+                        )),
+                        alt: None,
+                    }),
+                ]);
+            }
             "DelById" | "DelByIdLong" => b::unary(
                 UnaryOp::Delete,
                 b::member(r(1)?, b::string(&self.string(uint(op, 2)?)?)),
@@ -868,18 +993,9 @@ impl Lower<'_> {
                     .rev()
                     .map(|register| register_number(f, register))
                     .collect::<Result<Vec<_>, _>>()?;
-                // HBC remained at version 96 across Hermes 0.12 and 0.13 even
-                // though four private builtins moved from 40..=43 to 45..=48.
-                // A yield* body always contains generatorSetDelegated, so that
-                // sentinel identifies the producer's contiguous builtin range.
-                let modern_yield_builtins = f.instructions.iter().any(|instruction| {
-                    matches!(instruction.name.as_str(), "CallBuiltin" | "CallBuiltinLong")
-                        && matches!(
-                            instruction.operands.get(1),
-                            Some(RawOperand::U8(48) | RawOperand::U32(48))
-                        )
-                });
-                let ensure_object = if modern_yield_builtins { 45 } else { 40 };
+                let ensure_object = if self.modern_private_builtins { 45 } else { 40 };
+                let copy_data_properties = ensure_object + 4;
+                let exponentiation = if self.modern_private_builtins { 54 } else { 49 };
                 match builtin {
                     value if resumable && value == ensure_object => {
                         b::call(b::id("_ensure_object"), args)
@@ -896,7 +1012,22 @@ impl Lower<'_> {
                             b::assign(r(0)?, b::undefined()),
                         ]);
                     }
-                    _ => return Err(unsupported(f, op, "unsupported builtin call")),
+                    value if value == copy_data_properties => {
+                        b::call(b::id("_copy_data_properties"), args)
+                    }
+                    value if value == exponentiation && args.len() == 2 => {
+                        b::binary(BinaryOp::Exp, args[0].clone(), args[1].clone())
+                    }
+                    value if value == exponentiation => {
+                        return Err(unsupported(f, op, "invalid exponentiation arguments"));
+                    }
+                    _ => {
+                        return Err(unsupported(
+                            f,
+                            op,
+                            &format!("unsupported builtin call {builtin}"),
+                        ));
+                    }
                 }
             }
             "GetBuiltinClosure" => {
@@ -938,6 +1069,37 @@ impl Lower<'_> {
                 },
                 b::string("length"),
             ),
+            "IteratorBegin" => {
+                return Ok(vec![
+                    b::assign(
+                        b::id("_iteration_result"),
+                        b::call(b::id("_iterator_begin"), vec![r(1)?]),
+                    ),
+                    b::assign(r(0)?, b::member(b::id("_iteration_result"), b::number(0.0))),
+                    b::assign(r(1)?, b::member(b::id("_iteration_result"), b::number(1.0))),
+                ]);
+            }
+            "IteratorNext" => {
+                return Ok(vec![
+                    b::assign(
+                        b::id("_iteration_result"),
+                        b::call(b::id("_iterator_next"), vec![r(1)?, r(2)?]),
+                    ),
+                    b::assign(r(1)?, b::member(b::id("_iteration_result"), b::number(1.0))),
+                    b::assign(r(0)?, b::member(b::id("_iteration_result"), b::number(0.0))),
+                ]);
+            }
+            "IteratorClose" => {
+                let ignore_inner = match uint(op, 1)? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(unsupported(f, op, "invalid ignore-inner-exception flag")),
+                };
+                return Ok(vec![b::expr(b::call(
+                    b::id("_iterator_close"),
+                    vec![r(0)?, b::boolean(ignore_inner)],
+                ))]);
+            }
             "CreateGenerator" | "CreateGeneratorLongIndex" => {
                 let target = uint(op, 2)?;
                 if target as usize >= self.raw.functions.len() {
@@ -1103,8 +1265,8 @@ impl Lower<'_> {
 
     fn buffer_values(
         &self,
-        f: &RawFunction,
-        op: &RawInstruction,
+        _f: &RawFunction,
+        _op: &RawInstruction,
         buffer: &[u8],
         offset: u32,
         count: u32,
@@ -1114,10 +1276,7 @@ impl Lower<'_> {
             .map(|value| match value {
                 literal::LiteralValue::Null => Ok(*b::null()),
                 literal::LiteralValue::Bool(value) => Ok(*b::boolean(value)),
-                literal::LiteralValue::Number(value) if value.is_finite() => Ok(*b::number(value)),
-                literal::LiteralValue::Number(_) => {
-                    Err(unsupported(f, op, "non-finite buffered number"))
-                }
+                literal::LiteralValue::Number(value) => Ok(*double(value)),
                 literal::LiteralValue::String(id) => Ok(*b::string(&self.string(id)?)),
             })
             .collect()
@@ -1218,11 +1377,28 @@ fn is_define_own(name: &str) -> bool {
 fn accessor_name(name: &str) -> bool {
     name.starts_with("get ") || name.starts_with("set ")
 }
+fn internal_function_name(name: &str) -> bool {
+    name.starts_with("?anon_") || (name.starts_with('#') && name.ends_with('#'))
+}
+fn needs_runtime_function_name(name: &str) -> bool {
+    !name.is_empty() && !internal_function_name(name) && (accessor_name(name) || !valid_name(name))
+}
 fn has_opcode(raw: &RawModule, name: &str) -> bool {
     raw.functions
         .iter()
         .flat_map(|function| &function.instructions)
         .any(|op| op.name == name)
+}
+fn has_builtin(raw: &RawModule, builtin: u32) -> bool {
+    raw.functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .filter(|op| matches!(op.name.as_str(), "CallBuiltin" | "CallBuiltinLong"))
+        .any(|op| match op.operands.get(1) {
+            Some(RawOperand::U8(value)) => u32::from(*value) == builtin,
+            Some(RawOperand::U32(value)) => *value == builtin,
+            _ => false,
+        })
 }
 fn has_function_opcode(function: &RawFunction, name: &str) -> bool {
     function.instructions.iter().any(|op| op.name == name)
@@ -1240,6 +1416,108 @@ function _to_numeric(_value) {
 }
 "#;
     embedded_runtime("mercury-numeric-runtime.js", SOURCE)
+}
+fn property_enumeration_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _for_in_begin(_value) {
+    if (_value === null || _value === void 0) {
+        return [void 0, _value];
+    }
+    var _boxed = _object(_value);
+    var _names = [];
+    for (var _name in _boxed) {
+        _names[_names["length"]] = _name;
+    }
+    return [_names, _boxed];
+}
+function _for_in_next(_names, _object_value, _index, _size) {
+    while (_index < _size) {
+        var _name = _names[_index++];
+        if (_name in _object_value) {
+            return [_name, _index];
+        }
+    }
+    return [void 0, _index];
+}
+"#;
+    embedded_runtime("mercury-property-enumeration-runtime.js", SOURCE)
+}
+fn iterator_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _is_object(_value) {
+    return _value !== null && (typeof _value === "object" || typeof _value === "function");
+}
+function _iterator_begin(_source) {
+    var _method = _source[_symbol["iterator"]];
+    var _iterator_value = _apply(_method, _source, []);
+    if (!_is_object(_iterator_value)) {
+        throw new _type_error("iterator method did not return an object");
+    }
+    return [_iterator_value, _iterator_value["next"]];
+}
+function _iterator_next(_iterator_value, _next) {
+    var _result = _apply(_next, _iterator_value, []);
+    if (!_is_object(_result)) {
+        throw new _type_error("iterator.next() did not return an object");
+    }
+    if (_result["done"]) {
+        return [void 0, void 0];
+    }
+    return [_result["value"], _iterator_value];
+}
+function _iterator_close(_iterator_value, _ignore_inner_exception) {
+    if (!_is_object(_iterator_value)) {
+        return;
+    }
+    try {
+        var _close = _iterator_value["return"];
+        if (_close === null || _close === void 0) {
+            return;
+        }
+        var _result = _apply(_close, _iterator_value, []);
+        if (!_is_object(_result)) {
+            throw new _type_error("iterator.return() did not return an object");
+        }
+    } catch (_error) {
+        if (!_ignore_inner_exception) {
+            throw _error;
+        }
+    }
+}
+"#;
+    embedded_runtime("mercury-iterator-runtime.js", SOURCE)
+}
+fn copy_data_properties_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _copy_data_properties(_target, _source, _excluded) {
+    if (_target === null || (typeof _target !== "object" && typeof _target !== "function")) {
+        return void 0;
+    }
+    if (_source === null || _source === void 0) {
+        return _target;
+    }
+    var _from = _object(_source);
+    var _keys = _apply(_own_keys, void 0, [_from]);
+    for (var _index = 0; _index < _keys["length"]; _index++) {
+        var _key = _keys[_index];
+        var _descriptor = _apply(_get_own_descriptor, _object, [_from, _key]);
+        if (_descriptor !== void 0 && _descriptor["enumerable"] &&
+            (_excluded === void 0 || !_apply(_has_own, _excluded, [_key]))) {
+            var _value = _from[_key];
+            if (!_define(_target, _key, {
+                value: _value,
+                writable: true,
+                enumerable: true,
+                configurable: true
+            })) {
+                throw new _type_error("cannot define copied property");
+            }
+        }
+    }
+    return _target;
+}
+"#;
+    embedded_runtime("mercury-copy-data-properties-runtime.js", SOURCE)
 }
 fn function_name_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
@@ -1398,6 +1676,17 @@ fn iterator_result(value: Expr, done: bool) -> Box<Expr> {
         (*b::string("value"), value),
         (*b::string("done"), *b::boolean(done)),
     ])
+}
+fn double(value: f64) -> Box<Expr> {
+    if value.is_nan() {
+        b::binary(BinaryOp::Div, b::number(0.0), b::number(0.0))
+    } else if value == f64::INFINITY {
+        b::binary(BinaryOp::Div, b::number(1.0), b::number(0.0))
+    } else if value == f64::NEG_INFINITY {
+        b::binary(BinaryOp::Div, b::number(-1.0), b::number(0.0))
+    } else {
+        b::number(value)
+    }
 }
 fn define_own(object: Box<Expr>, key: Box<Expr>, value: Box<Expr>, enumerable: bool) -> Vec<Stmt> {
     vec![

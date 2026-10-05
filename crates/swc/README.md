@@ -80,6 +80,10 @@ throws. Increment, decrement, number/numeric/int32 coercion, string coercion, an
 named or computed property deletion preserve BigInt and strict-mode behavior.
 Native argument-object reads retain Hermes' unmapped parameter semantics, and
 object-literal accessors retain their descriptors and observable function names.
+For-in property snapshots, iterator begin/next/close, object spread/rest, and
+exponentiation preserve mutation, completion, descriptor, symbol, and Proxy
+behavior. Finite and non-finite doubles are recovered from direct constants and
+literal buffers.
 Dense integer switch tables are decoded from their trailing function data and
 lowered into the dispatcher. Function names and strictness are retained. Unknown
 opcodes fail with function index and instruction offset; malformed branch targets,
@@ -114,10 +118,9 @@ methods, accessors, observable method names, and `super` constructor calls round
 trip through the HBC 96 ES6-class runtime.
 
 String-switch metadata and dynamic eval are not implemented. The decompiler also
-rejects non-finite literal doubles, unpaired UTF-16 surrogates and function/global
-names outside its supported identifier subset. Source comments, original variable
-names, original TypeScript types, and byte-identical recompilation cannot be
-recovered from HBC.
+rejects unpaired UTF-16 surrogates and global names outside its supported
+identifier subset. Source comments, original variable names, original TypeScript
+types, and byte-identical recompilation cannot be recovered from HBC.
 
 Generated calls assume the standard, unmodified `Reflect.apply` intrinsic;
 dynamic array and object initializers also use `Reflect.defineProperty` to preserve
@@ -178,9 +181,11 @@ execution with execution after HBC-to-SWC-to-HBC reconstruction. The runtime
 harness enables Hermes' experimental `-Xes6-class` support required by HBC 96
 class helper calls. Scalar-opcode coverage also exercises BigInt coercion,
 strict deletion, native arguments, parameter independence, and accessor
-descriptors. Additional committed-fixture checks decompile and rebuild all three
-functions in `hex.hbc` and all 983 functions in `box2d.hbc`, then compare their
-runtime output with the original bytecode.
+descriptors. Iteration coverage exercises mutation during for-in and for-of,
+iterator closing on every abrupt completion, object spread/rest with symbols,
+and Proxy trap ordering. Additional committed-fixture checks decompile and
+rebuild all three functions in `hex.hbc` and all 983 functions in `box2d.hbc`,
+then compare their runtime output with the original bytecode.
 
 `tests/fixtures/control_flow.hbc` was generated from the adjacent authored JS
 fixture with the local compiler reporting Hermes release 0.12.0 / HBC 96:

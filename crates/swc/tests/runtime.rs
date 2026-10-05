@@ -369,7 +369,27 @@ fn common_opcodes_preserve_coercion_arguments_and_accessor_semantics() {
     assert_runtime_roundtrip(
         "common-opcodes.js",
         include_str!("fixtures/common_opcodes.js"),
-        "5 3 7 8 3.5 1 9 true true undefined undefined\n5 3 4 5\nfalse 1\nstrict-delete true 1\narguments 3 7\nreturned-arguments 2 3\nargument-aliasing 1 2\naccessor 3 true true get value set value\nset 9\n",
+        "5 3 7 8 3.5 1 9 true true undefined undefined\n5 3 4 5\nfalse 1\nstrict-delete true 1\narguments 3 7\nreturned-arguments 2 3\nargument-aliasing 1 2\naccessor 3 true true get value set value\nset 9\nnon-finite true Infinity -Infinity -Infinity\nbuffered-non-finite true Infinity -Infinity true Infinity -Infinity\nexponent 8 base,power\n",
+    );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn property_and_value_iteration_preserve_mutation_and_close_semantics() {
+    assert_runtime_roundtrip(
+        "iteration.js",
+        include_str!("fixtures/iteration.js"),
+        "for-in first,shadowed,inherited\nfor-in-values 0,1 0\narray-iterator 1,undefined,3,4\niterator-close next,value:1,return\ninvalid-next true\nbreak-close close\nthrow-close body\n",
+    );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn object_spread_and_rest_preserve_keys_descriptors_and_proxy_order() {
+    assert_runtime_roundtrip(
+        "object-spread.js",
+        include_str!("fixtures/object_spread.js"),
+        "spread 0 5 4 2 undefined undefined 1 true true true\nrest 1 undefined 4 2 undefined undefined 2\nproxy 7 undefined keys,descriptor:visible,get:visible,descriptor:skipped\n",
     );
 }
 

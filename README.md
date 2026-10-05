@@ -133,6 +133,8 @@ the opcode families used by the committed Box2D fixture; all 983 functions now
 decompile to SWC, recompile to HBC, and produce the original runtime output.
 Native argument-object reads and object-literal getter/setter definitions are
 also recovered with their observable parameter, descriptor, and name semantics.
+Property enumeration, value iteration, iterator closing, object spread/rest,
+exponentiation, and non-finite numeric constants are now covered as well.
 
 ```sh
 cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js --hermesc /path/to/hermesc -o /tmp/example.hbc
