@@ -709,6 +709,128 @@ fn typed_arithmetic_and_memory_opcodes_preserve_i32_and_view_semantics() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
+    use DecodedOperand::{U16, U32, U8};
+
+    let configurable = build_test_module(
+        vec!["permitted".into()],
+        vec![MinimalFunction {
+            name: "global".into(),
+            param_count: 1,
+            frame_size: 2,
+            environment_size: 0,
+            instructions: vec![
+                instruction("GetGlobalObject", vec![U8(0)]),
+                instruction("LoadConstUInt8", vec![U8(1), U8(1)]),
+                instruction("PutById", vec![U8(0), U8(1), U8(0), U16(0)]),
+                instruction("ThrowIfHasRestrictedGlobalProperty", vec![U32(0)]),
+                instruction("LoadConstUInt8", vec![U8(0), U8(42)]),
+                instruction("Throw", vec![U8(0)]),
+            ],
+        }],
+    );
+    assert!(execute_failure(&configurable).contains("Uncaught 42"));
+    let rebuilt = compiler()
+        .compile(&decompile(&configurable).unwrap())
+        .unwrap();
+    assert!(execute_failure(&rebuilt).contains("Uncaught 42"));
+
+    let restricted = build_test_module(
+        vec!["undefined".into()],
+        vec![MinimalFunction {
+            name: "global".into(),
+            param_count: 1,
+            frame_size: 1,
+            environment_size: 0,
+            instructions: vec![
+                instruction("ThrowIfHasRestrictedGlobalProperty", vec![U32(0)]),
+                instruction("LoadConstUInt8", vec![U8(0), U8(42)]),
+                instruction("Throw", vec![U8(0)]),
+            ],
+        }],
+    );
+    for bytes in [
+        restricted.clone(),
+        compiler()
+            .compile(&decompile(&restricted).unwrap())
+            .unwrap(),
+    ] {
+        let error = execute_failure(&bytes);
+        assert!(error.contains("SyntaxError"), "{error}");
+        assert!(error.contains("restricted global identifier"), "{error}");
+    }
+
+    let unreachable = build_test_module(
+        vec![],
+        vec![MinimalFunction {
+            name: "global".into(),
+            param_count: 1,
+            frame_size: 1,
+            environment_size: 0,
+            instructions: vec![instruction("Unreachable", vec![])],
+        }],
+    );
+    assert!(
+        execute_failure(&unreachable).contains("Unreachable instruction encountered")
+    );
+    let rebuilt = compiler()
+        .compile(&decompile(&unreachable).unwrap())
+        .unwrap();
+    assert!(execute_failure(&rebuilt).contains("Unreachable instruction encountered"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("unreachable-catch.js");
+    let output = dir.path().join("unreachable-catch.hbc");
+    fs::write(
+        &input,
+        "try { debugger; print('after'); } catch (error) { print('caught'); } print('continued');",
+    )
+    .unwrap();
+    let result = Command::new(
+        std::env::var_os("HERMESC_BIN").expect("set HERMESC_BIN to a version-96 Hermes compiler"),
+    )
+    .args(["-Xes6-class", "-O0", "-g0", "-emit-binary"])
+    .arg(format!("-out={}", output.display()))
+    .arg(input)
+    .output()
+    .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let mut protected = fs::read(output).unwrap();
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&protected, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &protected, &spec.bytecode).unwrap();
+    let (function_index, debugger_offset) = raw
+        .functions
+        .iter()
+        .find_map(|function| {
+            function
+                .instructions
+                .iter()
+                .find(|instruction| instruction.name == "Debugger")
+                .map(|instruction| (function.function_index, instruction.offset))
+        })
+        .expect("fixture should contain Debugger");
+    assert!(!raw.functions[function_index].exception_handlers.is_empty());
+    let body_offset = container.function_headers[function_index].offset as usize;
+    protected[body_offset + debugger_offset as usize] = 0;
+    let container = parse_hbc_container_with_spec(&protected, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &protected, &spec.bytecode).unwrap();
+    assert!(raw.functions[function_index]
+        .instructions
+        .iter()
+        .any(|instruction| instruction.name == "Unreachable"));
+    let rebuilt = compiler()
+        .compile(&decompile(&protected).unwrap())
+        .unwrap();
+    assert!(execute_failure(&rebuilt).contains("Unreachable instruction encountered"));
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn property_and_value_iteration_preserve_mutation_and_close_semantics() {
     assert_runtime_roundtrip(
         "iteration.js",

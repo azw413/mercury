@@ -100,6 +100,11 @@ every protected boundary. Generated `try`/`catch` routing follows Hermes' table
 order, so exceptions from explicit throws, property operations, and nested calls
 resume at the matching `Catch` opcode. Nested catches and finally cleanup paths
 remain bytecode-driven rather than being restructured into the original source.
+Restricted global lexical declarations inspect the global object's own-property
+descriptor and throw for non-configurable names. The fatal `Unreachable` sentinel
+becomes a private error that bypasses every reconstructed bytecode exception
+handler, so authored `catch` blocks cannot turn a VM invariant failure into normal
+control flow.
 
 Closure environments are reconstructed as a private parent-linked slot structure.
 This preserves mutation shared by sibling closures, independent environments from
@@ -204,10 +209,12 @@ arithmetic operations, all six signed/unsigned loads, and all three stores; it
 checks wraparound, signed division, address alignment, little-endian access, and
 typed-array mutation. `Debugger` is retained as a debugger statement; host async
 break checks and basic-block profile points have no JavaScript runtime effect and
-are omitted. The remaining HBC-96 opcode gaps are restricted-global declaration
-checks and the fatal `Unreachable` sentinel. Committed-fixture checks decompile
-and rebuild all three functions in `hex.hbc` and all 983 functions in
-`box2d.hbc`, then compare their runtime output with the original bytecode.
+are omitted. Restricted-global checks cover configurable and non-configurable
+properties, while fatal-sentinel coverage verifies that protected bytecode cannot
+catch `Unreachable`. The complete HBC-96 opcode vocabulary now has an SWC lowering.
+Committed-fixture checks decompile and rebuild all three functions in `hex.hbc`
+and all 983 functions in `box2d.hbc`, then compare their runtime output with the
+original bytecode.
 
 `tests/fixtures/control_flow.hbc` was generated from the adjacent authored JS
 fixture with the local compiler reporting Hermes release 0.12.0 / HBC 96:

@@ -84,6 +84,8 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         })
     });
     let needs_direct_eval = has_opcode(&raw, "DirectEval");
+    let needs_restricted_global = has_opcode(&raw, "ThrowIfHasRestrictedGlobalProperty");
+    let needs_unreachable = has_opcode(&raw, "Unreachable");
     let needs_empty = ["LoadConstEmpty", "ThrowIfEmpty"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
@@ -152,6 +154,15 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     // scope. Large bundles can contain hundreds of thousands of functions, and
     // SWC hygiene's collision analysis scales poorly with that many siblings.
     let mut factories = vec![b::var("_make", Some(b::array(vec![])))];
+    if needs_unreachable {
+        factories.push(b::var(
+            "_unreachable",
+            Some(b::new(
+                b::id("_error"),
+                vec![b::string("Unreachable instruction encountered")],
+            )),
+        ));
+    }
     if needs_empty {
         factories.push(b::var("_empty", Some(b::empty_object())));
     }
@@ -160,6 +171,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     }
     if needs_typed_runtime {
         factories.extend(typed_runtime());
+    }
+    if needs_restricted_global {
+        factories.extend(restricted_global_runtime());
     }
     if needs_coerce_this {
         factories.extend(coerce_this_runtime());
@@ -244,6 +258,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 resumable_functions[f.function_index],
                 needs_construction,
                 argument_functions[f.function_index],
+                needs_unreachable,
             )?,
         );
         if needs_runtime_function_name(&name) {
@@ -310,6 +325,14 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             b::string("imul"),
         ));
     }
+    if needs_restricted_global {
+        wrapper_params.push("_syntax_error".into());
+        wrapper_args.push(b::member(b::this(), b::string("SyntaxError")));
+    }
+    if needs_unreachable {
+        wrapper_params.push("_error".into());
+        wrapper_args.push(b::member(b::this(), b::string("Error")));
+    }
     if needs_suspension {
         for (name, global) in [("_promise", "Promise"), ("_symbol", "Symbol")] {
             wrapper_params.push(name.into());
@@ -326,7 +349,11 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             b::string("slice"),
         ));
     }
-    if needs_property_enumeration || needs_copy_data_runtime || needs_coerce_this {
+    if needs_property_enumeration
+        || needs_copy_data_runtime
+        || needs_coerce_this
+        || needs_restricted_global
+    {
         wrapper_params.push("_object".into());
         wrapper_args.push(b::member(b::this(), b::string("Object")));
     }
@@ -344,13 +371,6 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 ),
             ),
             (
-                "_get_own_descriptor",
-                b::member(
-                    b::member(b::this(), b::string("Object")),
-                    b::string("getOwnPropertyDescriptor"),
-                ),
-            ),
-            (
                 "_has_own",
                 b::member(
                     b::member(
@@ -364,6 +384,13 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             wrapper_params.push(name.into());
             wrapper_args.push(value);
         }
+    }
+    if needs_copy_data_runtime || needs_restricted_global {
+        wrapper_params.push("_get_own_descriptor".into());
+        wrapper_args.push(b::member(
+            b::member(b::this(), b::string("Object")),
+            b::string("getOwnPropertyDescriptor"),
+        ));
     }
     if needs_construction {
         for (name, value) in [
@@ -465,6 +492,7 @@ impl Lower<'_> {
         resumable: bool,
         construction_runtime: bool,
         uses_arguments: bool,
+        fatal_unreachable: bool,
     ) -> Result<Vec<Stmt>, Error> {
         let mut body = Vec::new();
         if f.flags.strict_mode {
@@ -644,7 +672,7 @@ impl Lower<'_> {
                         uses_arguments,
                         deferred_constructor_prototypes.contains(&op.offset),
                     )?);
-                    terminated = matches!(op.name.as_str(), "Ret" | "Throw");
+                    terminated = matches!(op.name.as_str(), "Ret" | "Throw" | "Unreachable");
                 }
             }
             if !terminated {
@@ -672,6 +700,21 @@ impl Lower<'_> {
             vec![dispatch]
         } else {
             let mut catch_body = Vec::new();
+            if fatal_unreachable {
+                catch_body.push(Stmt::If(IfStmt {
+                    span: DUMMY_SP,
+                    test: b::binary(
+                        BinaryOp::EqEqEq,
+                        b::id("_caught"),
+                        b::id("_unreachable"),
+                    ),
+                    cons: Box::new(Stmt::Throw(ThrowStmt {
+                        span: DUMMY_SP,
+                        arg: b::id("_caught"),
+                    })),
+                    alt: None,
+                }));
+            }
             for handler in &f.exception_handlers {
                 catch_body.push(Stmt::If(IfStmt {
                     span: DUMMY_SP,
@@ -741,6 +784,12 @@ impl Lower<'_> {
         let r = |i| register(f, op, i);
         let value = match op.name.as_str() {
             "DeclareGlobalVar" => return Ok(vec![]),
+            "ThrowIfHasRestrictedGlobalProperty" => {
+                return Ok(vec![b::expr(b::call(
+                    b::id("_throw_if_restricted_global"),
+                    vec![b::wtf8_string(self.string(uint(op, 0)?)?)],
+                ))]);
+            }
             // Environment arrays store their parent at index 0 and bytecode
             // slots at index + 1. Passing the exact same array to each child
             // preserves shared mutation between sibling closures.
@@ -902,6 +951,12 @@ impl Lower<'_> {
                 return Ok(vec![Stmt::Throw(ThrowStmt {
                     span: DUMMY_SP,
                     arg: r(0)?,
+                })]);
+            }
+            "Unreachable" => {
+                return Ok(vec![Stmt::Throw(ThrowStmt {
+                    span: DUMMY_SP,
+                    arg: b::id("_unreachable"),
                 })]);
             }
             "PutById" | "PutByIdLong" => {
@@ -1659,6 +1714,18 @@ function _store32(memory, address, value) {
 }
 "#;
     embedded_runtime("mercury-typed-runtime.js", SOURCE)
+}
+
+fn restricted_global_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _throw_if_restricted_global(_name) {
+    var _descriptor = _apply(_get_own_descriptor, _object, [_g, _name]);
+    if (_descriptor !== void 0 && !_descriptor["configurable"]) {
+        throw new _syntax_error("Name is a restricted global identifier");
+    }
+}
+"#;
+    embedded_runtime("mercury-restricted-global-runtime.js", SOURCE)
 }
 fn coerce_this_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"

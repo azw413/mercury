@@ -463,16 +463,18 @@ fn classify_string_kinds(
                 continue;
             }
 
-            if instruction.name == "DeclareGlobalVar" || instruction.name.contains("ById") {
-                if let Some(string_id) = instruction_string_id(instruction) {
-                    let slot = kinds.get_mut(string_id as usize).ok_or_else(|| {
-                        HbcBuildError::MissingString {
-                            function: function.name.clone(),
-                            string_id,
-                        }
-                    })?;
-                    *slot = StringKind::Identifier;
-                }
+            if (instruction.name == "DeclareGlobalVar"
+                || instruction.name == "ThrowIfHasRestrictedGlobalProperty"
+                || instruction.name.contains("ById"))
+                && let Some(string_id) = instruction_string_id(instruction)
+            {
+                let slot = kinds.get_mut(string_id as usize).ok_or_else(|| {
+                    HbcBuildError::MissingString {
+                        function: function.name.clone(),
+                        string_id,
+                    }
+                })?;
+                *slot = StringKind::Identifier;
             }
         }
     }
@@ -703,5 +705,37 @@ mod tests {
         assert_eq!(raw.functions.len(), 2);
         assert_eq!(raw.functions[0].instructions[0].name, "DeclareGlobalVar");
         assert_eq!(raw.functions[1].instructions[0].name, "LoadConstString");
+    }
+
+    #[test]
+    fn restricted_global_operand_is_emitted_as_an_identifier() {
+        let spec = load_spec(96).expect("embedded hbc96 spec");
+        let module = MinimalModule {
+            version: 96,
+            global_code_index: 0,
+            strings: vec!["undefined".into()],
+            string_kinds: vec![],
+            literal_value_buffer: vec![],
+            object_key_buffer: vec![],
+            object_value_buffer: vec![],
+            functions: vec![MinimalFunction {
+                name: "global".into(),
+                param_count: 1,
+                frame_size: 1,
+                environment_size: 0,
+                instructions: vec![DecodedInstruction {
+                    offset: 0,
+                    opcode: 53,
+                    name: "ThrowIfHasRestrictedGlobalProperty".into(),
+                    operands: vec![DecodedOperand::U32(0)],
+                    size: 5,
+                }],
+            }],
+        };
+
+        let bytes = build_minimal_module(&module, &spec.bytecode).expect("builds");
+        let container = parse_hbc_container_with_spec(&bytes, &spec.container).expect("reparses");
+        assert_eq!(container.header.identifier_count, 1);
+        assert_eq!(container.string_kind_entries[0].kind, StringKind::Identifier);
     }
 }
