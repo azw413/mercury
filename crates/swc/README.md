@@ -141,6 +141,10 @@ JavaScript generation. Constructor recovery also captures `Object.create`,
 generated direct `new` thunk with its complete argument list, so proxy construct
 traps, `newTarget`, `ConstructLong`, non-constructable failures, and Hermes'
 observable prototype access sequence remain intact without array iteration.
+Typed 32-bit arithmetic uses exact wrapping operations and captured `Math.imul`.
+The unsafe typed-memory opcodes use a captured `DataView` over the supplied
+typed-array view, preserving its byte offset, little-endian access, alignment,
+signed loads, and the signed result required by `Loadu32`.
 Reflective details such as function source text and caller stacks will differ.
 Reading/rebuilding arbitrary HBC is not implied by successful source compilation;
 supported compilation syntax is broader than the decompiler subset.
@@ -195,14 +199,15 @@ checks global rather than synthetic local scope, strict assignment failures,
 non-string passthrough, completion values, and syntax errors. VM-edge coverage
 includes inner lexical environments, TDZ empty values, undeclared global writes,
 direct function-table calls, non-strict receiver coercion, and long generator
-suspension offsets. `Debugger` is retained as a debugger statement; host async
+suspension offsets. Typed-opcode coverage explicitly includes all five 32-bit
+arithmetic operations, all six signed/unsigned loads, and all three stores; it
+checks wraparound, signed division, address alignment, little-endian access, and
+typed-array mutation. `Debugger` is retained as a debugger statement; host async
 break checks and basic-block profile points have no JavaScript runtime effect and
-are omitted. The remaining HBC-96 opcode gaps are the typed 32-bit arithmetic and
-memory family, restricted-global declaration checks, and the fatal `Unreachable`
-sentinel. Committed-fixture checks decompile and rebuild all three functions in
-`hex.hbc`
-and all 983 functions in `box2d.hbc`, then compare their runtime output with the
-original bytecode.
+are omitted. The remaining HBC-96 opcode gaps are restricted-global declaration
+checks and the fatal `Unreachable` sentinel. Committed-fixture checks decompile
+and rebuild all three functions in `hex.hbc` and all 983 functions in
+`box2d.hbc`, then compare their runtime output with the original bytecode.
 
 `tests/fixtures/control_flow.hbc` was generated from the adjacent authored JS
 fixture with the local compiler reporting Hermes release 0.12.0 / HBC 96:

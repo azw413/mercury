@@ -110,6 +110,12 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let needs_numeric_runtime = ["Inc", "Dec", "ToNumeric"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
+    let needs_typed_runtime = [
+        "Add32", "Sub32", "Mul32", "Divi32", "Divu32", "Loadi8", "Loadu8", "Loadi16", "Loadu16",
+        "Loadi32", "Loadu32", "Store8", "Store16", "Store32",
+    ]
+    .into_iter()
+    .any(|name| has_opcode(&raw, name));
     let needs_property_enumeration = ["GetPNameList", "GetNextPName"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
@@ -151,6 +157,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     }
     if needs_numeric_runtime {
         factories.extend(numeric_runtime());
+    }
+    if needs_typed_runtime {
+        factories.extend(typed_runtime());
     }
     if needs_coerce_this {
         factories.extend(coerce_this_runtime());
@@ -291,6 +300,15 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     if needs_direct_eval {
         wrapper_params.push("_eval".into());
         wrapper_args.push(b::member(b::this(), b::string("eval")));
+    }
+    if needs_typed_runtime {
+        wrapper_params.push("_data_view".into());
+        wrapper_args.push(b::member(b::this(), b::string("DataView")));
+        wrapper_params.push("_imul".into());
+        wrapper_args.push(b::member(
+            b::member(b::this(), b::string("Math")),
+            b::string("imul"),
+        ));
     }
     if needs_suspension {
         for (name, global) in [("_promise", "Promise"), ("_symbol", "Symbol")] {
@@ -1366,6 +1384,29 @@ impl Lower<'_> {
             "ToNumeric" => b::call(b::id("_to_numeric"), vec![r(1)?]),
             "ToInt32" => b::binary(BinaryOp::BitOr, r(1)?, b::number(0.0)),
             "AddEmptyString" => b::binary(BinaryOp::Add, b::string(""), r(1)?),
+            "Add32" => b::call(b::id("_add32"), vec![r(1)?, r(2)?]),
+            "Sub32" => b::call(b::id("_sub32"), vec![r(1)?, r(2)?]),
+            "Mul32" => b::call(b::id("_mul32"), vec![r(1)?, r(2)?]),
+            "Divi32" => b::call(b::id("_divi32"), vec![r(1)?, r(2)?]),
+            "Divu32" => b::call(b::id("_divu32"), vec![r(1)?, r(2)?]),
+            "Loadi8" => b::call(b::id("_load_i8"), vec![r(1)?, r(2)?]),
+            "Loadu8" => b::call(b::id("_load_u8"), vec![r(1)?, r(2)?]),
+            "Loadi16" => b::call(b::id("_load_i16"), vec![r(1)?, r(2)?]),
+            "Loadu16" => b::call(b::id("_load_u16"), vec![r(1)?, r(2)?]),
+            "Loadi32" => b::call(b::id("_load_i32"), vec![r(1)?, r(2)?]),
+            "Loadu32" => b::call(b::id("_load_u32"), vec![r(1)?, r(2)?]),
+            "Store8" | "Store16" | "Store32" => {
+                let helper = match op.name.as_str() {
+                    "Store8" => "_store8",
+                    "Store16" => "_store16",
+                    "Store32" => "_store32",
+                    _ => unreachable!(),
+                };
+                return Ok(vec![b::expr(b::call(
+                    b::id(helper),
+                    vec![r(0)?, r(1)?, r(2)?],
+                ))]);
+            }
             name if binary_op(name).is_some() => b::binary(binary_op(name).unwrap(), r(1)?, r(2)?),
             "Not" => b::unary(UnaryOp::Bang, r(1)?),
             "Negate" => b::unary(UnaryOp::Minus, r(1)?),
@@ -1571,6 +1612,53 @@ function _to_numeric(_value) {
 }
 "#;
     embedded_runtime("mercury-numeric-runtime.js", SOURCE)
+}
+
+fn typed_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _add32(left, right) { return (left + right) | 0; }
+function _sub32(left, right) { return (left - right) | 0; }
+function _mul32(left, right) { return _imul(left, right); }
+function _divi32(left, right) { return ((left | 0) / (right | 0)) | 0; }
+function _divu32(left, right) {
+    return (((left | 0) >>> 0) / ((right | 0) >>> 0)) | 0;
+}
+function _memory_view(memory) {
+    return new _data_view(memory.buffer, memory.byteOffset, memory.byteLength);
+}
+function _memory_address(address, width) {
+    address = (address | 0) >>> 0;
+    return address - address % width;
+}
+function _load_i8(memory, address) {
+    return _memory_view(memory).getInt8(_memory_address(address, 1));
+}
+function _load_u8(memory, address) {
+    return _memory_view(memory).getUint8(_memory_address(address, 1));
+}
+function _load_i16(memory, address) {
+    return _memory_view(memory).getInt16(_memory_address(address, 2), true);
+}
+function _load_u16(memory, address) {
+    return _memory_view(memory).getUint16(_memory_address(address, 2), true);
+}
+function _load_i32(memory, address) {
+    return _memory_view(memory).getInt32(_memory_address(address, 4), true);
+}
+function _load_u32(memory, address) {
+    return _memory_view(memory).getUint32(_memory_address(address, 4), true) | 0;
+}
+function _store8(memory, address, value) {
+    _memory_view(memory).setInt8(_memory_address(address, 1), value);
+}
+function _store16(memory, address, value) {
+    _memory_view(memory).setInt16(_memory_address(address, 2), value, true);
+}
+function _store32(memory, address, value) {
+    _memory_view(memory).setInt32(_memory_address(address, 4), value, true);
+}
+"#;
+    embedded_runtime("mercury-typed-runtime.js", SOURCE)
 }
 fn coerce_this_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"

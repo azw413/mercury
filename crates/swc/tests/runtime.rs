@@ -569,6 +569,146 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn typed_arithmetic_and_memory_opcodes_preserve_i32_and_view_semantics() {
+    use DecodedOperand::{I32, U16, U8};
+    let original = build_test_module(
+        vec![
+            "ArrayBuffer".into(),
+            "Int8Array".into(),
+            "prototype".into(),
+            "print".into(),
+            "arithmetic".into(),
+            "loads".into(),
+            "stores".into(),
+        ],
+        vec![MinimalFunction {
+            name: "global".into(),
+            param_count: 1,
+            frame_size: 40,
+            environment_size: 0,
+            instructions: vec![
+                instruction("LoadConstInt", vec![U8(0), I32(2_147_483_647)]),
+                instruction("LoadConstUInt8", vec![U8(1), U8(1)]),
+                instruction("Add32", vec![U8(6), U8(0), U8(1)]),
+                instruction("LoadConstInt", vec![U8(0), I32(i32::MIN)]),
+                instruction("Sub32", vec![U8(7), U8(0), U8(1)]),
+                instruction("LoadConstInt", vec![U8(0), I32(2_147_483_647)]),
+                instruction("LoadConstUInt8", vec![U8(2), U8(2)]),
+                instruction("Mul32", vec![U8(8), U8(0), U8(2)]),
+                instruction("LoadConstUInt8", vec![U8(0), U8(43)]),
+                instruction("LoadConstInt", vec![U8(1), I32(-7)]),
+                instruction("Divi32", vec![U8(9), U8(0), U8(1)]),
+                instruction("LoadConstInt", vec![U8(0), I32(-2)]),
+                instruction("Divu32", vec![U8(10), U8(0), U8(2)]),
+                instruction("GetGlobalObject", vec![U8(0)]),
+                instruction("TryGetById", vec![U8(11), U8(0), U8(0), U16(3)]),
+                instruction("LoadConstUndefined", vec![U8(33)]),
+                instruction("LoadConstString", vec![U8(32), U16(4)]),
+                instruction("Mov", vec![U8(31), U8(6)]),
+                instruction("Mov", vec![U8(30), U8(7)]),
+                instruction("Mov", vec![U8(29), U8(8)]),
+                instruction("Mov", vec![U8(28), U8(9)]),
+                instruction("Mov", vec![U8(27), U8(10)]),
+                instruction("Call", vec![U8(0), U8(11), U8(7)]),
+                instruction("GetGlobalObject", vec![U8(0)]),
+                instruction("TryGetById", vec![U8(1), U8(0), U8(1), U16(0)]),
+                instruction("GetByIdShort", vec![U8(2), U8(1), U8(2), U8(2)]),
+                instruction("CreateThis", vec![U8(2), U8(2), U8(1)]),
+                instruction("LoadConstUInt8", vec![U8(3), U8(32)]),
+                instruction("Mov", vec![U8(33), U8(2)]),
+                instruction("Mov", vec![U8(32), U8(3)]),
+                instruction("Construct", vec![U8(4), U8(1), U8(2)]),
+                instruction("SelectObject", vec![U8(4), U8(2), U8(4)]),
+                instruction("GetGlobalObject", vec![U8(0)]),
+                instruction("TryGetById", vec![U8(1), U8(0), U8(3), U16(1)]),
+                instruction("GetByIdShort", vec![U8(2), U8(1), U8(4), U8(2)]),
+                instruction("CreateThis", vec![U8(2), U8(2), U8(1)]),
+                instruction("Mov", vec![U8(33), U8(2)]),
+                instruction("Mov", vec![U8(32), U8(4)]),
+                instruction("Construct", vec![U8(5), U8(1), U8(2)]),
+                instruction("SelectObject", vec![U8(5), U8(2), U8(5)]),
+                instruction("LoadConstZero", vec![U8(0)]),
+                instruction("LoadConstInt", vec![U8(1), I32(-66_052)]),
+                instruction("Store32", vec![U8(5), U8(0), U8(1)]),
+                instruction("LoadConstUInt8", vec![U8(0), U8(3)]),
+                instruction("Loadi8", vec![U8(6), U8(5), U8(0)]),
+                instruction("Loadu8", vec![U8(7), U8(5), U8(0)]),
+                instruction("Loadi16", vec![U8(8), U8(5), U8(0)]),
+                instruction("Loadu16", vec![U8(9), U8(5), U8(0)]),
+                instruction("LoadConstZero", vec![U8(0)]),
+                instruction("Loadi32", vec![U8(10), U8(5), U8(0)]),
+                instruction("Loadu32", vec![U8(11), U8(5), U8(0)]),
+                instruction("GetGlobalObject", vec![U8(0)]),
+                instruction("TryGetById", vec![U8(12), U8(0), U8(5), U16(3)]),
+                instruction("LoadConstUndefined", vec![U8(33)]),
+                instruction("LoadConstString", vec![U8(32), U16(5)]),
+                instruction("Mov", vec![U8(31), U8(6)]),
+                instruction("Mov", vec![U8(30), U8(7)]),
+                instruction("Mov", vec![U8(29), U8(8)]),
+                instruction("Mov", vec![U8(28), U8(9)]),
+                instruction("Mov", vec![U8(27), U8(10)]),
+                instruction("Mov", vec![U8(26), U8(11)]),
+                instruction("Call", vec![U8(0), U8(12), U8(8)]),
+                instruction("LoadConstUInt8", vec![U8(0), U8(4)]),
+                instruction("LoadConstUInt8", vec![U8(1), U8(255)]),
+                instruction("Store8", vec![U8(5), U8(0), U8(1)]),
+                instruction("LoadConstUInt8", vec![U8(0), U8(7)]),
+                instruction("LoadConstInt", vec![U8(1), I32(33_059)]),
+                instruction("Store16", vec![U8(5), U8(0), U8(1)]),
+                instruction("LoadConstUInt8", vec![U8(0), U8(11)]),
+                instruction("LoadConstInt", vec![U8(1), I32(-2_147_483_647)]),
+                instruction("Store32", vec![U8(5), U8(0), U8(1)]),
+                instruction("LoadConstUInt8", vec![U8(0), U8(4)]),
+                instruction("Loadi8", vec![U8(6), U8(5), U8(0)]),
+                instruction("Loadu8", vec![U8(7), U8(5), U8(0)]),
+                instruction("LoadConstUInt8", vec![U8(0), U8(7)]),
+                instruction("Loadi16", vec![U8(8), U8(5), U8(0)]),
+                instruction("Loadu16", vec![U8(9), U8(5), U8(0)]),
+                instruction("LoadConstUInt8", vec![U8(0), U8(11)]),
+                instruction("Loadi32", vec![U8(10), U8(5), U8(0)]),
+                instruction("Loadu32", vec![U8(11), U8(5), U8(0)]),
+                instruction("GetGlobalObject", vec![U8(0)]),
+                instruction("TryGetById", vec![U8(12), U8(0), U8(6), U16(3)]),
+                instruction("LoadConstUndefined", vec![U8(33)]),
+                instruction("LoadConstString", vec![U8(32), U16(6)]),
+                instruction("Mov", vec![U8(31), U8(6)]),
+                instruction("Mov", vec![U8(30), U8(7)]),
+                instruction("Mov", vec![U8(29), U8(8)]),
+                instruction("Mov", vec![U8(28), U8(9)]),
+                instruction("Mov", vec![U8(27), U8(10)]),
+                instruction("Mov", vec![U8(26), U8(11)]),
+                instruction("Call", vec![U8(0), U8(12), U8(8)]),
+                instruction("LoadConstUndefined", vec![U8(0)]),
+                instruction("Ret", vec![U8(0)]),
+            ],
+        }],
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&original, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &original, &spec.bytecode).unwrap();
+    for name in [
+        "Add32", "Sub32", "Mul32", "Divi32", "Divu32", "Loadi8", "Loadu8", "Loadi16", "Loadu16",
+        "Loadi32", "Loadu32", "Store8", "Store16", "Store32",
+    ] {
+        assert!(
+            raw.functions
+                .iter()
+                .flat_map(|function| &function.instructions)
+                .any(|instruction| instruction.name == name),
+            "fixture did not produce {name}"
+        );
+    }
+    let expected = "arithmetic -2147483648 2147483647 -2 -6 2147483647\nloads -1 255 -2 65534 -66052 -66052\nstores -1 255 -32477 33059 -2147483647 -2147483647\n";
+    // HBC builds without HERMES_RUN_WASM abort when executing these opcodes,
+    // even though the version-96 format includes them. Execute the portable
+    // reconstruction after asserting that the source HBC contains every op.
+    let recovered = decompile(&original).unwrap();
+    let rebuilt = compiler().compile(&recovered).unwrap();
+    assert_eq!(execute(&rebuilt), expected);
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn property_and_value_iteration_preserve_mutation_and_close_semantics() {
     assert_runtime_roundtrip(
         "iteration.js",
