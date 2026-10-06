@@ -405,6 +405,16 @@ fn utf16_strings_preserve_paired_and_unpaired_surrogates() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn direct_eval_preserves_global_scope_strictness_and_completion() {
+    assert_runtime_roundtrip(
+        "direct-eval.js",
+        include_str!("fixtures/direct_eval.js"),
+        "values 7 9 8 ReferenceError undefined true\nsyntax SyntaxError\n",
+    );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn committed_hex_and_box2d_fixtures_recompile_with_identical_output() {
     let compiler = compiler();
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test");

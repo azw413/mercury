@@ -83,6 +83,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             )
         })
     });
+    let needs_direct_eval = has_opcode(&raw, "DirectEval");
     let resumable_functions = raw
         .functions
         .iter()
@@ -140,6 +141,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let mut factories = Vec::new();
     if needs_numeric_runtime {
         factories.extend(numeric_runtime());
+    }
+    if needs_direct_eval {
+        factories.extend(direct_eval_runtime());
     }
     if needs_property_enumeration {
         factories.extend(property_enumeration_runtime());
@@ -271,6 +275,10 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     if needs_bigint {
         wrapper_params.push("_bigint".into());
         wrapper_args.push(b::member(b::this(), b::string("BigInt")));
+    }
+    if needs_direct_eval {
+        wrapper_params.push("_eval".into());
+        wrapper_args.push(b::member(b::this(), b::string("eval")));
     }
     if needs_suspension {
         for (name, global) in [("_promise", "Promise"), ("_symbol", "Symbol")] {
@@ -932,6 +940,10 @@ impl Lower<'_> {
             ),
             "DelByVal" => b::unary(UnaryOp::Delete, b::member(r(1)?, r(2)?)),
             "PutByVal" => return Ok(vec![b::assign(b::member(r(0)?, r(1)?), r(2)?)]),
+            "DirectEval" => b::call(
+                b::id("_direct_eval"),
+                vec![r(1)?, b::boolean(uint(op, 2)? != 0)],
+            ),
             "Call1" | "Call2" | "Call3" | "Call4" => {
                 let args = (3..op.operands.len())
                     .map(r)
@@ -1436,6 +1448,17 @@ function _to_numeric(_value) {
 }
 "#;
     embedded_runtime("mercury-numeric-runtime.js", SOURCE)
+}
+fn direct_eval_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _direct_eval(_source, _strict_caller) {
+    if (_strict_caller && typeof _source === "string") {
+        _source = "\"use strict\";\n" + _source;
+    }
+    return _eval(_source);
+}
+"#;
+    embedded_runtime("mercury-direct-eval-runtime.js", SOURCE)
 }
 fn property_enumeration_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"

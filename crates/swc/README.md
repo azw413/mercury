@@ -85,7 +85,8 @@ exponentiation preserve mutation, completion, descriptor, symbol, and Proxy
 behavior. Finite and non-finite doubles are recovered from direct constants and
 literal buffers. HBC UTF-16 strings use SWC's WTF-8 atoms, preserving paired and
 unpaired surrogates in values and property keys while printing valid JavaScript
-escapes.
+escapes. Direct eval retains Hermes 96's global-only scope, strict-caller mode,
+non-string passthrough, and completion values through a captured eval intrinsic.
 Dense integer switch tables are decoded from their trailing function data and
 lowered into the dispatcher. Function names and strictness are retained. Unknown
 opcodes fail with function index and instruction offset; malformed branch targets,
@@ -119,10 +120,10 @@ helper calls remain bytecode-driven; class inheritance, instance and static
 methods, accessors, observable method names, and `super` constructor calls round
 trip through the HBC 96 ES6-class runtime.
 
-String-switch metadata and dynamic eval are not implemented. The decompiler also
-rejects global names outside its supported identifier subset. Source comments,
-original variable names, original TypeScript types, and byte-identical
-recompilation cannot be recovered from HBC.
+String-switch metadata is not implemented. The decompiler also rejects global
+names outside its supported identifier subset. Source comments, original variable
+names, original TypeScript types, and byte-identical recompilation cannot be
+recovered from HBC.
 
 Generated calls assume the standard, unmodified `Reflect.apply` intrinsic;
 dynamic array and object initializers also use `Reflect.defineProperty` to preserve
@@ -186,7 +187,9 @@ strict deletion, native arguments, parameter independence, and accessor
 descriptors. Iteration coverage exercises mutation during for-in and for-of,
 iterator closing on every abrupt completion, object spread/rest with symbols,
 and Proxy trap ordering. UTF-16 coverage compares exact code units for valid
-pairs and lone surrogates in direct and buffered strings. Additional
+pairs and lone surrogates in direct and buffered strings. Direct-eval coverage
+checks global rather than synthetic local scope, strict assignment failures,
+non-string passthrough, completion values, and syntax errors. Additional
 committed-fixture checks decompile and rebuild all three functions in `hex.hbc`
 and all 983 functions in `box2d.hbc`, then compare their runtime output with the
 original bytecode.

@@ -137,6 +137,8 @@ Property enumeration, value iteration, iterator closing, object spread/rest,
 exponentiation, and non-finite numeric constants are now covered as well.
 UTF-16 string values and property keys preserve lone surrogates through SWC's
 WTF-8 representation and JavaScript escape emission.
+Direct eval preserves HBC 96's global-only scope, strict-caller behavior,
+non-string passthrough, and completion values.
 
 ```sh
 cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js --hermesc /path/to/hermesc -o /tmp/example.hbc
