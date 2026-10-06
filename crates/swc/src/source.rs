@@ -37,6 +37,7 @@ pub struct SwcModule {
     unresolved: Mark,
     top_level: Mark,
     language: SourceLanguage,
+    generated: bool,
 }
 
 impl SwcModule {
@@ -108,6 +109,7 @@ impl SwcModule {
             unresolved,
             top_level,
             language,
+            generated: false,
         })
     }
 
@@ -127,6 +129,7 @@ impl SwcModule {
             unresolved,
             top_level,
             language: SourceLanguage::JavaScript,
+            generated: true,
         }
     }
 
@@ -141,6 +144,16 @@ impl SwcModule {
     /// Prints the current tree, retaining TypeScript syntax when present.
     pub fn print(&self) -> String {
         GLOBALS.set(&self.globals, || {
+            // Decompiler builders produce emission-ready nodes and namespace
+            // every generated binding. Re-running hygiene and fixer here would
+            // clone and traverse multi-million-node bundle ASTs needlessly.
+            if self.generated {
+                return to_code_default(
+                    self.source_map.clone(),
+                    Some(&self.comments),
+                    &self.program,
+                );
+            }
             let program = self
                 .program
                 .clone()
@@ -154,6 +167,15 @@ impl SwcModule {
     /// This is transpilation, not TypeScript type checking or ESM bundling.
     pub fn javascript(&self) -> String {
         GLOBALS.set(&self.globals, || {
+            // Generated modules are JavaScript and already satisfy the emitter
+            // invariants maintained by the decompiler's AST builders.
+            if self.generated {
+                return to_code_default(
+                    self.source_map.clone(),
+                    Some(&self.comments),
+                    &self.program,
+                );
+            }
             let mut program = self.program.clone();
             if self.language == SourceLanguage::TypeScript {
                 program.mutate(strip(self.unresolved, self.top_level));

@@ -41,7 +41,18 @@ pub fn null() -> Box<Expr> {
 pub fn undefined() -> Box<Expr> {
     unary(UnaryOp::Void, number(0.0))
 }
-pub fn unary(op: UnaryOp, arg: Box<Expr>) -> Box<Expr> {
+pub fn unary(op: UnaryOp, mut arg: Box<Expr>) -> Box<Expr> {
+    if matches!(
+        arg.as_ref(),
+        Expr::Assign(_)
+            | Expr::Bin(_)
+            | Expr::Seq(_)
+            | Expr::Cond(_)
+            | Expr::Arrow(_)
+            | Expr::Yield(_)
+    ) {
+        arg = paren(arg);
+    }
     Box::new(Expr::Unary(UnaryExpr {
         span: DUMMY_SP,
         op,
@@ -76,6 +87,12 @@ pub fn call(callee: Box<Expr>, args: Vec<Box<Expr>>) -> Box<Expr> {
             .map(|expr| ExprOrSpread { spread: None, expr })
             .collect(),
         type_args: None,
+    }))
+}
+pub fn paren(expr: Box<Expr>) -> Box<Expr> {
+    Box::new(Expr::Paren(ParenExpr {
+        span: DUMMY_SP,
+        expr,
     }))
 }
 pub fn new(callee: Box<Expr>, args: Vec<Box<Expr>>) -> Box<Expr> {

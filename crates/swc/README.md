@@ -15,10 +15,13 @@ SWC nodes.
   pass. Preserve binding contexts when renaming identifiers, and use fresh SWC
   contexts when introducing bindings. The `ast`, `visit`, and `swc_core`
   re-exports use the same dependency versions as the module.
-- `print()` prints the current JS/TS tree with comments. `javascript()` lowers
-  TypeScript on a copy, then runs hygiene and fixer before code generation.
-  Parsing already runs SWC's resolver. Source maps are retained as input context;
-  exporting a generated source-map file is not implemented yet.
+- `print()` prints the current JS/TS tree with comments. For parsed source,
+  `javascript()` lowers TypeScript on a copy, then runs hygiene and fixer before
+  code generation. Decompiled trees are already namespaced and constructed in
+  emitter-ready form, so both methods emit them directly without cloning and
+  traversing the entire generated tree again. Parsing and decompilation already
+  run SWC's resolver. Source maps are retained as input context; exporting a
+  generated source-map file is not implemented yet.
 - `HermesCompiler::new(executable, 96).compile(&module)` invokes that compiler
   with `-Xes6-class -O -g0 -emit-binary`, validates the returned HBC version and
   container, and returns bytes. It never executes the program. Temporary files

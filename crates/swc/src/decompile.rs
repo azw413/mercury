@@ -138,7 +138,10 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     {
         prefix.push('_');
     }
-    let mut factories = Vec::new();
+    // One indexed table avoids placing a binding per bytecode function in this
+    // scope. Large bundles can contain hundreds of thousands of functions, and
+    // SWC hygiene's collision analysis scales poorly with that many siblings.
+    let mut factories = vec![b::var("_make", Some(b::array(vec![])))];
     if needs_numeric_runtime {
         factories.extend(numeric_runtime());
     }
@@ -233,13 +236,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         if needs_construction {
             function = b::call(b::id("_mark_function"), vec![function]);
         }
-        factories.push(b::var(
-            &format!("_make{}", f.function_index),
-            Some(b::function(
-                None,
-                vec!["_env".into()],
-                vec![b::ret(function)],
-            )),
+        factories.push(b::assign(
+            b::member(b::id("_make"), b::number(f.function_index as f64)),
+            b::function(None, vec!["_env".into()], vec![b::ret(function)]),
         ));
     }
     // Global var declarations stay at script scope, retaining global binding
@@ -248,7 +247,10 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     factories.push(b::ret(b::call(
         b::id("_apply"),
         vec![
-            b::call(b::id(&format!("_make{}", h.global_code_index)), vec![]),
+            b::call(
+                b::member(b::id("_make"), b::number(f64::from(h.global_code_index))),
+                vec![],
+            ),
             b::id("_g"),
             b::array(vec![]),
         ],
@@ -363,7 +365,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     }
     let mut wrapper = b::function(None, wrapper_params, factories);
     wrapper.visit_mut_with(&mut Namespace(prefix));
-    body.push(b::expr(b::call(wrapper, wrapper_args)));
+    body.push(b::expr(b::call(b::paren(wrapper), wrapper_args)));
     Ok(SwcModule::generated(Program::Script(Script {
         span: DUMMY_SP,
         body,
@@ -730,7 +732,10 @@ impl Lower<'_> {
                 if target as usize >= self.raw.functions.len() {
                     return Err(Error::Bytecode("invalid closure target".into()));
                 }
-                b::call(b::id(&format!("_make{target}")), vec![r(1)?])
+                b::call(
+                    b::member(b::id("_make"), b::number(f64::from(target))),
+                    vec![r(1)?],
+                )
             }
             "GetEnvironment" => {
                 let mut environment = b::id("_env");
@@ -1134,7 +1139,10 @@ impl Lower<'_> {
                 b::call(
                     b::id("_generator"),
                     vec![
-                        b::call(b::id(&format!("_make{target}")), vec![r(1)?]),
+                        b::call(
+                            b::member(b::id("_make"), b::number(f64::from(target))),
+                            vec![r(1)?],
+                        ),
                         if resumable { b::id("_this") } else { b::this() },
                         if resumable {
                             b::id("_args")
