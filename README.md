@@ -143,6 +143,7 @@ non-string passthrough, and completion values.
 ```sh
 cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js --hermesc /path/to/hermesc -o /tmp/example.hbc
 cargo run -p mercury-cli -- decompile /tmp/example.hbc -o /tmp/example.js
+cargo run -p mercury-swc --example decompile -- test/hex.hbc /tmp/hex.js
 ```
 
 See the module README for the supported contract, Rust interface, and execution

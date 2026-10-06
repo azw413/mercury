@@ -49,6 +49,23 @@ let recovered = decompile(&bytes)?;
 println!("{}", recovered.print());
 ```
 
+## Cargo example
+
+[`examples/decompile.rs`](examples/decompile.rs) is a complete file-to-text
+example. It reads an HBC-96 file, constructs Mercury's SWC-backed module, and
+prints the generated JavaScript:
+
+```sh
+cargo run -p mercury-swc --example decompile -- test/hex.hbc
+```
+
+Pass a second positional path to write the JavaScript to a file:
+
+```sh
+cargo run -p mercury-swc --example decompile -- \
+  test/box2d.hbc /tmp/box2d.js
+```
+
 ## CLI
 
 From the workspace root:
