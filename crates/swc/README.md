@@ -192,8 +192,15 @@ iterator closing on every abrupt completion, object spread/rest with symbols,
 and Proxy trap ordering. UTF-16 coverage compares exact code units for valid
 pairs and lone surrogates in direct and buffered strings. Direct-eval coverage
 checks global rather than synthetic local scope, strict assignment failures,
-non-string passthrough, completion values, and syntax errors. Additional
-committed-fixture checks decompile and rebuild all three functions in `hex.hbc`
+non-string passthrough, completion values, and syntax errors. VM-edge coverage
+includes inner lexical environments, TDZ empty values, undeclared global writes,
+direct function-table calls, non-strict receiver coercion, and long generator
+suspension offsets. `Debugger` is retained as a debugger statement; host async
+break checks and basic-block profile points have no JavaScript runtime effect and
+are omitted. The remaining HBC-96 opcode gaps are the typed 32-bit arithmetic and
+memory family, restricted-global declaration checks, and the fatal `Unreachable`
+sentinel. Committed-fixture checks decompile and rebuild all three functions in
+`hex.hbc`
 and all 983 functions in `box2d.hbc`, then compare their runtime output with the
 original bytecode.
 

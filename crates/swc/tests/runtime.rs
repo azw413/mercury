@@ -1,8 +1,13 @@
+use mercury_binary::{
+    build_minimal_module, decode_raw_module, parse_hbc_container_with_spec, DecodedInstruction,
+    DecodedOperand, MinimalFunction, MinimalModule,
+};
+use mercury_spec_builtin::load_spec;
 use mercury_swc::{
-    HermesCompiler, SourceKind, SourceLanguage, SwcModule,
     ast::Number,
     decompile,
     visit::{VisitMut, VisitMutWith},
+    HermesCompiler, SourceKind, SourceLanguage, SwcModule,
 };
 use std::{fs, path::PathBuf, process::Command};
 fn compiler() -> HermesCompiler {
@@ -33,6 +38,21 @@ fn execute(bytes: &[u8]) -> String {
     );
     String::from_utf8(output.stdout).unwrap()
 }
+fn execute_failure(bytes: &[u8]) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.hbc");
+    fs::write(&path, bytes).unwrap();
+    let output = Command::new(
+        std::env::var_os("HERMES_BIN").expect("set HERMES_BIN to a version-96 runtime"),
+    )
+    .arg("-Xes6-class")
+    .arg("-b")
+    .arg(path)
+    .output()
+    .unwrap();
+    assert!(output.status.code().is_some_and(|code| code != 0));
+    String::from_utf8(output.stderr).unwrap()
+}
 fn assert_runtime_roundtrip(name: &str, source: &str, expected: &str) {
     let compiler = compiler();
     let module =
@@ -42,6 +62,40 @@ fn assert_runtime_roundtrip(name: &str, source: &str, expected: &str) {
     let recovered = decompile(&original).unwrap();
     let rebuilt = compiler.compile(&recovered).unwrap();
     assert_eq!(execute(&rebuilt), expected, "decompiled source");
+}
+fn instruction(name: &str, operands: Vec<DecodedOperand>) -> DecodedInstruction {
+    let spec = load_spec(96).unwrap();
+    let opcode = spec
+        .bytecode
+        .instructions
+        .iter()
+        .find(|instruction| instruction.name == name)
+        .unwrap()
+        .opcode;
+    DecodedInstruction {
+        offset: 0,
+        opcode,
+        name: name.into(),
+        operands,
+        size: 0,
+    }
+}
+fn build_test_module(strings: Vec<String>, functions: Vec<MinimalFunction>) -> Vec<u8> {
+    let spec = load_spec(96).unwrap();
+    build_minimal_module(
+        &MinimalModule {
+            version: 96,
+            global_code_index: 0,
+            strings,
+            string_kinds: vec![],
+            literal_value_buffer: vec![],
+            object_key_buffer: vec![],
+            object_value_buffer: vec![],
+            functions,
+        },
+        &spec.bytecode,
+    )
+    .unwrap()
 }
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
@@ -318,6 +372,36 @@ fn generator_frames_support_next_throw_return_closures_and_delegation() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn long_generator_suspension_roundtrips() {
+    let zeros = std::iter::repeat_n("0", 260).collect::<Vec<_>>().join(",");
+    let source = format!(
+        "function* values() {{ yield* [1]; [].push({zeros}); }} var iterator = values(); print(iterator.next().value, iterator.next().done);"
+    );
+    let compiler = compiler();
+    let module = SwcModule::parse(
+        "save-generator-long.js",
+        &source,
+        SourceLanguage::JavaScript,
+        SourceKind::Script,
+    )
+    .unwrap();
+    let original = compiler.compile(&module).unwrap();
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&original, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &original, &spec.bytecode).unwrap();
+    assert!(raw.functions.iter().any(|function| {
+        function
+            .instructions
+            .iter()
+            .any(|instruction| instruction.name == "SaveGeneratorLong")
+    }));
+    assert_eq!(execute(&original), "1 true\n");
+    let rebuilt = compiler.compile(&decompile(&original).unwrap()).unwrap();
+    assert_eq!(execute(&rebuilt), "1 true\n");
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn async_frames_support_fulfilled_and_rejected_awaits_with_captures_and_receivers() {
     assert_runtime_roundtrip(
         "async-suspension.js",
@@ -371,6 +455,116 @@ fn common_opcodes_preserve_coercion_arguments_and_accessor_semantics() {
         include_str!("fixtures/common_opcodes.js"),
         "5 3 7 8 3.5 1 9 true true undefined undefined\n5 3 4 5\nfalse 1\nstrict-delete true 1\narguments 3 7\nreturned-arguments 2 3\nargument-aliasing 1 2\naccessor 3 true true get value set value\nset 9\nnon-finite true Infinity -Infinity -Infinity\nbuffered-non-finite true Infinity -Infinity true Infinity -Infinity\nexponent 8 base,power\n",
     );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
+    assert_runtime_roundtrip(
+        "try-put.js",
+        "\"use strict\"; try { missing = 7; print('bad'); } catch (error) { print(error.name); } this.existing = 1; existing = 9; print(this.existing);",
+        "ReferenceError\n9\n",
+    );
+
+    use DecodedOperand::{U16, U32, U8};
+    let original = build_test_module(
+        vec![],
+        vec![
+            MinimalFunction {
+                name: "global".into(),
+                param_count: 1,
+                frame_size: 14,
+                environment_size: 0,
+                instructions: vec![
+                    instruction("Debugger", vec![]),
+                    instruction("AsyncBreakCheck", vec![]),
+                    instruction("ProfilePoint", vec![U16(0)]),
+                    instruction("CreateEnvironment", vec![U8(0)]),
+                    instruction("CreateInnerEnvironment", vec![U8(1), U8(0), U32(1)]),
+                    instruction("LoadConstUInt8", vec![U8(2), U8(9)]),
+                    instruction("StoreToEnvironment", vec![U8(1), U8(0), U8(2)]),
+                    instruction("CreateClosure", vec![U8(3), U8(1), U16(1)]),
+                    instruction("LoadConstUndefined", vec![U8(4)]),
+                    instruction("Call1", vec![U8(2), U8(3), U8(4)]),
+                    instruction("CoerceThisNS", vec![U8(3), U8(4)]),
+                    instruction("GetGlobalObject", vec![U8(5)]),
+                    instruction("StrictEq", vec![U8(3), U8(3), U8(5)]),
+                    instruction("ThrowIfEmpty", vec![U8(4), U8(2)]),
+                    instruction("LoadConstEmpty", vec![U8(6)]),
+                    instruction("Add", vec![U8(5), U8(4), U8(3)]),
+                    instruction("Throw", vec![U8(5)]),
+                ],
+            },
+            MinimalFunction {
+                name: "captured".into(),
+                param_count: 1,
+                frame_size: 1,
+                environment_size: 0,
+                instructions: vec![
+                    instruction("GetEnvironment", vec![U8(0), U8(0)]),
+                    instruction("LoadFromEnvironment", vec![U8(0), U8(0), U8(0)]),
+                    instruction("Ret", vec![U8(0)]),
+                ],
+            },
+        ],
+    );
+    assert!(execute_failure(&original).contains("Uncaught 10"));
+    let rebuilt = compiler().compile(&decompile(&original).unwrap()).unwrap();
+    assert!(execute_failure(&rebuilt).contains("Uncaught 10"));
+
+    for direct_call in [
+        instruction("CallDirect", vec![U8(0), U8(2), U16(1)]),
+        instruction("CallDirectLongIndex", vec![U8(0), U8(2), U32(1)]),
+    ] {
+        let direct = build_test_module(
+            vec![],
+            vec![
+                MinimalFunction {
+                    name: "global".into(),
+                    param_count: 1,
+                    frame_size: 10,
+                    environment_size: 0,
+                    instructions: vec![
+                        instruction("LoadConstUndefined", vec![U8(3)]),
+                        instruction("LoadConstUInt8", vec![U8(2), U8(42)]),
+                        direct_call,
+                        instruction("Throw", vec![U8(0)]),
+                    ],
+                },
+                MinimalFunction {
+                    name: "direct".into(),
+                    param_count: 2,
+                    frame_size: 1,
+                    environment_size: 0,
+                    instructions: vec![
+                        instruction("LoadParam", vec![U8(0), U8(1)]),
+                        instruction("Ret", vec![U8(0)]),
+                    ],
+                },
+            ],
+        );
+        assert!(execute_failure(&direct).contains("Uncaught 42"));
+        let rebuilt = compiler().compile(&decompile(&direct).unwrap()).unwrap();
+        assert!(execute_failure(&rebuilt).contains("Uncaught 42"));
+    }
+
+    let tdz = build_test_module(
+        vec![],
+        vec![MinimalFunction {
+            name: "global".into(),
+            param_count: 1,
+            frame_size: 2,
+            environment_size: 0,
+            instructions: vec![
+                instruction("LoadConstEmpty", vec![U8(0)]),
+                instruction("ThrowIfEmpty", vec![U8(1), U8(0)]),
+                instruction("Ret", vec![U8(1)]),
+            ],
+        }],
+    );
+    assert!(execute_failure(&tdz).contains("ReferenceError"));
+    let rebuilt = compiler().compile(&decompile(&tdz).unwrap()).unwrap();
+    assert!(execute_failure(&rebuilt).contains("ReferenceError"));
 }
 
 #[test]

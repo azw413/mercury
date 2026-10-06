@@ -84,6 +84,10 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         })
     });
     let needs_direct_eval = has_opcode(&raw, "DirectEval");
+    let needs_empty = ["LoadConstEmpty", "ThrowIfEmpty"]
+        .into_iter()
+        .any(|name| has_opcode(&raw, name));
+    let needs_coerce_this = has_opcode(&raw, "CoerceThisNS");
     let resumable_functions = raw
         .functions
         .iter()
@@ -142,8 +146,14 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     // scope. Large bundles can contain hundreds of thousands of functions, and
     // SWC hygiene's collision analysis scales poorly with that many siblings.
     let mut factories = vec![b::var("_make", Some(b::array(vec![])))];
+    if needs_empty {
+        factories.push(b::var("_empty", Some(b::empty_object())));
+    }
     if needs_numeric_runtime {
         factories.extend(numeric_runtime());
+    }
+    if needs_coerce_this {
+        factories.extend(coerce_this_runtime());
     }
     if needs_direct_eval {
         factories.extend(direct_eval_runtime());
@@ -298,7 +308,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             b::string("slice"),
         ));
     }
-    if needs_property_enumeration || needs_copy_data_runtime {
+    if needs_property_enumeration || needs_copy_data_runtime || needs_coerce_this {
         wrapper_params.push("_object".into());
         wrapper_args.push(b::member(b::this(), b::string("Object")));
     }
@@ -722,6 +732,19 @@ impl Lower<'_> {
                 values.extend((0..f.environment_size).map(|_| b::undefined()));
                 b::array(values)
             }
+            "CreateInnerEnvironment" => {
+                let slots = uint(op, 2)?;
+                if slots > 65_536 {
+                    return Err(unsupported(f, op, "environment slot budget exceeded"));
+                }
+                let slots = usize::try_from(slots).map_err(|_| {
+                    unsupported(f, op, "environment size does not fit this platform")
+                })?;
+                let mut values = Vec::with_capacity(slots.saturating_add(1));
+                values.push(r(1)?);
+                values.extend((0..slots).map(|_| b::undefined()));
+                b::array(values)
+            }
             "CreateClosure"
             | "CreateClosureLongIndex"
             | "CreateGeneratorClosure"
@@ -798,6 +821,7 @@ impl Lower<'_> {
             ),
             "LoadConstTrue" => b::boolean(true),
             "LoadConstFalse" => b::boolean(false),
+            "LoadConstEmpty" => b::id("_empty"),
             "LoadConstUndefined" => b::undefined(),
             "LoadConstNull" => b::null(),
             "LoadConstString" | "LoadConstStringLongIndex" => {
@@ -818,6 +842,23 @@ impl Lower<'_> {
             }
             "Mov" | "MovLong" => r(1)?,
             "Catch" => b::id("_thrown"),
+            "ThrowIfEmpty" => {
+                return Ok(vec![
+                    Stmt::If(IfStmt {
+                        span: DUMMY_SP,
+                        test: b::binary(BinaryOp::EqEqEq, r(1)?, b::id("_empty")),
+                        cons: Box::new(Stmt::Throw(ThrowStmt {
+                            span: DUMMY_SP,
+                            arg: b::new(
+                                b::member(b::id("_g"), b::string("ReferenceError")),
+                                vec![b::string("accessing an uninitialized variable")],
+                            ),
+                        })),
+                        alt: None,
+                    }),
+                    b::assign(r(0)?, r(1)?),
+                ]);
+            }
             "Ret" if resumable => {
                 return Ok(vec![Stmt::If(IfStmt {
                     span: DUMMY_SP,
@@ -850,6 +891,31 @@ impl Lower<'_> {
                     b::member(r(0)?, b::wtf8_string(self.string(uint(op, 3)?)?)),
                     r(1)?,
                 )]);
+            }
+            "TryPutById" | "TryPutByIdLong" => {
+                let key = self.string(uint(op, 3)?)?;
+                return Ok(vec![
+                    Stmt::If(IfStmt {
+                        span: DUMMY_SP,
+                        test: b::unary(
+                            UnaryOp::Bang,
+                            b::binary(BinaryOp::In, b::wtf8_string(key.clone()), r(0)?),
+                        ),
+                        cons: Box::new(Stmt::Throw(ThrowStmt {
+                            span: DUMMY_SP,
+                            arg: b::new(
+                                b::member(b::id("_g"), b::string("ReferenceError")),
+                                vec![b::binary(
+                                    BinaryOp::Add,
+                                    b::wtf8_string(key.clone()),
+                                    b::string(" is not defined"),
+                                )],
+                            ),
+                        })),
+                        alt: None,
+                    }),
+                    b::assign(b::member(r(0)?, b::wtf8_string(key)), r(1)?),
+                ]);
             }
             "GetById" | "GetByIdShort" | "GetByIdLong" | "TryGetById" | "TryGetByIdLong" => {
                 let key = self.string(uint(op, 3)?)?;
@@ -976,6 +1042,46 @@ impl Lower<'_> {
                     .map(|register| register_number(f, register))
                     .collect::<Result<Vec<_>, _>>()?;
                 b::call(b::id("_apply"), vec![r(1)?, this_arg, b::array(args)])
+            }
+            "CallDirect" | "CallDirectLongIndex" => {
+                let argument_count = uint(op, 1)?;
+                if argument_count == 0 {
+                    return Err(unsupported(f, op, "direct call has no this argument"));
+                }
+                let target = uint(op, 2)?;
+                if target as usize >= self.raw.functions.len() {
+                    return Err(unsupported(f, op, "invalid direct-call target"));
+                }
+                const CALL_EXTRA_REGISTERS: u32 = 6;
+                let first = f
+                    .frame_size
+                    .checked_sub(CALL_EXTRA_REGISTERS + 1)
+                    .ok_or_else(|| {
+                        unsupported(f, op, "frame is too small for direct-call arguments")
+                    })?;
+                let last = first.checked_sub(argument_count - 1).ok_or_else(|| {
+                    unsupported(
+                        f,
+                        op,
+                        "direct-call argument count exceeds the function frame",
+                    )
+                })?;
+                let this_arg = register_number(f, first)?;
+                let args = (last..first)
+                    .rev()
+                    .map(|register| register_number(f, register))
+                    .collect::<Result<Vec<_>, _>>()?;
+                b::call(
+                    b::id("_apply"),
+                    vec![
+                        b::call(
+                            b::member(b::id("_make"), b::number(f64::from(target))),
+                            vec![b::id("_env")],
+                        ),
+                        this_arg,
+                        b::array(args),
+                    ],
+                )
             }
             "Construct" | "ConstructLong" => {
                 let argument_count = uint(op, 2)?;
@@ -1176,7 +1282,7 @@ impl Lower<'_> {
                     ),
                 ]);
             }
-            "SaveGenerator" => {
+            "SaveGenerator" | "SaveGeneratorLong" => {
                 if !resumable {
                     return Err(unsupported(f, op, "save outside a resumable function"));
                 }
@@ -1253,6 +1359,7 @@ impl Lower<'_> {
                 return Ok(define_accessor(r(0)?, r(1)?, r(2)?, r(3)?, enumerable));
             }
             "NewObject" => b::empty_object(),
+            "CoerceThisNS" => b::call(b::id("_coerce_this"), vec![r(1)?]),
             "Inc" => b::call(b::id("_increment"), vec![r(1)?]),
             "Dec" => b::call(b::id("_decrement"), vec![r(1)?]),
             "ToNumber" => b::unary(UnaryOp::Plus, r(1)?),
@@ -1264,6 +1371,14 @@ impl Lower<'_> {
             "Negate" => b::unary(UnaryOp::Minus, r(1)?),
             "BitNot" => b::unary(UnaryOp::Tilde, r(1)?),
             "TypeOf" => b::unary(UnaryOp::TypeOf, r(1)?),
+            "Debugger" => {
+                return Ok(vec![Stmt::Debugger(DebuggerStmt { span: DUMMY_SP })]);
+            }
+            "AsyncBreakCheck" => return Ok(vec![]),
+            "ProfilePoint" => {
+                uint(op, 0)?;
+                return Ok(vec![]);
+            }
             _ => return Err(unsupported(f, op, "opcode has no verified SWC lowering")),
         };
         Ok(vec![b::assign(r(0)?, value)])
@@ -1456,6 +1571,17 @@ function _to_numeric(_value) {
 }
 "#;
     embedded_runtime("mercury-numeric-runtime.js", SOURCE)
+}
+fn coerce_this_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _coerce_this(_value) {
+    if (_value === null || _value === void 0) {
+        return _g;
+    }
+    return _object(_value);
+}
+"#;
+    embedded_runtime("mercury-coerce-this-runtime.js", SOURCE)
 }
 fn direct_eval_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
