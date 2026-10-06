@@ -112,10 +112,10 @@ Not implemented yet:
 
 ## JavaScript / TypeScript and SWC
 
-The new [`mercury-swc`](crates/swc/README.md) module parses JS/TS into actual SWC
-AST structs, prints/transforms them, compiles scripts through a configured
-version-96 `hermesc`, and decompiles a deliberately limited bytecode subset into
-executable SWC trees. The first decompiler uses register temporaries and a
+The [`mercury-swc`](crates/swc/README.md) module parses JS/TS into actual SWC AST
+structs, prints/transforms them, compiles a growing source subset natively to HBC
+96 without `hermesc`, and decompiles HBC 96 into executable SWC trees. The first
+decompiler uses register temporaries and a
 basic-block dispatcher. It reconstructs mutable captured environments, including
 siblings and multiple lexical levels, and preserves empty, sparse, buffered, and
 dynamically populated arrays. It also recovers buffer-backed object literals and
@@ -141,7 +141,7 @@ Direct eval preserves HBC 96's global-only scope, strict-caller behavior,
 non-string passthrough, and completion values.
 
 ```sh
-cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js --hermesc /path/to/hermesc -o /tmp/example.hbc
+cargo run -p mercury-swc --example compile -- input.js /tmp/example.hbc
 cargo run -p mercury-cli -- decompile /tmp/example.hbc -o /tmp/example.js
 cargo run -p mercury-swc --example decompile -- test/hex.hbc /tmp/hex.js
 ```

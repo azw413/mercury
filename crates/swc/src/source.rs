@@ -185,4 +185,16 @@ impl SwcModule {
             to_code_default(self.source_map.clone(), Some(&self.comments), &program)
         })
     }
+
+    /// Returns a JavaScript AST suitable for consumers that lower trees
+    /// directly. TypeScript syntax is removed without printing and reparsing.
+    pub(crate) fn javascript_program(&self) -> Program {
+        GLOBALS.set(&self.globals, || {
+            let mut program = self.program.clone();
+            if self.language == SourceLanguage::TypeScript {
+                program.mutate(strip(self.unresolved, self.top_level));
+            }
+            program
+        })
+    }
 }

@@ -1,14 +1,17 @@
-//! SWC trees for source editing, a configured Hermes compiler, and a deliberately
-//! limited bytecode decompiler. See the crate README for the supported subset.
+//! SWC trees for source editing, native HBC 96 compilation, an optional external
+//! compiler adapter, and bytecode decompilation. See the crate README for the
+//! supported subsets.
 mod ast_builder;
 mod cfg;
 mod compiler;
 mod decompile;
 mod literal;
+mod native_compiler;
 mod source;
 
 pub use compiler::HermesCompiler;
 pub use decompile::decompile;
+pub use native_compiler::HbcCompiler;
 pub use source::{SourceKind, SourceLanguage, SwcModule};
 pub use swc_core;
 pub use swc_core::ecma::{ast, visit};

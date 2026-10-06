@@ -1,9 +1,8 @@
 # mercury-swc
 
-A first source-level module for Mercury. It exposes real SWC Rust AST structs,
-keeps their source/comment/binding context, compiles scripts through an explicitly
-configured Hermes compiler, and decompiles a small HBC-96 subset into executable
-SWC nodes.
+A source-level module for Mercury. It exposes real SWC Rust AST structs, keeps
+their source/comment/binding context, compiles a growing JavaScript/TypeScript
+subset directly to HBC 96, and decompiles HBC 96 into executable SWC nodes.
 
 ## Interface
 
@@ -22,11 +21,12 @@ SWC nodes.
   traversing the entire generated tree again. Parsing and decompilation already
   run SWC's resolver. Source maps are retained as input context; exporting a
   generated source-map file is not implemented yet.
-- `HermesCompiler::new(executable, 96).compile(&module)` invokes that compiler
-  with `-Xes6-class -O -g0 -emit-binary`, validates the returned HBC version and
-  container, and returns bytes. It never executes the program. Temporary files
-  are isolated per invocation and removed automatically. Compiler stderr is
-  included on error.
+- `HbcCompiler::new(96).compile(&module)` lowers the SWC AST directly into HBC.
+  This path does not invoke or require `hermesc`. Unsupported syntax returns an
+  explicit error.
+- `HermesCompiler` remains available as an explicitly configured compatibility
+  adapter for tests and callers that need syntax beyond the native compiler's
+  current coverage.
 - `decompile(&bytes)` constructs SWC nodes directly from Mercury's decoded raw
   IR and a private basic-block graph. Opcode lowering does not generate text and
   parse that text back into an AST; generator support adds a fixed embedded
@@ -37,19 +37,27 @@ its resolved dependencies. SWC Rust interfaces are version-sensitive, so callers
 should use the re-exported types or the same dependency family.
 
 ```rust,ignore
-use mercury_swc::{HermesCompiler, SourceKind, SourceLanguage, SwcModule, decompile};
+use mercury_swc::{HbcCompiler, SourceKind, SourceLanguage, SwcModule, decompile};
 
 let source = SwcModule::parse(
-    "example.ts", "const x: number = 4; print(x);",
+    "example.ts", "var x: number = 4; print(x);",
     SourceLanguage::TypeScript, SourceKind::Script,
 )?;
-let compiler = HermesCompiler::new("/path/to/hermesc", 96);
+let compiler = HbcCompiler::new(96);
 let bytes = compiler.compile(&source)?;
 let recovered = decompile(&bytes)?;
 println!("{}", recovered.print());
 ```
 
-## Cargo example
+## Cargo examples
+
+[`examples/compile.rs`](examples/compile.rs) is the native source-to-HBC path:
+
+```sh
+cargo run -p mercury-swc --example compile -- input.js output.hbc
+```
+
+It accepts `.js` and `.ts` scripts and has no Hermes compiler dependency.
 
 [`examples/decompile.rs`](examples/decompile.rs) is a complete file-to-text
 example. It reads an HBC-96 file, constructs Mercury's SWC-backed module, and
@@ -71,17 +79,33 @@ cargo run -p mercury-swc --example decompile -- \
 From the workspace root:
 
 ```sh
-cargo run -p mercury-cli -- compile crates/swc/tests/fixtures/control_flow.js \
-  --hermesc /absolute/path/to/hermesc -o /tmp/control-flow.hbc
-cargo run -p mercury-cli -- decompile /tmp/control-flow.hbc -o /tmp/control-flow.js
-cargo run -p mercury-cli -- compile /tmp/control-flow.js \
-  --hermesc /absolute/path/to/hermesc -o /tmp/control-flow-rebuilt.hbc
+printf 'var answer = 40 + 2; print(answer);' > /tmp/example.js
+cargo run -p mercury-cli -- compile /tmp/example.js -o /tmp/example.hbc
+cargo run -p mercury-cli -- decompile /tmp/example.hbc -o /tmp/example-recovered.js
 ```
 
-`HERMESC_BIN` is an alternative to `--hermesc`. The CLI treats `.ts` inputs as
-TypeScript and other inputs as JavaScript scripts. ES modules can be parsed and
-printed through the library, but compilation currently requires a bundled
-script. JSX/TSX and compatibility downleveling are not enabled.
+The CLI treats `.ts` inputs as TypeScript and other inputs as JavaScript scripts.
+ES modules can be parsed and printed through the library, but compilation
+currently requires a bundled script. JSX/TSX and compatibility downleveling are
+not enabled.
+
+## Current native compilation contract
+
+The native compiler currently handles global scripts made from `var`
+declarations, blocks, expression statements, and debugger statements. Supported
+expressions include primitive literals, global identifiers, arithmetic, bitwise
+and comparison operators, unary coercions, property reads and writes, simple
+assignment, sequence expressions, and calls with up to three arguments. Method
+calls preserve their receiver. TypeScript annotations are stripped directly on
+a copy of the SWC tree before lowering.
+
+Control flow, lexical declarations, functions, classes, object and array
+literals, constructors, modules, directive prologues, compound assignment,
+short-circuit operators, and calls with more arguments return `Unsupported`.
+The compiler emits one global function through Mercury's native HBC container
+builder. Expanding these source constructs is the remaining forward-compiler
+work; decompiler opcode coverage does not imply matching source-language
+coverage in this direction.
 
 ## Current decompilation contract
 
@@ -168,14 +192,20 @@ The unsafe typed-memory opcodes use a captured `DataView` over the supplied
 typed-array view, preserving its byte offset, little-endian access, alignment,
 signed loads, and the signed result required by `Loadu32`.
 Reflective details such as function source text and caller stacks will differ.
-Reading/rebuilding arbitrary HBC is not implied by successful source compilation;
-supported compilation syntax is broader than the decompiler subset.
+Reading/rebuilding arbitrary HBC is not implied by successful source compilation.
+The native source compiler currently supports a much smaller language surface
+than the HBC decompiler.
 
 ## Verification
 
-`cargo test -p mercury-swc` checks JS/TS parsing and printing, scope identity,
-visitor edits, diagnostics, the committed bytecode fixture, and generated JS
-syntax without an installed Hermes toolchain.
+`cargo test -p mercury-swc` checks JS/TS parsing and printing, native AST-to-HBC
+lowering, scope identity, visitor edits, diagnostics, the committed bytecode
+fixture, and generated JS syntax without an installed Hermes toolchain.
+
+The ignored `native_hbc_executes_without_hermes_compiler` test needs only
+`HERMES_BIN` and executes native compiler output. The older decompiler runtime
+suite still uses `HERMESC_BIN` to recompile its generated JavaScript for
+behavioral comparison.
 
 For executable checks:
 

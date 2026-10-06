@@ -28,14 +28,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Compile a JS/TS script through SWC and a configured version-96 hermesc.
+    /// Compile a supported JS/TS script natively through SWC to HBC 96.
     Compile {
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
-        /// Compiler executable; alternatively set HERMESC_BIN.
-        #[arg(long)]
-        hermesc: Option<PathBuf>,
     },
     /// Decompile the supported HBC-96 subset through SWC into JavaScript.
     Decompile {
@@ -80,16 +77,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Compile {
-            input,
-            output,
-            hermesc,
-        } => {
-            let compiler = hermesc
-                .or_else(|| std::env::var_os("HERMESC_BIN").map(PathBuf::from))
-                .ok_or_else(|| {
-                    anyhow::anyhow!("set --hermesc or HERMESC_BIN to a version-96 Hermes compiler")
-                })?;
+        Command::Compile { input, output } => {
             let language = if input.extension().is_some_and(|ext| ext == "ts") {
                 mercury_swc::SourceLanguage::TypeScript
             } else {
@@ -103,7 +91,7 @@ fn main() -> anyhow::Result<()> {
                 language,
                 mercury_swc::SourceKind::Script,
             )?;
-            let bytes = mercury_swc::HermesCompiler::new(compiler, 96).compile(&module)?;
+            let bytes = mercury_swc::HbcCompiler::new(96).compile(&module)?;
             fs::write(&output, bytes)
                 .with_context(|| format!("failed to write {}", output.display()))?;
         }
