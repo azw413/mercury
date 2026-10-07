@@ -39,6 +39,9 @@ pub struct MinimalFunction {
     pub param_count: u32,
     pub frame_size: u32,
     pub environment_size: u32,
+    /// Hermes invocation restriction: 0 = construct-only, 1 = call-only,
+    /// 2 = callable and constructable.
+    pub prohibit_invoke: u8,
     pub instructions: Vec<DecodedInstruction>,
 }
 
@@ -87,6 +90,14 @@ pub fn build_minimal_module(
         });
     }
     for function in &module.functions {
+        if function.prohibit_invoke > 2 {
+            return Err(HbcBuildError::InvalidModule {
+                reason: format!(
+                    "function {} has invalid prohibit-invoke value {}",
+                    function.name, function.prohibit_invoke
+                ),
+            });
+        }
         if function.instructions.is_empty() {
             return Err(HbcBuildError::InvalidModule {
                 reason: format!("function {} has no instructions", function.name),
@@ -338,7 +349,7 @@ fn build_function_headers(
             highest_write_cache_index: write_cache,
             flags: FunctionHeaderFlags {
                 raw: 0,
-                prohibit_invoke: 2,
+                prohibit_invoke: function.prohibit_invoke,
                 strict_mode: false,
                 has_exception_handler: false,
                 has_debug_info: false,
@@ -627,6 +638,7 @@ mod tests {
                     param_count: 1,
                     frame_size: 3,
                     environment_size: 0,
+                    prohibit_invoke: 2,
                     instructions: vec![
                         DecodedInstruction {
                             offset: 0,
@@ -663,6 +675,7 @@ mod tests {
                     param_count: 2,
                     frame_size: 2,
                     environment_size: 0,
+                    prohibit_invoke: 1,
                     instructions: vec![
                         DecodedInstruction {
                             offset: 0,
@@ -703,6 +716,8 @@ mod tests {
             bytes.len()
         );
         assert_eq!(raw.functions.len(), 2);
+        assert_eq!(raw.functions[0].flags.prohibit_invoke, 2);
+        assert_eq!(raw.functions[1].flags.prohibit_invoke, 1);
         assert_eq!(raw.functions[0].instructions[0].name, "DeclareGlobalVar");
         assert_eq!(raw.functions[1].instructions[0].name, "LoadConstString");
     }
@@ -723,6 +738,7 @@ mod tests {
                 param_count: 1,
                 frame_size: 1,
                 environment_size: 0,
+                prohibit_invoke: 2,
                 instructions: vec![DecodedInstruction {
                     offset: 0,
                     opcode: 53,
@@ -736,6 +752,9 @@ mod tests {
         let bytes = build_minimal_module(&module, &spec.bytecode).expect("builds");
         let container = parse_hbc_container_with_spec(&bytes, &spec.container).expect("reparses");
         assert_eq!(container.header.identifier_count, 1);
-        assert_eq!(container.string_kind_entries[0].kind, StringKind::Identifier);
+        assert_eq!(
+            container.string_kind_entries[0].kind,
+            StringKind::Identifier
+        );
     }
 }

@@ -246,6 +246,7 @@ fn build_minimal_module_from_semantic(
             param_count: semantic.params,
             frame_size: semantic.frame,
             environment_size: semantic.env,
+            prohibit_invoke: 2,
             instructions: raised.instructions.clone(),
         })
         .collect();

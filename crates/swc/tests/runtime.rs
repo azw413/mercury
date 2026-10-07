@@ -475,6 +475,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
                 param_count: 1,
                 frame_size: 14,
                 environment_size: 0,
+                prohibit_invoke: 2,
                 instructions: vec![
                     instruction("Debugger", vec![]),
                     instruction("AsyncBreakCheck", vec![]),
@@ -500,6 +501,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
                 param_count: 1,
                 frame_size: 1,
                 environment_size: 0,
+                prohibit_invoke: 2,
                 instructions: vec![
                     instruction("GetEnvironment", vec![U8(0), U8(0)]),
                     instruction("LoadFromEnvironment", vec![U8(0), U8(0), U8(0)]),
@@ -524,6 +526,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
                     param_count: 1,
                     frame_size: 10,
                     environment_size: 0,
+                    prohibit_invoke: 2,
                     instructions: vec![
                         instruction("LoadConstUndefined", vec![U8(3)]),
                         instruction("LoadConstUInt8", vec![U8(2), U8(42)]),
@@ -536,6 +539,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
                     param_count: 2,
                     frame_size: 1,
                     environment_size: 0,
+                    prohibit_invoke: 2,
                     instructions: vec![
                         instruction("LoadParam", vec![U8(0), U8(1)]),
                         instruction("Ret", vec![U8(0)]),
@@ -555,6 +559,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
             param_count: 1,
             frame_size: 2,
             environment_size: 0,
+            prohibit_invoke: 2,
             instructions: vec![
                 instruction("LoadConstEmpty", vec![U8(0)]),
                 instruction("ThrowIfEmpty", vec![U8(1), U8(0)]),
@@ -586,6 +591,7 @@ fn typed_arithmetic_and_memory_opcodes_preserve_i32_and_view_semantics() {
             param_count: 1,
             frame_size: 40,
             environment_size: 0,
+            prohibit_invoke: 2,
             instructions: vec![
                 instruction("LoadConstInt", vec![U8(0), I32(2_147_483_647)]),
                 instruction("LoadConstUInt8", vec![U8(1), U8(1)]),
@@ -719,6 +725,7 @@ fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
             param_count: 1,
             frame_size: 2,
             environment_size: 0,
+            prohibit_invoke: 2,
             instructions: vec![
                 instruction("GetGlobalObject", vec![U8(0)]),
                 instruction("LoadConstUInt8", vec![U8(1), U8(1)]),
@@ -742,6 +749,7 @@ fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
             param_count: 1,
             frame_size: 1,
             environment_size: 0,
+            prohibit_invoke: 2,
             instructions: vec![
                 instruction("ThrowIfHasRestrictedGlobalProperty", vec![U32(0)]),
                 instruction("LoadConstUInt8", vec![U8(0), U8(42)]),
@@ -767,6 +775,7 @@ fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
             param_count: 1,
             frame_size: 1,
             environment_size: 0,
+            prohibit_invoke: 2,
             instructions: vec![instruction("Unreachable", vec![])],
         }],
     );

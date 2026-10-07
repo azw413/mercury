@@ -171,6 +171,48 @@ fn compiles_function_graphs_and_environment_access() {
 }
 
 #[test]
+fn compiles_arrow_bodies_and_call_only_headers() {
+    let bytes = compile(
+        "var add = (left, right) => left + right; var twice = value => { let result = value * 2; return result; }; print(add(2, twice(3)));",
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let names = raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .map(|instruction| instruction.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(raw.functions.len(), 3);
+    assert_eq!(raw.functions[0].flags.prohibit_invoke, 2);
+    assert_eq!(raw.functions[1].flags.prohibit_invoke, 1);
+    assert_eq!(raw.functions[2].flags.prohibit_invoke, 1);
+    assert!(names.contains(&"LoadParam"));
+    assert!(names.contains(&"CreateClosure"));
+    assert!(names.contains(&"Ret"));
+    assert!(decompile(&bytes).is_ok());
+}
+
+#[test]
+fn rejects_implicit_arguments_inside_arrows_explicitly() {
+    let module = SwcModule::parse(
+        "input.js",
+        "var first = () => arguments[0];",
+        SourceLanguage::JavaScript,
+        SourceKind::Script,
+    )
+    .unwrap();
+    let error = HbcCompiler::new(96).compile(&module).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "unsupported: the implicit `arguments` object is not supported by native compilation yet"
+    );
+}
+
+#[test]
 fn compiles_lexical_scopes_and_tdz_checks() {
     let bytes = compile(
         "let outer = 1; { let inner = outer + 1; const fixed = 3; var closure = function () { return inner + fixed; }; } print(closure());",
@@ -406,6 +448,70 @@ fn native_functions_locals_and_closures_execute() {
             "9 11\n",
         )
     );
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_arrows_preserve_bodies_captures_and_lexical_this() {
+    let bytes = compile(
+        r#"
+        var add = (left, right) => left + right;
+        var twice = value => { let result = value * 2; return result; };
+        var object = value => ({value: value});
+        print(add(2, 3), twice(6), object(9).value);
+
+        let outer = 4;
+        var capture = value => () => value + outer;
+        print(capture(3)());
+
+        var topThis = () => this;
+        print(topThis.call({value: 99}) === this, typeof topThis.prototype);
+
+        function Receiver(value) {
+            this.value = value;
+            this.direct = () => this.value;
+            this.nested = () => () => this.value + 1;
+            this.ordinary = () => function () { return this.value; };
+        }
+        var receiver = new Receiver(7);
+        print(receiver.direct(), receiver.direct.call({value: 50}));
+        print(receiver.nested()(), receiver.ordinary().call({value: 11}));
+
+        function makeRegular() {
+            return () => function () { return () => this.value; };
+        }
+        var regular = makeRegular()();
+        var nestedArrow = regular.call({value: 13});
+        print(nestedArrow());
+
+        var closures = [];
+        for (let index = 0; index < 3; index++) closures[index] = () => index;
+        print(closures[0](), closures[1](), closures[2]());
+        "#,
+        SourceLanguage::JavaScript,
+    );
+    assert_eq!(
+        execute(bytes),
+        concat!(
+            "5 12 9\n",
+            "7\n",
+            "true undefined\n",
+            "7 7\n",
+            "8 11\n",
+            "13\n",
+            "0 1 2\n",
+        )
+    );
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_arrows_cannot_be_constructed() {
+    let failure = execute_failure(compile(
+        "var arrow = value => value; new arrow(1);",
+        SourceLanguage::JavaScript,
+    ));
+    assert!(failure.contains("TypeError"), "{failure}");
 }
 
 #[test]

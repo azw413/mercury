@@ -101,6 +101,11 @@ local `var` bindings use parent-linked HBC environments. Nested and anonymous
 functions therefore retain captured mutation, sibling closures share one
 environment, and separate outer calls receive independent environments. Regular
 functions support `this` and can be invoked either as calls or constructors.
+Arrow functions support identifier parameters, expression bodies, and block
+bodies. They capture `this` through the same environment chain, including across
+nested arrows and intervening block scopes. Their HBC function headers prohibit
+construction, so `new` raises a `TypeError` and no `prototype` property is
+created. A nested regular function starts a new receiver boundary as usual.
 
 Lexical declarations use inner environments with distinct slots for shadowed
 names. Slots contain HBC's empty value until their declaration executes, and
@@ -129,16 +134,16 @@ Branches use compiler-owned symbolic labels that are resolved to HBC byte
 displacements after instruction selection. This keeps source lowering independent
 of encoded instruction sizes and supports forward and backward jumps.
 
-Arrow functions, named function expressions, default/rest/destructuring
-parameters and declarations, the implicit `arguments` object, block-level
-function declarations, async and generator functions, classes, modules,
-directive prologues, exponentiation assignment, labeled control flow, `switch`,
-`try`, `throw`, `for…in`, `for…of`, call and literal spreads, object
-methods/accessors, and object-literal `__proto__` setters return `Unsupported`.
-Calls accept up to three arguments; constructors are limited by the HBC
-small-frame size. Expanding these source constructs is the remaining
-forward-compiler work; decompiler opcode coverage does not imply matching
-source-language coverage in this direction.
+Named function expressions, default/rest/destructuring parameters and
+declarations, implicit or lexically captured `arguments`, block-level function
+declarations, async and generator functions, classes, modules, directive
+prologues, exponentiation assignment, labeled control flow, `switch`, `try`,
+`throw`, `for…in`, `for…of`, call and literal spreads, object methods/accessors,
+and object-literal `__proto__` setters return `Unsupported`. Calls accept up to
+three arguments; constructors are limited by the HBC small-frame size. Expanding
+these source constructs is the remaining forward-compiler work; decompiler
+opcode coverage does not imply matching source-language coverage in this
+direction.
 
 ## Current decompilation contract
 
@@ -259,7 +264,9 @@ top-level bindings, escaping block closures, fresh bindings for loop bodies and
 `for (let …)` iterations, TDZ failures from reads, writes, and `typeof`, and
 runtime `TypeError` failures from direct, compound, and closure-mediated writes
 to `const`. A restricted top-level lexical declaration verifies the corresponding
-`SyntaxError` path.
+`SyntaxError` path. Arrow checks cover expression and block bodies, ordinary and
+multilevel captures, lexical receivers despite `.call`, regular-function receiver
+boundaries, per-iteration closures, missing prototypes, and constructor failure.
 Array checks cover length, holes, indexed mutation, every serialized primitive
 kind, dynamic elements, closure elements, and inherited index setters. The main
 Object checks cover serialized primitive values, key order, numeric and computed

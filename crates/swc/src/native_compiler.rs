@@ -9,12 +9,15 @@ use mercury_binary::{
 };
 use mercury_spec::BytecodeSpec;
 use swc_core::ecma::ast::{
-    AssignOp, AssignTarget, BinaryOp, BlockStmt, Callee, Decl, Expr, Function, Lit, MemberExpr,
-    MemberProp, Pat, Program, Prop, PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt,
-    UnaryOp, UpdateOp, VarDecl, VarDeclKind, VarDeclOrExpr,
+    ArrowExpr, AssignOp, AssignTarget, BinaryOp, BlockStmt, BlockStmtOrExpr, Callee, Decl, Expr,
+    Function, Lit, MemberExpr, MemberProp, Pat, Program, Prop, PropName, PropOrSpread, Script,
+    SimpleAssignTarget, Stmt, UnaryOp, UpdateOp, VarDecl, VarDeclKind, VarDeclOrExpr,
 };
+use swc_core::ecma::visit::{Visit, VisitWith};
 
 use crate::{Error, SwcModule};
+
+const LEXICAL_THIS_BINDING: &str = "\0mercury_lexical_this";
 
 /// Native SWC-AST to Hermes-bytecode compiler.
 ///
@@ -66,14 +69,38 @@ struct Compiler {
     base_registers: u16,
     is_global: bool,
     current_function_id: u32,
+    current_function_kind: NativeFunctionKind,
 }
 
 #[derive(Clone)]
 struct PendingFunction {
     id: u32,
     name: String,
-    function: Function,
+    params: Vec<Pat>,
+    body: PendingFunctionBody,
+    kind: NativeFunctionKind,
     parent_scope: Option<Rc<FunctionScope>>,
+}
+
+#[derive(Clone)]
+enum PendingFunctionBody {
+    Block(BlockStmt),
+    Expression(Box<Expr>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeFunctionKind {
+    Regular,
+    Arrow,
+}
+
+impl NativeFunctionKind {
+    fn prohibit_invoke(self) -> u8 {
+        match self {
+            Self::Regular => 2,
+            Self::Arrow => 1,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -151,19 +178,31 @@ impl Compiler {
             base_registers: 0,
             is_global: true,
             current_function_id: 0,
+            current_function_kind: NativeFunctionKind::Regular,
         }
     }
 
     fn compile_script(mut self, script: &Script) -> Result<Vec<u8>, Error> {
         let spec = mercury_spec_builtin::load_spec(self.version)
             .ok_or_else(|| Error::Bytecode("missing embedded HBC 96 spec".into()))?;
-        let lexical_bindings = direct_lexical_bindings(&script.body)?;
+        let mut lexical_bindings = direct_lexical_bindings(&script.body)?;
         let lexical_names = lexical_bindings
             .iter()
             .map(|(name, _)| name.clone())
             .collect::<Vec<_>>();
-        self.begin_function(0, lexical_bindings, None, true)?;
+        let captures_this = statements_contain_arrow(&script.body);
+        if captures_this {
+            add_binding(
+                &mut lexical_bindings,
+                LEXICAL_THIS_BINDING.into(),
+                BindingKind::Var,
+            )?;
+        }
+        self.begin_function(0, lexical_bindings, None, true, NativeFunctionKind::Regular)?;
         self.initialize_scope_bindings()?;
+        if captures_this {
+            self.initialize_lexical_this()?;
+        }
         for name in lexical_names {
             let id = self.intern_identifier(&name)?;
             self.emit(
@@ -236,6 +275,7 @@ impl Compiler {
         bindings: Vec<(String, BindingKind)>,
         parent_scope: Option<Rc<FunctionScope>>,
         is_global: bool,
+        kind: NativeFunctionKind,
     ) -> Result<(), Error> {
         self.instructions.clear();
         self.next_register = 0;
@@ -248,6 +288,7 @@ impl Compiler {
         self.loops.clear();
         self.is_global = is_global;
         self.current_function_id = function_id;
+        self.current_function_kind = kind;
         self.base_registers = 0;
         let environment = self.alloc_register()?;
         self.environment_register = Some(environment);
@@ -260,6 +301,13 @@ impl Compiler {
             environment_register: environment,
         }));
         Ok(())
+    }
+
+    fn initialize_lexical_this(&mut self) -> Result<(), Error> {
+        let value = self.alloc_register()?;
+        self.emit("LoadThisNS", vec![reg(value)]);
+        self.emit_binding_initialization(LEXICAL_THIS_BINDING, value)?;
+        self.release_register(value)
     }
 
     fn initialize_scope_bindings(&mut self) -> Result<(), Error> {
@@ -318,11 +366,49 @@ impl Compiler {
                     .into(),
             ));
         }
-        if function.body.is_none() {
+        let body = function.body.clone().ok_or_else(|| {
+            Error::Unsupported("function declarations without bodies are not supported".into())
+        })?;
+        self.register_pending_function(
+            name,
+            function
+                .params
+                .iter()
+                .map(|parameter| parameter.pat.clone())
+                .collect(),
+            PendingFunctionBody::Block(body),
+            NativeFunctionKind::Regular,
+        )
+    }
+
+    fn register_arrow(&mut self, arrow: &ArrowExpr) -> Result<u32, Error> {
+        if arrow.is_async || arrow.is_generator {
             return Err(Error::Unsupported(
-                "function declarations without bodies are not supported".into(),
+                "async and generator arrow functions are not supported by native compilation yet"
+                    .into(),
             ));
         }
+        let body = match &*arrow.body {
+            BlockStmtOrExpr::BlockStmt(body) => PendingFunctionBody::Block(body.clone()),
+            BlockStmtOrExpr::Expr(expression) => {
+                PendingFunctionBody::Expression(expression.clone())
+            }
+        };
+        self.register_pending_function(
+            String::new(),
+            arrow.params.clone(),
+            body,
+            NativeFunctionKind::Arrow,
+        )
+    }
+
+    fn register_pending_function(
+        &mut self,
+        name: String,
+        params: Vec<Pat>,
+        body: PendingFunctionBody,
+        kind: NativeFunctionKind,
+    ) -> Result<u32, Error> {
         let id = self.next_function_id;
         self.next_function_id = self
             .next_function_id
@@ -331,7 +417,9 @@ impl Compiler {
         self.pending_functions.push_back(PendingFunction {
             id,
             name,
-            function: function.clone(),
+            params,
+            body,
+            kind,
             parent_scope: self.scope.clone(),
         });
         Ok(id)
@@ -367,18 +455,9 @@ impl Compiler {
         pending: PendingFunction,
         spec: &BytecodeSpec,
     ) -> Result<MinimalFunction, Error> {
-        if pending.function.is_async || pending.function.is_generator {
-            return Err(Error::Unsupported(
-                "async and generator source functions are not supported by native compilation yet"
-                    .into(),
-            ));
-        }
-        let body = pending.function.body.as_ref().ok_or_else(|| {
-            Error::Unsupported("function declarations without bodies are not supported".into())
-        })?;
-        let mut parameter_names = Vec::with_capacity(pending.function.params.len());
-        for parameter in &pending.function.params {
-            let Pat::Ident(identifier) = &parameter.pat else {
+        let mut parameter_names = Vec::with_capacity(pending.params.len());
+        for parameter in &pending.params {
+            let Pat::Ident(identifier) = parameter else {
                 return Err(Error::Unsupported(
                     "default, rest, and destructured parameters are not supported by native compilation yet"
                         .into(),
@@ -398,24 +477,44 @@ impl Compiler {
         for name in &parameter_names {
             add_binding(&mut bindings, name.clone(), BindingKind::Var)?;
         }
-        let mut var_names = Vec::new();
-        collect_var_declarations(&body.stmts, &mut var_names)?;
-        for name in var_names {
-            add_binding(&mut bindings, name, BindingKind::Var)?;
+        let block = match &pending.body {
+            PendingFunctionBody::Block(block) => Some(block),
+            PendingFunctionBody::Expression(_) => None,
+        };
+        if let Some(body) = block {
+            let mut var_names = Vec::new();
+            collect_var_declarations(&body.stmts, &mut var_names)?;
+            for name in var_names {
+                add_binding(&mut bindings, name, BindingKind::Var)?;
+            }
+            for declaration in top_level_function_declarations(&body.stmts) {
+                add_binding(
+                    &mut bindings,
+                    declaration.ident.sym.to_string(),
+                    BindingKind::Var,
+                )?;
+            }
+            for (name, kind) in direct_lexical_bindings(&body.stmts)? {
+                add_binding(&mut bindings, name, kind)?;
+            }
         }
-        for declaration in top_level_function_declarations(&body.stmts) {
-            add_binding(
-                &mut bindings,
-                declaration.ident.sym.to_string(),
-                BindingKind::Var,
-            )?;
-        }
-        for (name, kind) in direct_lexical_bindings(&body.stmts)? {
-            add_binding(&mut bindings, name, kind)?;
+        let captures_this = pending.kind == NativeFunctionKind::Regular
+            && pending_body_contains_arrow(&pending.body);
+        if captures_this {
+            add_binding(&mut bindings, LEXICAL_THIS_BINDING.into(), BindingKind::Var)?;
         }
         let environment_size = bindings.len() as u32;
-        self.begin_function(pending.id, bindings, pending.parent_scope, false)?;
+        self.begin_function(
+            pending.id,
+            bindings,
+            pending.parent_scope,
+            false,
+            pending.kind,
+        )?;
         self.initialize_scope_bindings()?;
+        if captures_this {
+            self.initialize_lexical_this()?;
+        }
         for (index, name) in parameter_names.iter().enumerate() {
             let value = self.alloc_register()?;
             self.emit(
@@ -425,12 +524,21 @@ impl Compiler {
             self.emit_binding_initialization(name, value)?;
             self.release_register(value)?;
         }
-        self.hoist_function_declarations(&body.stmts)?;
-        for statement in &body.stmts {
-            if !matches!(statement, Stmt::Decl(Decl::Fn(_))) {
-                self.compile_statement(statement)?;
+        match &pending.body {
+            PendingFunctionBody::Block(body) => {
+                self.hoist_function_declarations(&body.stmts)?;
+                for statement in &body.stmts {
+                    if !matches!(statement, Stmt::Decl(Decl::Fn(_))) {
+                        self.compile_statement(statement)?;
+                    }
+                    debug_assert_eq!(self.next_register, self.base_registers);
+                }
             }
-            debug_assert_eq!(self.next_register, self.base_registers);
+            PendingFunctionBody::Expression(expression) => {
+                let value = self.compile_expression(expression)?;
+                self.emit("Ret", vec![reg(value)]);
+                self.release_register(value)?;
+            }
         }
         self.emit_implicit_return()?;
         self.finish_function(pending.name, param_count, environment_size, spec)
@@ -469,6 +577,7 @@ impl Compiler {
             param_count,
             frame_size: u32::from(frame_size),
             environment_size,
+            prohibit_invoke: self.current_function_kind.prohibit_invoke(),
             instructions: std::mem::take(&mut self.instructions),
         })
     }
@@ -806,6 +915,9 @@ impl Compiler {
             Expr::Array(array) => self.compile_array(array),
             Expr::Object(object) => self.compile_object(object),
             Expr::This(_) => {
+                if self.current_function_kind == NativeFunctionKind::Arrow {
+                    return self.compile_identifier(LEXICAL_THIS_BINDING);
+                }
                 let output = self.alloc_register()?;
                 self.emit("LoadThisNS", vec![reg(output)]);
                 Ok(output)
@@ -865,6 +977,10 @@ impl Compiler {
                     ));
                 }
                 let function_id = self.register_function(String::new(), &function.function)?;
+                self.emit_create_closure(function_id)
+            }
+            Expr::Arrow(arrow) => {
+                let function_id = self.register_arrow(arrow)?;
                 self.emit_create_closure(function_id)
             }
             other => Err(unsupported_expression(other)),
@@ -2090,6 +2206,34 @@ fn top_level_function_declarations(
         Stmt::Decl(Decl::Fn(declaration)) => Some(declaration),
         _ => None,
     })
+}
+
+#[derive(Default)]
+struct ArrowFinder {
+    found: bool,
+}
+
+impl Visit for ArrowFinder {
+    fn visit_arrow_expr(&mut self, _arrow: &ArrowExpr) {
+        self.found = true;
+    }
+
+    fn visit_function(&mut self, _function: &Function) {}
+}
+
+fn statements_contain_arrow(statements: &[Stmt]) -> bool {
+    let mut finder = ArrowFinder::default();
+    statements.visit_with(&mut finder);
+    finder.found
+}
+
+fn pending_body_contains_arrow(body: &PendingFunctionBody) -> bool {
+    let mut finder = ArrowFinder::default();
+    match body {
+        PendingFunctionBody::Block(block) => block.visit_with(&mut finder),
+        PendingFunctionBody::Expression(expression) => expression.visit_with(&mut finder),
+    }
+    finder.found
 }
 
 fn direct_lexical_bindings(statements: &[Stmt]) -> Result<Vec<(String, BindingKind)>, Error> {

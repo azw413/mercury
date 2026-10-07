@@ -151,7 +151,9 @@ bindings in parent-linked environments. This supports hoisting, recursion,
 multilevel capture, shared mutation between sibling closures, independent state
 across outer calls, `this`, and constructor invocation. `let` and `const` use
 block environments with shadowing and TDZ checks; loop entries and `for (let …)`
-iterations preserve distinct captured bindings.
+iterations preserve distinct captured bindings. Arrow functions support
+expression and block bodies, lexical `this`, nested captures, and call-only HBC
+headers that reject construction.
 
 ```sh
 cargo run -p mercury-swc --example compile -- input.js /tmp/example.hbc
