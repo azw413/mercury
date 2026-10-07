@@ -171,6 +171,50 @@ fn compiles_function_graphs_and_environment_access() {
 }
 
 #[test]
+fn compiles_lexical_scopes_and_tdz_checks() {
+    let bytes = compile(
+        "let outer = 1; { let inner = outer + 1; const fixed = 3; var closure = function () { return inner + fixed; }; } print(closure());",
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let names = raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .map(|instruction| instruction.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(raw.functions[0].environment_size, 1);
+    assert!(names.contains(&"ThrowIfHasRestrictedGlobalProperty"));
+    assert!(names.contains(&"CreateInnerEnvironment"));
+    assert!(names.contains(&"LoadConstEmpty"));
+    assert!(names.contains(&"ThrowIfEmpty"));
+    assert!(names.contains(&"GetEnvironment"));
+    assert!(decompile(&bytes).is_ok());
+}
+
+#[test]
+fn compiles_constant_writes_as_runtime_type_errors() {
+    let bytes = compile(
+        "const answer = 42; if (false) answer = 43;",
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let names = raw.functions[0]
+        .instructions
+        .iter()
+        .map(|instruction| instruction.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&"Construct"));
+    assert!(names.contains(&"Throw"));
+}
+
+#[test]
 fn rejects_object_prototype_setters_until_parent_construction_is_supported() {
     let module = SwcModule::parse(
         "input.js",
@@ -364,7 +408,110 @@ fn native_functions_locals_and_closures_execute() {
     );
 }
 
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_lexical_scopes_closures_and_iterations_execute() {
+    let bytes = compile(
+        r#"
+        let top = 4;
+        const fixed = 5;
+        function topClosure() { return top + fixed; }
+        print("top", topClosure(), this.top);
+
+        let shadowed = 1;
+        {
+            let shadowed = 2;
+            shadowed += 3;
+            print("inner", shadowed);
+        }
+        print("outer", shadowed);
+
+        var escaped;
+        {
+            let captured = 7;
+            const offset = 2;
+            escaped = function () { captured++; return captured + offset + shadowed; };
+        }
+        print("escaped", escaped(), escaped());
+
+        let unset;
+        let first = 1, second = first + 1;
+        print("initialization", unset, first + second);
+
+        var fromWhile = [];
+        var index = 0;
+        while (index < 3) {
+            let current = index;
+            fromWhile[index] = function () { return current; };
+            index++;
+        }
+        print(fromWhile[0](), fromWhile[1](), fromWhile[2]());
+
+        var fromFor = [];
+        for (let iteration = 0; iteration < 3; iteration++) {
+            fromFor[iteration] = function () { return iteration; };
+        }
+        print(fromFor[0](), fromFor[1](), fromFor[2]());
+        "#,
+        SourceLanguage::JavaScript,
+    );
+    assert_eq!(
+        execute(bytes),
+        concat!(
+            "top 9 undefined\n",
+            "inner 5\n",
+            "outer 1\n",
+            "escaped 11 12\n",
+            "initialization undefined 3\n",
+            "0 1 2\n",
+            "0 1 2\n",
+        )
+    );
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_lexical_tdz_reads_and_writes_fail() {
+    for source in [
+        "function fail() { print(value); let value = 1; } fail();",
+        "function fail() { value = 1; let value; } fail();",
+        "function fail() { return typeof value; let value = 1; } fail();",
+        "function fail() { value = 1; const value = 2; } fail();",
+    ] {
+        let failure = execute_failure(compile(source, SourceLanguage::JavaScript));
+        assert!(failure.contains("ReferenceError"), "{failure}");
+    }
+
+    for source in [
+        "const value = 1; value = 2;",
+        "function fail() { const value = 1; value++; } fail();",
+        "function outer() { const value = 1; return function () { value += 2; }; } outer()();",
+    ] {
+        let failure = execute_failure(compile(source, SourceLanguage::JavaScript));
+        assert!(failure.contains("TypeError"), "{failure}");
+    }
+
+    let failure = execute_failure(compile("let undefined = 1;", SourceLanguage::JavaScript));
+    assert!(failure.contains("SyntaxError"), "{failure}");
+}
+
 fn execute(bytes: Vec<u8>) -> String {
+    let output = execute_output(bytes);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn execute_failure(bytes: Vec<u8>) -> String {
+    let output = execute_output(bytes);
+    assert!(!output.status.success());
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn execute_output(bytes: Vec<u8>) -> std::process::Output {
     let path = std::env::temp_dir().join(format!(
         "mercury-native-compile-{}-{}.hbc",
         std::process::id(),
@@ -374,10 +521,5 @@ fn execute(bytes: Vec<u8>) -> String {
     let hermes = std::env::var_os("HERMES_BIN").expect("HERMES_BIN must point to Hermes 0.12");
     let output = Command::new(hermes).arg(&path).output().unwrap();
     let _ = fs::remove_file(path);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
+    output
 }

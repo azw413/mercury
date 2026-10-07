@@ -92,14 +92,26 @@ not enabled.
 ## Current native compilation contract
 
 The native compiler currently handles scripts and regular function bodies made
-from `var` declarations, function declarations, blocks, expression statements,
-debugger statements, returns, `if`/`else`, `while`, `do…while`, and `for`.
+from `var`, `let`, and `const` declarations, function declarations, blocks,
+expression statements, debugger statements, returns, `if`/`else`, `while`,
+`do…while`, and `for`.
 Function declarations are instantiated at function entry, including local
 recursion and calls before their textual declaration. Identifier parameters and
 local `var` bindings use parent-linked HBC environments. Nested and anonymous
 functions therefore retain captured mutation, sibling closures share one
 environment, and separate outer calls receive independent environments. Regular
 functions support `this` and can be invoked either as calls or constructors.
+
+Lexical declarations use inner environments with distinct slots for shadowed
+names. Slots contain HBC's empty value until their declaration executes, and
+reads, `typeof`, or assignments in that interval raise a `ReferenceError` through
+`ThrowIfEmpty`. Escaping closures retain block bindings. Loop-body blocks receive
+a fresh environment on every entry, and `for (let …)` clones its environment
+before each update so closures retain the value from their own iteration.
+Top-level lexical bindings remain separate from properties on the global object,
+and declarations that conflict with restricted global properties throw a
+`SyntaxError`. Writes to `const` evaluate their right-hand side and then throw a
+`TypeError` if control reaches the write.
 
 Unlabeled `break` and `continue` work across nested conditionals and loops.
 Supported expressions include primitive literals, identifiers, arithmetic,
@@ -117,14 +129,14 @@ Branches use compiler-owned symbolic labels that are resolved to HBC byte
 displacements after instruction selection. This keeps source lowering independent
 of encoded instruction sizes and supports forward and backward jumps.
 
-Lexical declarations and block scopes, arrow functions, named function
-expressions, default/rest/destructuring parameters, the implicit `arguments`
-object, block-level function declarations, async and generator functions,
-classes, modules, directive prologues, exponentiation assignment, labeled
-control flow, `switch`, `try`, `throw`, `for…in`, `for…of`, call and literal
-spreads, object methods/accessors, and object-literal `__proto__` setters return
-`Unsupported`. Calls accept up to three arguments; constructors are limited by
-the HBC small-frame size. Expanding these source constructs is the remaining
+Arrow functions, named function expressions, default/rest/destructuring
+parameters and declarations, the implicit `arguments` object, block-level
+function declarations, async and generator functions, classes, modules,
+directive prologues, exponentiation assignment, labeled control flow, `switch`,
+`try`, `throw`, `for…in`, `for…of`, call and literal spreads, object
+methods/accessors, and object-literal `__proto__` setters return `Unsupported`.
+Calls accept up to three arguments; constructors are limited by the HBC
+small-frame size. Expanding these source constructs is the remaining
 forward-compiler work; decompiler opcode coverage does not imply matching
 source-language coverage in this direction.
 
@@ -242,7 +254,12 @@ captured variables. Native source-to-HBC closure checks cover parameters, local
 variables, hoisting, recursion, anonymous functions, independent outer calls,
 sibling closures sharing one environment, captures across multiple lexical
 levels, and using compiled functions as constructors. Decompiler closure checks
-cover the same environment-sharing boundaries.
+cover the same environment-sharing boundaries. Lexical checks cover shadowing,
+top-level bindings, escaping block closures, fresh bindings for loop bodies and
+`for (let …)` iterations, TDZ failures from reads, writes, and `typeof`, and
+runtime `TypeError` failures from direct, compound, and closure-mediated writes
+to `const`. A restricted top-level lexical declaration verifies the corresponding
+`SyntaxError` path.
 Array checks cover length, holes, indexed mutation, every serialized primitive
 kind, dynamic elements, closure elements, and inherited index setters. The main
 Object checks cover serialized primitive values, key order, numeric and computed

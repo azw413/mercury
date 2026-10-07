@@ -18,7 +18,7 @@ use crate::{Error, SwcModule};
 
 /// Native SWC-AST to Hermes-bytecode compiler.
 ///
-/// The initial compiler targets HBC 96 global scripts. Unsupported syntax is
+/// The native compiler targets HBC 96 scripts. Unsupported syntax is
 /// reported explicitly instead of being delegated to an installed `hermesc`.
 pub struct HbcCompiler {
     target_version: u32,
@@ -65,6 +65,7 @@ struct Compiler {
     environment_register: Option<u8>,
     base_registers: u16,
     is_global: bool,
+    current_function_id: u32,
 }
 
 #[derive(Clone)]
@@ -77,14 +78,35 @@ struct PendingFunction {
 
 #[derive(Debug)]
 struct FunctionScope {
-    bindings: HashMap<String, u8>,
+    bindings: HashMap<String, Binding>,
     parent: Option<Rc<FunctionScope>>,
+    function_id: u32,
+    environment_register: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BindingKind {
+    Var,
+    Let,
+    Const,
+}
+
+impl BindingKind {
+    fn has_tdz(self) -> bool {
+        matches!(self, Self::Let | Self::Const)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Binding {
+    slot: u8,
+    kind: BindingKind,
 }
 
 #[derive(Clone, Copy)]
 enum BindingLocation {
-    Own(u8),
-    Parent { level: u8, slot: u8 },
+    Local { environment: u8, binding: Binding },
+    Parent { level: u8, binding: Binding },
     Global,
 }
 
@@ -128,13 +150,27 @@ impl Compiler {
             environment_register: None,
             base_registers: 0,
             is_global: true,
+            current_function_id: 0,
         }
     }
 
     fn compile_script(mut self, script: &Script) -> Result<Vec<u8>, Error> {
         let spec = mercury_spec_builtin::load_spec(self.version)
             .ok_or_else(|| Error::Bytecode("missing embedded HBC 96 spec".into()))?;
-        self.begin_function(None, true)?;
+        let lexical_bindings = direct_lexical_bindings(&script.body)?;
+        let lexical_names = lexical_bindings
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        self.begin_function(0, lexical_bindings, None, true)?;
+        self.initialize_scope_bindings()?;
+        for name in lexical_names {
+            let id = self.intern_identifier(&name)?;
+            self.emit(
+                "ThrowIfHasRestrictedGlobalProperty",
+                vec![DecodedOperand::U32(id)],
+            );
+        }
 
         let mut declarations = Vec::new();
         collect_var_declarations(&script.body, &mut declarations)?;
@@ -166,7 +202,9 @@ impl Compiler {
         }
 
         self.emit_implicit_return()?;
-        let global = self.finish_function("global".into(), 1, 0, &spec.bytecode)?;
+        let global_environment_size = self.current_scope_bindings()?.len() as u32;
+        let global =
+            self.finish_function("global".into(), 1, global_environment_size, &spec.bytecode)?;
         let mut functions = vec![global];
 
         while let Some(pending) = self.pending_functions.pop_front() {
@@ -194,7 +232,9 @@ impl Compiler {
 
     fn begin_function(
         &mut self,
-        scope: Option<Rc<FunctionScope>>,
+        function_id: u32,
+        bindings: Vec<(String, BindingKind)>,
+        parent_scope: Option<Rc<FunctionScope>>,
         is_global: bool,
     ) -> Result<(), Error> {
         self.instructions.clear();
@@ -206,14 +246,58 @@ impl Compiler {
         self.branches.clear();
         self.frame_moves.clear();
         self.loops.clear();
-        self.scope = scope;
         self.is_global = is_global;
+        self.current_function_id = function_id;
         self.base_registers = 0;
         let environment = self.alloc_register()?;
         self.environment_register = Some(environment);
         self.base_registers = self.next_register;
         self.emit("CreateEnvironment", vec![reg(environment)]);
+        self.scope = Some(Rc::new(FunctionScope {
+            bindings: build_binding_map(bindings)?,
+            parent: parent_scope,
+            function_id,
+            environment_register: environment,
+        }));
         Ok(())
+    }
+
+    fn initialize_scope_bindings(&mut self) -> Result<(), Error> {
+        let mut bindings = self
+            .current_scope_bindings()?
+            .values()
+            .copied()
+            .collect::<Vec<_>>();
+        bindings.sort_by_key(|binding| binding.slot);
+        for binding in bindings {
+            let value = self.alloc_register()?;
+            self.emit(
+                if binding.kind.has_tdz() {
+                    "LoadConstEmpty"
+                } else {
+                    "LoadConstUndefined"
+                },
+                vec![reg(value)],
+            );
+            let environment = self.environment_register()?;
+            self.emit(
+                "StoreToEnvironment",
+                vec![
+                    reg(environment),
+                    DecodedOperand::U8(binding.slot),
+                    reg(value),
+                ],
+            );
+            self.release_register(value)?;
+        }
+        Ok(())
+    }
+
+    fn current_scope_bindings(&self) -> Result<&HashMap<String, Binding>, Error> {
+        self.scope
+            .as_ref()
+            .map(|scope| &scope.bindings)
+            .ok_or_else(|| Error::Bytecode("native compiler has no active lexical scope".into()))
     }
 
     fn hoist_function_declarations(&mut self, statements: &[Stmt]) -> Result<(), Error> {
@@ -248,11 +332,7 @@ impl Compiler {
             id,
             name,
             function: function.clone(),
-            parent_scope: if self.is_global {
-                None
-            } else {
-                self.scope.clone()
-            },
+            parent_scope: self.scope.clone(),
         });
         Ok(id)
     }
@@ -314,57 +394,35 @@ impl Compiler {
             ));
         }
 
-        let mut binding_names = parameter_names.clone();
-        collect_var_declarations(&body.stmts, &mut binding_names)?;
-        binding_names.extend(
-            top_level_function_declarations(&body.stmts)
-                .map(|declaration| declaration.ident.sym.to_string()),
-        );
-        let mut seen = HashSet::new();
-        binding_names.retain(|name| seen.insert(name.clone()));
-        if binding_names.len() >= 256 {
-            return Err(Error::Unsupported(
-                "functions with more than 255 local bindings are not supported".into(),
-            ));
+        let mut bindings = Vec::new();
+        for name in &parameter_names {
+            add_binding(&mut bindings, name.clone(), BindingKind::Var)?;
         }
-        let bindings = binding_names
-            .iter()
-            .enumerate()
-            .map(|(slot, name)| (name.clone(), slot as u8))
-            .collect::<HashMap<_, _>>();
-        let scope = Rc::new(FunctionScope {
-            bindings,
-            parent: pending.parent_scope,
-        });
-        self.begin_function(Some(scope), false)?;
-        let environment = self.environment_register()?;
-
-        if !binding_names.is_empty() {
-            let undefined = self.alloc_register()?;
-            self.emit("LoadConstUndefined", vec![reg(undefined)]);
-            for slot in 0..binding_names.len() {
-                self.emit(
-                    "StoreToEnvironment",
-                    vec![
-                        reg(environment),
-                        DecodedOperand::U8(slot as u8),
-                        reg(undefined),
-                    ],
-                );
-            }
-            self.release_register(undefined)?;
+        let mut var_names = Vec::new();
+        collect_var_declarations(&body.stmts, &mut var_names)?;
+        for name in var_names {
+            add_binding(&mut bindings, name, BindingKind::Var)?;
         }
+        for declaration in top_level_function_declarations(&body.stmts) {
+            add_binding(
+                &mut bindings,
+                declaration.ident.sym.to_string(),
+                BindingKind::Var,
+            )?;
+        }
+        for (name, kind) in direct_lexical_bindings(&body.stmts)? {
+            add_binding(&mut bindings, name, kind)?;
+        }
+        let environment_size = bindings.len() as u32;
+        self.begin_function(pending.id, bindings, pending.parent_scope, false)?;
+        self.initialize_scope_bindings()?;
         for (index, name) in parameter_names.iter().enumerate() {
             let value = self.alloc_register()?;
             self.emit(
                 "LoadParam",
                 vec![reg(value), DecodedOperand::U8((index + 1) as u8)],
             );
-            let slot = self.own_binding_slot(name)?;
-            self.emit(
-                "StoreToEnvironment",
-                vec![reg(environment), DecodedOperand::U8(slot), reg(value)],
-            );
+            self.emit_binding_initialization(name, value)?;
             self.release_register(value)?;
         }
         self.hoist_function_declarations(&body.stmts)?;
@@ -375,7 +433,7 @@ impl Compiler {
             debug_assert_eq!(self.next_register, self.base_registers);
         }
         self.emit_implicit_return()?;
-        self.finish_function(pending.name, param_count, binding_names.len() as u32, spec)
+        self.finish_function(pending.name, param_count, environment_size, spec)
     }
 
     fn emit_implicit_return(&mut self) -> Result<(), Error> {
@@ -483,10 +541,64 @@ impl Compiler {
     }
 
     fn compile_block(&mut self, block: &BlockStmt) -> Result<(), Error> {
+        let bindings = direct_lexical_bindings(&block.stmts)?;
+        if bindings.is_empty() {
+            for statement in &block.stmts {
+                self.compile_statement(statement)?;
+            }
+            return Ok(());
+        }
+
+        let (previous_scope, previous_environment, environment) =
+            self.enter_lexical_scope(bindings)?;
         for statement in &block.stmts {
             self.compile_statement(statement)?;
         }
-        Ok(())
+        self.leave_lexical_scope(previous_scope, previous_environment, environment)
+    }
+
+    fn enter_lexical_scope(
+        &mut self,
+        bindings: Vec<(String, BindingKind)>,
+    ) -> Result<(Option<Rc<FunctionScope>>, u8, u8), Error> {
+        let previous_scope = self.scope.clone();
+        let previous_environment = self.environment_register()?;
+        let slot_count = u32::try_from(bindings.len())
+            .map_err(|_| Error::Unsupported("too many lexical bindings".into()))?;
+        if slot_count >= 256 {
+            return Err(Error::Unsupported(
+                "lexical scopes with more than 255 bindings are not supported".into(),
+            ));
+        }
+        let environment = self.alloc_register()?;
+        self.emit(
+            "CreateInnerEnvironment",
+            vec![
+                reg(environment),
+                reg(previous_environment),
+                DecodedOperand::U32(slot_count),
+            ],
+        );
+        self.scope = Some(Rc::new(FunctionScope {
+            bindings: build_binding_map(bindings)?,
+            parent: previous_scope.clone(),
+            function_id: self.current_function_id,
+            environment_register: environment,
+        }));
+        self.environment_register = Some(environment);
+        self.initialize_scope_bindings()?;
+        Ok((previous_scope, previous_environment, environment))
+    }
+
+    fn leave_lexical_scope(
+        &mut self,
+        previous_scope: Option<Rc<FunctionScope>>,
+        previous_environment: u8,
+        environment: u8,
+    ) -> Result<(), Error> {
+        self.scope = previous_scope;
+        self.environment_register = Some(previous_environment);
+        self.release_register(environment)
     }
 
     fn compile_if(&mut self, statement: &swc_core::ecma::ast::IfStmt) -> Result<(), Error> {
@@ -546,6 +658,29 @@ impl Compiler {
     }
 
     fn compile_for(&mut self, statement: &swc_core::ecma::ast::ForStmt) -> Result<(), Error> {
+        if let Some(VarDeclOrExpr::VarDecl(declaration)) = &statement.init
+            && declaration.kind != VarDeclKind::Var
+        {
+            let bindings = declaration_bindings(declaration)?;
+            let (previous_scope, parent_environment, iteration_environment) =
+                self.enter_lexical_scope(bindings)?;
+            self.compile_var_declaration(declaration)?;
+            let iteration_bindings = self.sorted_current_bindings()?;
+            self.compile_for_loop(
+                statement,
+                Some((
+                    parent_environment,
+                    iteration_environment,
+                    &iteration_bindings,
+                )),
+            )?;
+            return self.leave_lexical_scope(
+                previous_scope,
+                parent_environment,
+                iteration_environment,
+            );
+        }
+
         if let Some(initializer) = &statement.init {
             match initializer {
                 VarDeclOrExpr::VarDecl(declaration) => {
@@ -557,7 +692,14 @@ impl Compiler {
                 }
             }
         }
+        self.compile_for_loop(statement, None)
+    }
 
+    fn compile_for_loop(
+        &mut self,
+        statement: &swc_core::ecma::ast::ForStmt,
+        iteration_scope: Option<(u8, u8, &[Binding])>,
+    ) -> Result<(), Error> {
         let condition = self.new_label();
         let update = self.new_label();
         let end = self.new_label();
@@ -574,6 +716,9 @@ impl Compiler {
         self.compile_statement(&statement.body)?;
         self.loops.pop();
         self.mark_label(update)?;
+        if let Some((parent_environment, iteration_environment, bindings)) = iteration_scope {
+            self.clone_iteration_environment(parent_environment, iteration_environment, bindings)?;
+        }
         if let Some(update) = &statement.update {
             let value = self.compile_expression(update)?;
             self.release_register(value)?;
@@ -582,12 +727,59 @@ impl Compiler {
         self.mark_label(end)
     }
 
-    fn compile_var_declaration(&mut self, declaration: &VarDecl) -> Result<(), Error> {
-        if declaration.kind != VarDeclKind::Var {
-            return Err(Error::Unsupported(
-                "native compilation currently supports `var` declarations only".into(),
-            ));
+    fn sorted_current_bindings(&self) -> Result<Vec<Binding>, Error> {
+        let mut bindings = self
+            .current_scope_bindings()?
+            .values()
+            .copied()
+            .collect::<Vec<_>>();
+        bindings.sort_by_key(|binding| binding.slot);
+        Ok(bindings)
+    }
+
+    fn clone_iteration_environment(
+        &mut self,
+        parent_environment: u8,
+        iteration_environment: u8,
+        bindings: &[Binding],
+    ) -> Result<(), Error> {
+        let next_environment = self.alloc_register()?;
+        self.emit(
+            "CreateInnerEnvironment",
+            vec![
+                reg(next_environment),
+                reg(parent_environment),
+                DecodedOperand::U32(bindings.len() as u32),
+            ],
+        );
+        for binding in bindings {
+            let value = self.alloc_register()?;
+            self.emit(
+                "LoadFromEnvironment",
+                vec![
+                    reg(value),
+                    reg(iteration_environment),
+                    DecodedOperand::U8(binding.slot),
+                ],
+            );
+            self.emit(
+                "StoreToEnvironment",
+                vec![
+                    reg(next_environment),
+                    DecodedOperand::U8(binding.slot),
+                    reg(value),
+                ],
+            );
+            self.release_register(value)?;
         }
+        self.emit(
+            "Mov",
+            vec![reg(iteration_environment), reg(next_environment)],
+        );
+        self.release_register(next_environment)
+    }
+
+    fn compile_var_declaration(&mut self, declaration: &VarDecl) -> Result<(), Error> {
         for declarator in &declaration.decls {
             let Pat::Ident(name) = &declarator.name else {
                 return Err(Error::Unsupported(
@@ -596,7 +788,12 @@ impl Compiler {
             };
             if let Some(initializer) = &declarator.init {
                 let value = self.compile_expression(initializer)?;
-                self.emit_identifier_store(name.id.sym.as_ref(), value)?;
+                self.emit_binding_initialization(name.id.sym.as_ref(), value)?;
+                self.release_register(value)?;
+            } else if declaration.kind == VarDeclKind::Let {
+                let value = self.alloc_register()?;
+                self.emit("LoadConstUndefined", vec![reg(value)]);
+                self.emit_binding_initialization(name.id.sym.as_ref(), value)?;
                 self.release_register(value)?;
             }
         }
@@ -897,16 +1094,23 @@ impl Compiler {
 
     fn compile_identifier(&mut self, name: &str) -> Result<u8, Error> {
         match self.resolve_binding(name)? {
-            BindingLocation::Own(slot) => {
+            BindingLocation::Local {
+                environment,
+                binding,
+            } => {
                 let output = self.alloc_register()?;
-                let environment = self.environment_register()?;
                 self.emit(
                     "LoadFromEnvironment",
-                    vec![reg(output), reg(environment), DecodedOperand::U8(slot)],
+                    vec![
+                        reg(output),
+                        reg(environment),
+                        DecodedOperand::U8(binding.slot),
+                    ],
                 );
+                self.emit_tdz_check(output, binding.kind);
                 Ok(output)
             }
-            BindingLocation::Parent { level, slot } => {
+            BindingLocation::Parent { level, binding } => {
                 let output = self.alloc_register()?;
                 self.emit(
                     "GetEnvironment",
@@ -914,8 +1118,9 @@ impl Compiler {
                 );
                 self.emit(
                     "LoadFromEnvironment",
-                    vec![reg(output), reg(output), DecodedOperand::U8(slot)],
+                    vec![reg(output), reg(output), DecodedOperand::U8(binding.slot)],
                 );
+                self.emit_tdz_check(output, binding.kind);
                 Ok(output)
             }
             BindingLocation::Global => {
@@ -928,15 +1133,112 @@ impl Compiler {
     }
 
     fn emit_identifier_store(&mut self, name: &str, value: u8) -> Result<(), Error> {
-        match self.resolve_binding(name)? {
-            BindingLocation::Own(slot) => {
-                let environment = self.environment_register()?;
+        let location = self.resolve_binding(name)?;
+        match location {
+            BindingLocation::Local {
+                environment,
+                binding,
+            } => self.emit_checked_environment_store(name, environment, binding, value)?,
+            BindingLocation::Parent { level, binding } => {
+                let environment = self.alloc_register()?;
                 self.emit(
-                    "StoreToEnvironment",
-                    vec![reg(environment), DecodedOperand::U8(slot), reg(value)],
+                    "GetEnvironment",
+                    vec![reg(environment), DecodedOperand::U8(level)],
                 );
+                self.emit_checked_environment_store(name, environment, binding, value)?;
+                self.release_register(environment)?;
             }
-            BindingLocation::Parent { level, slot } => {
+            BindingLocation::Global => {
+                let global = self.alloc_register()?;
+                self.emit("GetGlobalObject", vec![reg(global)]);
+                self.emit_put_by_id(global, value, name)?;
+                self.release_register(global)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_checked_environment_store(
+        &mut self,
+        name: &str,
+        environment: u8,
+        binding: Binding,
+        value: u8,
+    ) -> Result<(), Error> {
+        if binding.kind.has_tdz() {
+            let current = self.alloc_register()?;
+            self.emit(
+                "LoadFromEnvironment",
+                vec![
+                    reg(current),
+                    reg(environment),
+                    DecodedOperand::U8(binding.slot),
+                ],
+            );
+            self.emit_tdz_check(current, binding.kind);
+            self.release_register(current)?;
+        }
+        if binding.kind == BindingKind::Const {
+            return self.emit_const_assignment_error(name);
+        }
+        self.emit(
+            "StoreToEnvironment",
+            vec![
+                reg(environment),
+                DecodedOperand::U8(binding.slot),
+                reg(value),
+            ],
+        );
+        Ok(())
+    }
+
+    fn emit_const_assignment_error(&mut self, name: &str) -> Result<(), Error> {
+        self.max_call_arguments = self.max_call_arguments.max(2);
+        let constructor = self.alloc_register()?;
+        self.emit("GetGlobalObject", vec![reg(constructor)]);
+        self.emit_get_by_id(constructor, constructor, "TypeError", true)?;
+
+        let receiver = self.alloc_register()?;
+        self.emit_get_by_id(receiver, constructor, "prototype", false)?;
+        self.emit(
+            "CreateThis",
+            vec![reg(receiver), reg(receiver), reg(constructor)],
+        );
+        let message =
+            self.compile_string_value(&format!("Assignment to constant variable `{name}`"))?;
+        self.emit_frame_move(receiver, 0);
+        self.emit_frame_move(message, 1);
+
+        let raw_result = self.alloc_register()?;
+        self.emit(
+            "Construct",
+            vec![reg(raw_result), reg(constructor), DecodedOperand::U8(2)],
+        );
+        self.emit(
+            "SelectObject",
+            vec![reg(constructor), reg(receiver), reg(raw_result)],
+        );
+        self.release_register(raw_result)?;
+        self.release_register(message)?;
+        self.release_register(receiver)?;
+        self.emit("Throw", vec![reg(constructor)]);
+        self.release_register(constructor)
+    }
+
+    fn emit_binding_initialization(&mut self, name: &str, value: u8) -> Result<(), Error> {
+        match self.resolve_binding(name)? {
+            BindingLocation::Local {
+                environment,
+                binding,
+            } => self.emit(
+                "StoreToEnvironment",
+                vec![
+                    reg(environment),
+                    DecodedOperand::U8(binding.slot),
+                    reg(value),
+                ],
+            ),
+            BindingLocation::Parent { level, binding } => {
                 let environment = self.alloc_register()?;
                 self.emit(
                     "GetEnvironment",
@@ -944,7 +1246,11 @@ impl Compiler {
                 );
                 self.emit(
                     "StoreToEnvironment",
-                    vec![reg(environment), DecodedOperand::U8(slot), reg(value)],
+                    vec![
+                        reg(environment),
+                        DecodedOperand::U8(binding.slot),
+                        reg(value),
+                    ],
                 );
                 self.release_register(environment)?;
             }
@@ -958,28 +1264,36 @@ impl Compiler {
         Ok(())
     }
 
-    fn resolve_binding(&self, name: &str) -> Result<BindingLocation, Error> {
-        let Some(scope) = &self.scope else {
-            return Ok(BindingLocation::Global);
-        };
-        if let Some(slot) = scope.bindings.get(name) {
-            return Ok(BindingLocation::Own(*slot));
+    fn emit_tdz_check(&mut self, value: u8, kind: BindingKind) {
+        if kind.has_tdz() {
+            self.emit("ThrowIfEmpty", vec![reg(value), reg(value)]);
         }
-        let mut parent = scope.parent.as_ref();
+    }
+
+    fn resolve_binding(&self, name: &str) -> Result<BindingLocation, Error> {
+        let mut current = self.scope.as_ref();
         let mut level = 0u16;
-        while let Some(scope) = parent {
-            if let Some(slot) = scope.bindings.get(name) {
+        while let Some(scope) = current {
+            if let Some(binding) = scope.bindings.get(name) {
+                if scope.function_id == self.current_function_id {
+                    return Ok(BindingLocation::Local {
+                        environment: scope.environment_register,
+                        binding: *binding,
+                    });
+                }
                 return Ok(BindingLocation::Parent {
                     level: u8::try_from(level).map_err(|_| {
                         Error::Unsupported(
                             "closures nested more than 256 lexical levels are not supported".into(),
                         )
                     })?,
-                    slot: *slot,
+                    binding: *binding,
                 });
             }
-            level += 1;
-            parent = scope.parent.as_ref();
+            if scope.function_id != self.current_function_id {
+                level += 1;
+            }
+            current = scope.parent.as_ref();
         }
         if !self.is_global && name == "arguments" {
             return Err(Error::Unsupported(
@@ -987,15 +1301,6 @@ impl Compiler {
             ));
         }
         Ok(BindingLocation::Global)
-    }
-
-    fn own_binding_slot(&self, name: &str) -> Result<u8, Error> {
-        match self.resolve_binding(name)? {
-            BindingLocation::Own(slot) => Ok(slot),
-            _ => Err(Error::Bytecode(format!(
-                "native compiler did not allocate local binding {name}"
-            ))),
-        }
     }
 
     fn environment_register(&self) -> Result<u8, Error> {
@@ -1785,6 +2090,82 @@ fn top_level_function_declarations(
         Stmt::Decl(Decl::Fn(declaration)) => Some(declaration),
         _ => None,
     })
+}
+
+fn direct_lexical_bindings(statements: &[Stmt]) -> Result<Vec<(String, BindingKind)>, Error> {
+    let mut bindings = Vec::new();
+    for statement in statements {
+        let Stmt::Decl(Decl::Var(declaration)) = statement else {
+            continue;
+        };
+        if declaration.kind == VarDeclKind::Var {
+            continue;
+        }
+        for (name, kind) in declaration_bindings(declaration)? {
+            add_binding(&mut bindings, name, kind)?;
+        }
+    }
+    Ok(bindings)
+}
+
+fn declaration_bindings(declaration: &VarDecl) -> Result<Vec<(String, BindingKind)>, Error> {
+    let kind = match declaration.kind {
+        VarDeclKind::Var => BindingKind::Var,
+        VarDeclKind::Let => BindingKind::Let,
+        VarDeclKind::Const => BindingKind::Const,
+    };
+    declaration
+        .decls
+        .iter()
+        .map(|declarator| {
+            let Pat::Ident(identifier) = &declarator.name else {
+                return Err(Error::Unsupported(
+                    "destructuring declarations are not supported by native compilation yet".into(),
+                ));
+            };
+            Ok((identifier.id.sym.to_string(), kind))
+        })
+        .collect()
+}
+
+fn add_binding(
+    bindings: &mut Vec<(String, BindingKind)>,
+    name: String,
+    kind: BindingKind,
+) -> Result<(), Error> {
+    if let Some((_, existing)) = bindings.iter().find(|(existing, _)| existing == &name) {
+        if *existing == BindingKind::Var && kind == BindingKind::Var {
+            return Ok(());
+        }
+        return Err(Error::Unsupported(format!(
+            "conflicting lexical declaration for `{name}`"
+        )));
+    }
+    bindings.push((name, kind));
+    Ok(())
+}
+
+fn build_binding_map(
+    bindings: Vec<(String, BindingKind)>,
+) -> Result<HashMap<String, Binding>, Error> {
+    if bindings.len() >= 256 {
+        return Err(Error::Unsupported(
+            "lexical scopes with more than 255 bindings are not supported".into(),
+        ));
+    }
+    Ok(bindings
+        .into_iter()
+        .enumerate()
+        .map(|(slot, (name, kind))| {
+            (
+                name,
+                Binding {
+                    slot: slot as u8,
+                    kind,
+                },
+            )
+        })
+        .collect())
 }
 
 fn collect_statement_var_declarations(
