@@ -96,16 +96,27 @@ from `var`, `let`, and `const` declarations, function declarations, blocks,
 expression statements, debugger statements, returns, `if`/`else`, `while`,
 `do…while`, and `for`.
 Function declarations are instantiated at function entry, including local
-recursion and calls before their textual declaration. Identifier parameters and
-local `var` bindings use parent-linked HBC environments. Nested and anonymous
+recursion and calls before their textual declaration. Parameters and local
+bindings use parent-linked HBC environments. Defaults are evaluated from left to
+right, rest parameters use Hermes' native argument-copy builtin, and nested
+array and object patterns work in parameters and `var`/`let`/`const`
+declarations. Nested and anonymous
 functions therefore retain captured mutation, sibling closures share one
 environment, and separate outer calls receive independent environments. Regular
 functions support `this` and can be invoked either as calls or constructors.
-Arrow functions support identifier parameters, expression bodies, and block
-bodies. They capture `this` through the same environment chain, including across
-nested arrows and intervening block scopes. Their HBC function headers prohibit
-construction, so `new` raises a `TypeError` and no `prototype` property is
-created. A nested regular function starts a new receiver boundary as usual.
+Arrow functions support the same parameter forms, expression bodies, and block
+bodies. They capture `this` and `arguments` through the same environment chain,
+including across nested arrows and intervening block scopes. Their HBC function
+headers prohibit construction, so `new` raises a `TypeError` and no `prototype`
+property is created. A nested regular function starts new receiver and arguments
+boundaries as usual. Ordinary functions expose an unmapped `arguments` object:
+writes to named parameters and indexed arguments remain independent.
+
+Array binding patterns materialize their input through `Array.from` before
+binding elements, then use `slice` for a rest element. This supports arrays and
+other finite iterables without exception-table metadata, but it assumes the
+global `Array.from` and array `slice` methods retain their standard behavior and
+consumes the iterable before any element default is evaluated.
 
 Lexical declarations use inner environments with distinct slots for shadowed
 names. Slots contain HBC's empty value until their declaration executes, and
@@ -134,8 +145,7 @@ Branches use compiler-owned symbolic labels that are resolved to HBC byte
 displacements after instruction selection. This keeps source lowering independent
 of encoded instruction sizes and supports forward and backward jumps.
 
-Named function expressions, default/rest/destructuring parameters and
-declarations, implicit or lexically captured `arguments`, block-level function
+Named function expressions, destructuring assignments, block-level function
 declarations, async and generator functions, classes, modules, directive
 prologues, exponentiation assignment, labeled control flow, `switch`, `try`,
 `throw`, `for…in`, `for…of`, call and literal spreads, object methods/accessors,

@@ -10,14 +10,20 @@ use mercury_binary::{
 use mercury_spec::BytecodeSpec;
 use swc_core::ecma::ast::{
     ArrowExpr, AssignOp, AssignTarget, BinaryOp, BlockStmt, BlockStmtOrExpr, Callee, Decl, Expr,
-    Function, Lit, MemberExpr, MemberProp, Pat, Program, Prop, PropName, PropOrSpread, Script,
-    SimpleAssignTarget, Stmt, UnaryOp, UpdateOp, VarDecl, VarDeclKind, VarDeclOrExpr,
+    Function, Lit, MemberExpr, MemberProp, ObjectPatProp, Pat, Program, Prop, PropName,
+    PropOrSpread, Script, SimpleAssignTarget, Stmt, UnaryOp, UpdateOp, VarDecl, VarDeclKind,
+    VarDeclOrExpr,
 };
 use swc_core::ecma::visit::{Visit, VisitWith};
 
 use crate::{Error, SwcModule};
 
 const LEXICAL_THIS_BINDING: &str = "\0mercury_lexical_this";
+const LEXICAL_ARGUMENTS_BINDING: &str = "\0mercury_lexical_arguments";
+// Hermes 0.12's HBC 96 runtime uses the legacy private-builtin layout.
+const THROW_TYPE_ERROR_BUILTIN: u8 = 42;
+const COPY_DATA_PROPERTIES_BUILTIN: u8 = 44;
+const COPY_REST_ARGS_BUILTIN: u8 = 45;
 
 /// Native SWC-AST to Hermes-bytecode compiler.
 ///
@@ -114,13 +120,14 @@ struct FunctionScope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BindingKind {
     Var,
+    Parameter,
     Let,
     Const,
 }
 
 impl BindingKind {
     fn has_tdz(self) -> bool {
-        matches!(self, Self::Let | Self::Const)
+        matches!(self, Self::Parameter | Self::Let | Self::Const)
     }
 }
 
@@ -455,17 +462,7 @@ impl Compiler {
         pending: PendingFunction,
         spec: &BytecodeSpec,
     ) -> Result<MinimalFunction, Error> {
-        let mut parameter_names = Vec::with_capacity(pending.params.len());
-        for parameter in &pending.params {
-            let Pat::Ident(identifier) = parameter else {
-                return Err(Error::Unsupported(
-                    "default, rest, and destructured parameters are not supported by native compilation yet"
-                        .into(),
-                ));
-            };
-            parameter_names.push(identifier.id.sym.to_string());
-        }
-        let param_count = u32::try_from(parameter_names.len() + 1)
+        let param_count = u32::try_from(pending.params.len() + 1)
             .map_err(|_| Error::Unsupported("too many function parameters".into()))?;
         if param_count >= 128 {
             return Err(Error::Unsupported(
@@ -474,8 +471,17 @@ impl Compiler {
         }
 
         let mut bindings = Vec::new();
-        for name in &parameter_names {
-            add_binding(&mut bindings, name.clone(), BindingKind::Var)?;
+        let simple_parameters = pending
+            .params
+            .iter()
+            .all(|parameter| matches!(parameter, Pat::Ident(_)));
+        let parameter_kind = if simple_parameters {
+            BindingKind::Var
+        } else {
+            BindingKind::Parameter
+        };
+        for parameter in &pending.params {
+            collect_pattern_bindings(parameter, parameter_kind, &mut bindings)?;
         }
         let block = match &pending.body {
             PendingFunctionBody::Block(block) => Some(block),
@@ -498,8 +504,26 @@ impl Compiler {
                 add_binding(&mut bindings, name, kind)?;
             }
         }
+        let arguments_is_shadowed = bindings
+            .iter()
+            .any(|(name, kind)| name == "arguments" && *kind != BindingKind::Var)
+            || pending
+                .params
+                .iter()
+                .any(|parameter| pattern_binds(parameter, "arguments"));
+        let has_implicit_arguments =
+            pending.kind == NativeFunctionKind::Regular && !arguments_is_shadowed;
+        if has_implicit_arguments {
+            bindings.retain(|(name, kind)| name != "arguments" || *kind != BindingKind::Var);
+            add_binding(
+                &mut bindings,
+                LEXICAL_ARGUMENTS_BINDING.into(),
+                BindingKind::Var,
+            )?;
+        }
         let captures_this = pending.kind == NativeFunctionKind::Regular
-            && pending_body_contains_arrow(&pending.body);
+            && (pending_body_contains_arrow(&pending.body)
+                || patterns_contain_arrow(&pending.params));
         if captures_this {
             add_binding(&mut bindings, LEXICAL_THIS_BINDING.into(), BindingKind::Var)?;
         }
@@ -512,17 +536,37 @@ impl Compiler {
             pending.kind,
         )?;
         self.initialize_scope_bindings()?;
+        if has_implicit_arguments {
+            self.initialize_implicit_arguments()?;
+        }
         if captures_this {
             self.initialize_lexical_this()?;
         }
-        for (index, name) in parameter_names.iter().enumerate() {
-            let value = self.alloc_register()?;
-            self.emit(
-                "LoadParam",
-                vec![reg(value), DecodedOperand::U8((index + 1) as u8)],
-            );
-            self.emit_binding_initialization(name, value)?;
-            self.release_register(value)?;
+        for (index, parameter) in pending.params.iter().enumerate() {
+            if let Pat::Rest(rest) = parameter {
+                if index + 1 != pending.params.len() {
+                    return Err(Error::Unsupported(
+                        "a rest parameter must be the final parameter".into(),
+                    ));
+                }
+                let start = self.alloc_register()?;
+                self.emit_number(start, index as f64);
+                let value = self.emit_builtin_call(COPY_REST_ARGS_BUILTIN, &[start])?;
+                self.compile_pattern_initialization(&rest.arg, value)?;
+                self.release_register(value)?;
+                self.release_register(start)?;
+            } else {
+                let value = self.alloc_register()?;
+                let parameter_index = u8::try_from(index + 1).map_err(|_| {
+                    Error::Unsupported("function parameter index exceeds HBC 96".into())
+                })?;
+                self.emit(
+                    "LoadParam",
+                    vec![reg(value), DecodedOperand::U8(parameter_index)],
+                );
+                self.compile_pattern_initialization(parameter, value)?;
+                self.release_register(value)?;
+            }
         }
         match &pending.body {
             PendingFunctionBody::Block(body) => {
@@ -542,6 +586,14 @@ impl Compiler {
         }
         self.emit_implicit_return()?;
         self.finish_function(pending.name, param_count, environment_size, spec)
+    }
+
+    fn initialize_implicit_arguments(&mut self) -> Result<(), Error> {
+        let value = self.alloc_register()?;
+        self.emit("LoadConstUndefined", vec![reg(value)]);
+        self.emit("ReifyArguments", vec![reg(value)]);
+        self.emit_binding_initialization(LEXICAL_ARGUMENTS_BINDING, value)?;
+        self.release_register(value)
     }
 
     fn emit_implicit_return(&mut self) -> Result<(), Error> {
@@ -890,23 +942,214 @@ impl Compiler {
 
     fn compile_var_declaration(&mut self, declaration: &VarDecl) -> Result<(), Error> {
         for declarator in &declaration.decls {
-            let Pat::Ident(name) = &declarator.name else {
-                return Err(Error::Unsupported(
-                    "destructuring declarations are not supported by native compilation yet".into(),
-                ));
-            };
             if let Some(initializer) = &declarator.init {
                 let value = self.compile_expression(initializer)?;
-                self.emit_binding_initialization(name.id.sym.as_ref(), value)?;
+                self.compile_pattern_initialization(&declarator.name, value)?;
                 self.release_register(value)?;
             } else if declaration.kind == VarDeclKind::Let {
                 let value = self.alloc_register()?;
                 self.emit("LoadConstUndefined", vec![reg(value)]);
-                self.emit_binding_initialization(name.id.sym.as_ref(), value)?;
+                self.compile_pattern_initialization(&declarator.name, value)?;
                 self.release_register(value)?;
             }
         }
         Ok(())
+    }
+
+    fn compile_pattern_initialization(&mut self, pattern: &Pat, value: u8) -> Result<(), Error> {
+        match pattern {
+            Pat::Ident(identifier) => {
+                self.emit_binding_initialization(identifier.id.sym.as_ref(), value)
+            }
+            Pat::Assign(assignment) => {
+                let use_default = self.new_label();
+                let initialize = self.new_label();
+                self.emit_branch("JmpUndefinedLong", use_default, Some(value));
+                self.emit_branch("JmpLong", initialize, None);
+                self.mark_label(use_default)?;
+                let default = self.compile_expression(&assignment.right)?;
+                self.emit("Mov", vec![reg(value), reg(default)]);
+                self.release_register(default)?;
+                self.mark_label(initialize)?;
+                self.compile_pattern_initialization(&assignment.left, value)
+            }
+            Pat::Array(array) => self.compile_array_pattern(array, value),
+            Pat::Object(object) => self.compile_object_pattern(object, value),
+            Pat::Rest(rest) => self.compile_pattern_initialization(&rest.arg, value),
+            Pat::Expr(_) | Pat::Invalid(_) => Err(Error::Unsupported(
+                "this binding pattern is not supported by native compilation".into(),
+            )),
+        }
+    }
+
+    fn compile_array_pattern(
+        &mut self,
+        pattern: &swc_core::ecma::ast::ArrayPat,
+        value: u8,
+    ) -> Result<(), Error> {
+        let array = self.emit_array_from(value)?;
+        for (index, element) in pattern.elems.iter().enumerate() {
+            let Some(element) = element else {
+                continue;
+            };
+            if let Pat::Rest(rest) = element {
+                let tail = self.emit_array_slice(array, index)?;
+                self.compile_pattern_initialization(&rest.arg, tail)?;
+                self.release_register(tail)?;
+                continue;
+            }
+            let item = self.alloc_register()?;
+            self.emit_number(item, index as f64);
+            self.emit("GetByVal", vec![reg(item), reg(array), reg(item)]);
+            self.compile_pattern_initialization(element, item)?;
+            self.release_register(item)?;
+        }
+        self.release_register(array)
+    }
+
+    fn emit_array_from(&mut self, value: u8) -> Result<u8, Error> {
+        self.max_call_arguments = self.max_call_arguments.max(2);
+        let constructor = self.alloc_register()?;
+        self.emit("GetGlobalObject", vec![reg(constructor)]);
+        self.emit_get_by_id(constructor, constructor, "Array", true)?;
+        let method = self.alloc_register()?;
+        self.emit_get_by_id(method, constructor, "from", false)?;
+        let output = self.alloc_register()?;
+        self.emit(
+            "Call2",
+            vec![reg(output), reg(method), reg(constructor), reg(value)],
+        );
+        self.emit("Mov", vec![reg(constructor), reg(output)]);
+        self.release_register(output)?;
+        self.release_register(method)?;
+        Ok(constructor)
+    }
+
+    fn emit_array_slice(&mut self, array: u8, start_index: usize) -> Result<u8, Error> {
+        self.max_call_arguments = self.max_call_arguments.max(2);
+        let method = self.alloc_register()?;
+        self.emit_get_by_id(method, array, "slice", false)?;
+        let start = self.alloc_register()?;
+        self.emit_number(start, start_index as f64);
+        let output = self.alloc_register()?;
+        self.emit(
+            "Call2",
+            vec![reg(output), reg(method), reg(array), reg(start)],
+        );
+        self.emit("Mov", vec![reg(method), reg(output)]);
+        self.release_register(output)?;
+        self.release_register(start)?;
+        Ok(method)
+    }
+
+    fn compile_object_pattern(
+        &mut self,
+        pattern: &swc_core::ecma::ast::ObjectPat,
+        value: u8,
+    ) -> Result<(), Error> {
+        self.emit_require_object_coercible(value)?;
+
+        let has_rest = pattern
+            .props
+            .iter()
+            .any(|property| matches!(property, ObjectPatProp::Rest(_)));
+        let excluded = if has_rest {
+            let object = self.alloc_register()?;
+            self.emit("NewObject", vec![reg(object)]);
+            Some(object)
+        } else {
+            None
+        };
+
+        for property in &pattern.props {
+            match property {
+                ObjectPatProp::KeyValue(property) => {
+                    let key = self.compile_property_name(&property.key)?;
+                    if let Some(excluded) = excluded {
+                        self.emit_excluded_property(excluded, key)?;
+                    }
+                    self.emit("GetByVal", vec![reg(key), reg(value), reg(key)]);
+                    self.compile_pattern_initialization(&property.value, key)?;
+                    self.release_register(key)?;
+                }
+                ObjectPatProp::Assign(property) => {
+                    let key = self.compile_string_value(property.key.sym.as_ref())?;
+                    if let Some(excluded) = excluded {
+                        self.emit_excluded_property(excluded, key)?;
+                    }
+                    self.emit("GetByVal", vec![reg(key), reg(value), reg(key)]);
+                    if let Some(default) = &property.value {
+                        let use_default = self.new_label();
+                        let initialize = self.new_label();
+                        self.emit_branch("JmpUndefinedLong", use_default, Some(key));
+                        self.emit_branch("JmpLong", initialize, None);
+                        self.mark_label(use_default)?;
+                        let default = self.compile_expression(default)?;
+                        self.emit("Mov", vec![reg(key), reg(default)]);
+                        self.release_register(default)?;
+                        self.mark_label(initialize)?;
+                    }
+                    self.emit_binding_initialization(property.key.sym.as_ref(), key)?;
+                    self.release_register(key)?;
+                }
+                ObjectPatProp::Rest(rest) => {
+                    let target = self.alloc_register()?;
+                    self.emit("NewObject", vec![reg(target)]);
+                    let excluded = excluded.expect("object rest allocated an exclusion object");
+                    let rest_value = self.emit_builtin_call(
+                        COPY_DATA_PROPERTIES_BUILTIN,
+                        &[target, value, excluded],
+                    )?;
+                    self.compile_pattern_initialization(&rest.arg, rest_value)?;
+                    self.release_register(rest_value)?;
+                    self.release_register(target)?;
+                }
+            }
+        }
+        if let Some(excluded) = excluded {
+            self.release_register(excluded)?;
+        }
+        Ok(())
+    }
+
+    fn emit_require_object_coercible(&mut self, value: u8) -> Result<(), Error> {
+        let nullish = self.alloc_register()?;
+        self.emit("LoadConstNull", vec![reg(nullish)]);
+        self.emit("Eq", vec![reg(nullish), reg(nullish), reg(value)]);
+        let valid = self.new_label();
+        self.emit_branch("JmpFalseLong", valid, Some(nullish));
+        let message = self.compile_string_value("Cannot destructure 'undefined' or 'null'.")?;
+        let thrown = self.emit_builtin_call(THROW_TYPE_ERROR_BUILTIN, &[message])?;
+        self.release_register(thrown)?;
+        self.release_register(message)?;
+        self.mark_label(valid)?;
+        self.release_register(nullish)
+    }
+
+    fn emit_excluded_property(&mut self, excluded: u8, key: u8) -> Result<(), Error> {
+        let zero = self.alloc_register()?;
+        self.emit("LoadConstZero", vec![reg(zero)]);
+        self.emit_define_own(excluded, zero, key);
+        self.release_register(zero)
+    }
+
+    fn emit_builtin_call(&mut self, builtin: u8, arguments: &[u8]) -> Result<u8, Error> {
+        let argument_count = u8::try_from(arguments.len() + 1)
+            .map_err(|_| Error::Unsupported("too many builtin arguments".into()))?;
+        self.max_call_arguments = self.max_call_arguments.max(u16::from(argument_count));
+        for (index, argument) in arguments.iter().enumerate() {
+            self.emit_frame_move(*argument, (index + 1) as u16);
+        }
+        let output = self.alloc_register()?;
+        self.emit(
+            "CallBuiltin",
+            vec![
+                reg(output),
+                DecodedOperand::U8(builtin),
+                DecodedOperand::U8(argument_count),
+            ],
+        );
+        Ok(output)
     }
 
     fn compile_expression(&mut self, expression: &Expr) -> Result<u8, Error> {
@@ -1387,36 +1630,43 @@ impl Compiler {
     }
 
     fn resolve_binding(&self, name: &str) -> Result<BindingLocation, Error> {
+        if let Some(location) = self.resolve_exact_binding(name)? {
+            return Ok(location);
+        }
+        if name == "arguments"
+            && let Some(location) = self.resolve_exact_binding(LEXICAL_ARGUMENTS_BINDING)?
+        {
+            return Ok(location);
+        }
+        Ok(BindingLocation::Global)
+    }
+
+    fn resolve_exact_binding(&self, name: &str) -> Result<Option<BindingLocation>, Error> {
         let mut current = self.scope.as_ref();
         let mut level = 0u16;
         while let Some(scope) = current {
             if let Some(binding) = scope.bindings.get(name) {
                 if scope.function_id == self.current_function_id {
-                    return Ok(BindingLocation::Local {
+                    return Ok(Some(BindingLocation::Local {
                         environment: scope.environment_register,
                         binding: *binding,
-                    });
+                    }));
                 }
-                return Ok(BindingLocation::Parent {
+                return Ok(Some(BindingLocation::Parent {
                     level: u8::try_from(level).map_err(|_| {
                         Error::Unsupported(
                             "closures nested more than 256 lexical levels are not supported".into(),
                         )
                     })?,
                     binding: *binding,
-                });
+                }));
             }
             if scope.function_id != self.current_function_id {
                 level += 1;
             }
             current = scope.parent.as_ref();
         }
-        if !self.is_global && name == "arguments" {
-            return Err(Error::Unsupported(
-                "the implicit `arguments` object is not supported by native compilation yet".into(),
-            ));
-        }
-        Ok(BindingLocation::Global)
+        Ok(None)
     }
 
     fn environment_register(&self) -> Result<u8, Error> {
@@ -2236,6 +2486,18 @@ fn pending_body_contains_arrow(body: &PendingFunctionBody) -> bool {
     finder.found
 }
 
+fn patterns_contain_arrow(patterns: &[Pat]) -> bool {
+    let mut finder = ArrowFinder::default();
+    patterns.visit_with(&mut finder);
+    finder.found
+}
+
+fn pattern_binds(pattern: &Pat, expected: &str) -> bool {
+    let mut bindings = Vec::new();
+    collect_pattern_bindings(pattern, BindingKind::Var, &mut bindings).is_ok()
+        && bindings.iter().any(|(name, _)| name == expected)
+}
+
 fn direct_lexical_bindings(statements: &[Stmt]) -> Result<Vec<(String, BindingKind)>, Error> {
     let mut bindings = Vec::new();
     for statement in statements {
@@ -2258,18 +2520,53 @@ fn declaration_bindings(declaration: &VarDecl) -> Result<Vec<(String, BindingKin
         VarDeclKind::Let => BindingKind::Let,
         VarDeclKind::Const => BindingKind::Const,
     };
-    declaration
-        .decls
-        .iter()
-        .map(|declarator| {
-            let Pat::Ident(identifier) = &declarator.name else {
-                return Err(Error::Unsupported(
-                    "destructuring declarations are not supported by native compilation yet".into(),
-                ));
-            };
-            Ok((identifier.id.sym.to_string(), kind))
-        })
-        .collect()
+    let mut bindings = Vec::new();
+    for declarator in &declaration.decls {
+        collect_pattern_bindings(&declarator.name, kind, &mut bindings)?;
+    }
+    Ok(bindings)
+}
+
+fn collect_pattern_bindings(
+    pattern: &Pat,
+    kind: BindingKind,
+    bindings: &mut Vec<(String, BindingKind)>,
+) -> Result<(), Error> {
+    match pattern {
+        Pat::Ident(identifier) => {
+            add_binding(bindings, identifier.id.sym.to_string(), kind)?;
+        }
+        Pat::Array(array) => {
+            for element in array.elems.iter().flatten() {
+                collect_pattern_bindings(element, kind, bindings)?;
+            }
+        }
+        Pat::Object(object) => {
+            for property in &object.props {
+                match property {
+                    ObjectPatProp::KeyValue(property) => {
+                        collect_pattern_bindings(&property.value, kind, bindings)?;
+                    }
+                    ObjectPatProp::Assign(property) => {
+                        add_binding(bindings, property.key.sym.to_string(), kind)?;
+                    }
+                    ObjectPatProp::Rest(property) => {
+                        collect_pattern_bindings(&property.arg, kind, bindings)?;
+                    }
+                }
+            }
+        }
+        Pat::Assign(assignment) => {
+            collect_pattern_bindings(&assignment.left, kind, bindings)?;
+        }
+        Pat::Rest(rest) => collect_pattern_bindings(&rest.arg, kind, bindings)?,
+        Pat::Expr(_) | Pat::Invalid(_) => {
+            return Err(Error::Unsupported(
+                "this binding pattern is not supported by native compilation".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn add_binding(
@@ -2277,8 +2574,16 @@ fn add_binding(
     name: String,
     kind: BindingKind,
 ) -> Result<(), Error> {
-    if let Some((_, existing)) = bindings.iter().find(|(existing, _)| existing == &name) {
-        if *existing == BindingKind::Var && kind == BindingKind::Var {
+    if let Some((_, existing)) = bindings.iter_mut().find(|(existing, _)| existing == &name) {
+        if matches!(
+            (*existing, kind),
+            (BindingKind::Var, BindingKind::Var)
+                | (BindingKind::Parameter, BindingKind::Var)
+                | (BindingKind::Var, BindingKind::Parameter)
+        ) {
+            if kind == BindingKind::Parameter {
+                *existing = BindingKind::Parameter;
+            }
             return Ok(());
         }
         return Err(Error::Unsupported(format!(
@@ -2344,12 +2649,9 @@ fn collect_statement_var_declarations(
 
 fn collect_declaration_names(declaration: &VarDecl, names: &mut Vec<String>) -> Result<(), Error> {
     for declarator in &declaration.decls {
-        let Pat::Ident(identifier) = &declarator.name else {
-            return Err(Error::Unsupported(
-                "destructuring declarations are not supported by native compilation yet".into(),
-            ));
-        };
-        names.push(identifier.id.sym.to_string());
+        let mut bindings = Vec::new();
+        collect_pattern_bindings(&declarator.name, BindingKind::Var, &mut bindings)?;
+        names.extend(bindings.into_iter().map(|(name, _)| name));
     }
     Ok(())
 }

@@ -49,16 +49,17 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         return Err(Error::Bytecode("invalid entry function".into()));
     }
     // Some HBC-96 producers inserted five builtins before the private range
-    // without changing the bytecode version. A delegated generator provides
-    // an unambiguous sentinel: generatorSetDelegated moved from 43 to 48.
+    // without changing the bytecode version. Delegated generators provide a
+    // direct sentinel; ensureObject and copyRestArgs are also distinguishable
+    // from their legacy index occupants by argument count.
     let modern_private_builtins = raw.functions.iter().any(|function| {
-        has_function_opcode(function, "StartGenerator")
-            && function.instructions.iter().any(|op| {
-                matches!(op.name.as_str(), "CallBuiltin" | "CallBuiltinLong")
-                    && matches!(
-                        op.operands.get(1),
-                        Some(RawOperand::U8(48) | RawOperand::U32(48))
-                    )
+        (has_function_opcode(function, "StartGenerator")
+            && function
+                .instructions
+                .iter()
+                .any(|op| call_builtin_signature(op, 48, None)))
+            || function.instructions.iter().any(|op| {
+                call_builtin_signature(op, 45, Some(3)) || call_builtin_signature(op, 50, Some(2))
             })
     });
     let lower = Lower {
@@ -103,7 +104,8 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 matches!(
                     op.name.as_str(),
                     "ReifyArguments" | "GetArgumentsPropByVal" | "GetArgumentsLength"
-                )
+                ) || (modern_private_builtins && call_builtin_signature(op, 50, Some(2)))
+                    || (!modern_private_builtins && call_builtin_signature(op, 45, Some(2)))
             })
         })
         .collect::<Vec<_>>();
@@ -124,6 +126,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let needs_iterator_runtime = ["IteratorBegin", "IteratorNext", "IteratorClose"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
+    let ensure_object_builtin = if modern_private_builtins { 45 } else { 40 };
+    let needs_private_builtin_runtime =
+        (0..=2).any(|offset| has_builtin(&raw, ensure_object_builtin + offset));
     let needs_construction = raw.functions.iter().any(|function| {
         function.flags.prohibit_invoke != 2
             || function.instructions.iter().any(|op| {
@@ -186,6 +191,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     }
     if needs_iterator_runtime {
         factories.extend(iterator_runtime());
+    }
+    if needs_private_builtin_runtime && !needs_suspension {
+        factories.extend(private_builtin_runtime());
     }
     if needs_copy_data_runtime {
         factories.extend(copy_data_properties_runtime());
@@ -414,7 +422,12 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             wrapper_args.push(value);
         }
     }
-    if needs_suspension || needs_construction || needs_iterator_runtime || needs_copy_data_runtime {
+    if needs_suspension
+        || needs_construction
+        || needs_iterator_runtime
+        || needs_copy_data_runtime
+        || needs_private_builtin_runtime
+    {
         wrapper_params.push("_type_error".into());
         wrapper_args.push(b::member(b::this(), b::string("TypeError")));
     }
@@ -703,11 +716,7 @@ impl Lower<'_> {
             if fatal_unreachable {
                 catch_body.push(Stmt::If(IfStmt {
                     span: DUMMY_SP,
-                    test: b::binary(
-                        BinaryOp::EqEqEq,
-                        b::id("_caught"),
-                        b::id("_unreachable"),
-                    ),
+                    test: b::binary(BinaryOp::EqEqEq, b::id("_caught"), b::id("_unreachable")),
                     cons: Box::new(Stmt::Throw(ThrowStmt {
                         span: DUMMY_SP,
                         arg: b::id("_caught"),
@@ -1205,15 +1214,12 @@ impl Lower<'_> {
                     .collect::<Result<Vec<_>, _>>()?;
                 let ensure_object = if self.modern_private_builtins { 45 } else { 40 };
                 let copy_data_properties = ensure_object + 4;
+                let copy_rest_args = ensure_object + 5;
                 let exponentiation = if self.modern_private_builtins { 54 } else { 49 };
                 match builtin {
-                    value if resumable && value == ensure_object => {
-                        b::call(b::id("_ensure_object"), args)
-                    }
-                    value if resumable && value == ensure_object + 1 => {
-                        b::call(b::id("_get_method"), args)
-                    }
-                    value if resumable && value == ensure_object + 2 => {
+                    value if value == ensure_object => b::call(b::id("_ensure_object"), args),
+                    value if value == ensure_object + 1 => b::call(b::id("_get_method"), args),
+                    value if value == ensure_object + 2 => {
                         b::call(b::id("_throw_type_error"), args)
                     }
                     value if resumable && value == ensure_object + 3 => {
@@ -1224,6 +1230,17 @@ impl Lower<'_> {
                     }
                     value if value == copy_data_properties => {
                         b::call(b::id("_copy_data_properties"), args)
+                    }
+                    value if value == copy_rest_args && args.len() == 1 => b::call(
+                        b::id("_apply"),
+                        vec![
+                            b::id("_slice"),
+                            b::id("arguments"),
+                            b::array(vec![args[0].clone()]),
+                        ],
+                    ),
+                    value if value == copy_rest_args => {
+                        return Err(unsupported(f, op, "invalid rest-argument copy"));
                     }
                     value if value == exponentiation && args.len() == 2 => {
                         b::binary(BinaryOp::Exp, args[0].clone(), args[1].clone())
@@ -1651,6 +1668,18 @@ fn has_builtin(raw: &RawModule, builtin: u32) -> bool {
             _ => false,
         })
 }
+fn call_builtin_signature(op: &RawInstruction, builtin: u32, argument_count: Option<u32>) -> bool {
+    if !matches!(op.name.as_str(), "CallBuiltin" | "CallBuiltinLong") {
+        return false;
+    }
+    let operand_value = |operand: Option<&RawOperand>| match operand {
+        Some(RawOperand::U8(value)) => Some(u32::from(*value)),
+        Some(RawOperand::U32(value)) => Some(*value),
+        _ => None,
+    };
+    operand_value(op.operands.get(1)) == Some(builtin)
+        && argument_count.is_none_or(|count| operand_value(op.operands.get(2)) == Some(count))
+}
 fn has_function_opcode(function: &RawFunction, name: &str) -> bool {
     function.instructions.iter().any(|op| op.name == name)
 }
@@ -1850,6 +1879,26 @@ function _copy_data_properties(_target, _source, _excluded) {
 }
 "#;
     embedded_runtime("mercury-copy-data-properties-runtime.js", SOURCE)
+}
+fn private_builtin_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _ensure_object(_value, _message) {
+    if (_value === null || (typeof _value !== "object" && typeof _value !== "function")) {
+        throw new _type_error(_message);
+    }
+    return _value;
+}
+function _get_method(_value, _key) {
+    var _method = _value[_key];
+    if (_method === null || _method === void 0) return void 0;
+    if (typeof _method !== "function") throw new _type_error(_key + " is not callable");
+    return _method;
+}
+function _throw_type_error(_message) {
+    throw new _type_error(_message);
+}
+"#;
+    embedded_runtime("mercury-private-builtin-runtime.js", SOURCE)
 }
 fn function_name_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
