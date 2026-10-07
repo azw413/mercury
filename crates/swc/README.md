@@ -92,20 +92,26 @@ not enabled.
 ## Current native compilation contract
 
 The native compiler currently handles global scripts made from `var`
-declarations, blocks, expression statements, and debugger statements. Supported
-expressions include primitive literals, global identifiers, arithmetic, bitwise
-and comparison operators, unary coercions, property reads and writes, simple
-assignment, sequence expressions, and calls with up to three arguments. Method
-calls preserve their receiver. TypeScript annotations are stripped directly on
-a copy of the SWC tree before lowering.
+declarations, blocks, expression statements, debugger statements, `if`/`else`,
+`while`, `do…while`, and `for`. Unlabeled `break` and `continue` work across
+nested conditionals and loops. Supported expressions include primitive literals,
+global identifiers, arithmetic, bitwise and comparison operators, unary
+coercions, property reads and writes, simple assignment, sequence and conditional
+expressions, short-circuit `&&`, `||`, and `??`, and calls with up to three
+arguments. Method calls preserve their receiver. TypeScript annotations are
+stripped directly on a copy of the SWC tree before lowering.
 
-Control flow, lexical declarations, functions, classes, object and array
-literals, constructors, modules, directive prologues, compound assignment,
-short-circuit operators, and calls with more arguments return `Unsupported`.
-The compiler emits one global function through Mercury's native HBC container
-builder. Expanding these source constructs is the remaining forward-compiler
-work; decompiler opcode coverage does not imply matching source-language
-coverage in this direction.
+Branches use compiler-owned symbolic labels that are resolved to HBC byte
+displacements after instruction selection. This keeps source lowering independent
+of encoded instruction sizes and supports forward and backward jumps.
+
+Lexical declarations, functions, classes, object and array literals,
+constructors, modules, directive prologues, compound assignment, labeled control
+flow, `switch`, `try`, `throw`, `for…in`, `for…of`, and calls with more arguments
+return `Unsupported`. The compiler emits one global function through Mercury's
+native HBC container builder. Expanding these source constructs is the remaining
+forward-compiler work; decompiler opcode coverage does not imply matching
+source-language coverage in this direction.
 
 ## Current decompilation contract
 

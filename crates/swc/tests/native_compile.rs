@@ -80,7 +80,7 @@ fn compiles_property_reads_writes_and_receiver_calls() {
 fn rejects_unsupported_syntax_at_the_native_boundary() {
     let module = SwcModule::parse(
         "input.js",
-        "if (true) print(1);",
+        "switch (value) { case 1: print(1); }",
         SourceLanguage::JavaScript,
         SourceKind::Script,
     )
@@ -88,8 +88,29 @@ fn rejects_unsupported_syntax_at_the_native_boundary() {
     let error = HbcCompiler::new(96).compile(&module).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "unsupported: if statements are not supported by native compilation yet"
+        "unsupported: switch statements are not supported by native compilation yet"
     );
+}
+
+#[test]
+fn resolves_symbolic_control_flow_into_hbc_branches() {
+    let bytes = compile(
+        "var total = 0; for (var i = 0; i < 4; i = i + 1) { if (i === 2) continue; total = total + i; } print(total === 4 ? 'yes' : 'no');",
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let names = raw.functions[0]
+        .instructions
+        .iter()
+        .map(|instruction| instruction.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&"JmpFalseLong"));
+    assert!(names.contains(&"JmpLong"));
+    assert!(names.contains(&"StrictEq"));
+    assert!(decompile(&bytes).is_ok());
 }
 
 #[test]
@@ -114,6 +135,42 @@ fn native_hbc_executes_without_hermes_compiler() {
         "var answer = 40 + 2; print(answer); var object = Math; object.value = answer; print(object.value); print(Math.max(7, 3)); print(typeof missing);",
         SourceLanguage::JavaScript,
     );
+    assert_eq!(execute(bytes), "42\n42\n7\nundefined\n");
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_control_flow_and_short_circuiting_execute() {
+    let bytes = compile(
+        r#"
+        var total = 0;
+        var i = 0;
+        while (i < 6) {
+            i = i + 1;
+            if (i === 2) continue;
+            if (i === 5) break;
+            total = total + i;
+        }
+        if (total === 8) print("while", total); else print("bad", total);
+        var j = 0;
+        do { total = total + 1; j = j + 1; } while (j < 2);
+        for (var k = 0; k < 3; k = k + 1) total = total + k;
+        print("total", total);
+        print(false && missing);
+        print(true || missing);
+        print(null ?? 9);
+        print(0 ?? 9);
+        print(total === 13 ? "yes" : "no");
+        "#,
+        SourceLanguage::JavaScript,
+    );
+    assert_eq!(
+        execute(bytes),
+        "while 8\ntotal 13\nfalse\ntrue\n9\n0\nyes\n"
+    );
+}
+
+fn execute(bytes: Vec<u8>) -> String {
     let path = std::env::temp_dir().join(format!(
         "mercury-native-compile-{}-{}.hbc",
         std::process::id(),
@@ -128,8 +185,5 @@ fn native_hbc_executes_without_hermes_compiler() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "42\n42\n7\nundefined\n"
-    );
+    String::from_utf8(output.stdout).unwrap()
 }

@@ -140,6 +140,11 @@ WTF-8 representation and JavaScript escape emission.
 Direct eval preserves HBC 96's global-only scope, strict-caller behavior,
 non-string passthrough, and completion values.
 
+Native source compilation now includes arithmetic, global and property access,
+fixed-arity calls, short-circuit expressions, conditionals, and structured
+`if`/loop control flow. Compiler-owned labels are resolved to bytecode
+displacements after instruction selection.
+
 ```sh
 cargo run -p mercury-swc --example compile -- input.js /tmp/example.hbc
 cargo run -p mercury-cli -- decompile /tmp/example.hbc -o /tmp/example.js

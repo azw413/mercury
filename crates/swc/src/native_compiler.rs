@@ -1,12 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mercury_binary::{
     DecodedInstruction, DecodedOperand, MinimalFunction, MinimalModule, StringKind,
-    build_minimal_module,
+    build_minimal_module, encode_instruction,
 };
+use mercury_spec::BytecodeSpec;
 use swc_core::ecma::ast::{
     AssignOp, AssignTarget, BinaryOp, BlockStmt, Callee, Decl, Expr, Lit, MemberExpr, MemberProp,
-    Pat, Program, Script, SimpleAssignTarget, Stmt, UnaryOp, VarDecl, VarDeclKind,
+    Pat, Program, Script, SimpleAssignTarget, Stmt, UnaryOp, VarDecl, VarDeclKind, VarDeclOrExpr,
 };
 
 use crate::{Error, SwcModule};
@@ -50,6 +51,21 @@ struct Compiler {
     frame_size: u16,
     max_call_arguments: u16,
     next_cache: u16,
+    labels: Vec<Option<usize>>,
+    branches: Vec<PendingBranch>,
+    loops: Vec<LoopContext>,
+}
+
+#[derive(Clone, Copy)]
+struct PendingBranch {
+    instruction: usize,
+    target: usize,
+}
+
+#[derive(Clone, Copy)]
+struct LoopContext {
+    break_target: usize,
+    continue_target: usize,
 }
 
 impl Compiler {
@@ -64,14 +80,17 @@ impl Compiler {
             frame_size: 0,
             max_call_arguments: 0,
             next_cache: 0,
+            labels: Vec::new(),
+            branches: Vec::new(),
+            loops: Vec::new(),
         }
     }
 
     fn compile_script(mut self, script: &Script) -> Result<Vec<u8>, Error> {
         let mut declarations = Vec::new();
         collect_var_declarations(&script.body, &mut declarations)?;
-        declarations.sort();
-        declarations.dedup();
+        let mut declared = HashSet::new();
+        declarations.retain(|name| declared.insert(name.clone()));
         for name in declarations {
             let id = self.intern_identifier(&name)?;
             self.emit("DeclareGlobalVar", vec![DecodedOperand::U32(id)]);
@@ -96,6 +115,7 @@ impl Compiler {
 
         let spec = mercury_spec_builtin::load_spec(self.version)
             .ok_or_else(|| Error::Bytecode("missing embedded HBC 96 spec".into()))?;
+        self.resolve_branches(&spec.bytecode)?;
         // Hermes reserves six caller registers plus the largest outgoing
         // argument area (including `this`) at the end of a function frame.
         let frame_size = if self.max_call_arguments == 0 {
@@ -141,6 +161,38 @@ impl Compiler {
             }
             Stmt::Block(block) => self.compile_block(block),
             Stmt::Decl(Decl::Var(declaration)) => self.compile_var_declaration(declaration),
+            Stmt::If(statement) => self.compile_if(statement),
+            Stmt::While(statement) => self.compile_while(statement),
+            Stmt::DoWhile(statement) => self.compile_do_while(statement),
+            Stmt::For(statement) => self.compile_for(statement),
+            Stmt::Break(statement) => {
+                if statement.label.is_some() {
+                    return Err(Error::Unsupported(
+                        "labeled break is not supported by native compilation yet".into(),
+                    ));
+                }
+                let target = self
+                    .loops
+                    .last()
+                    .ok_or_else(|| Error::Unsupported("break outside a loop".into()))?
+                    .break_target;
+                self.emit_branch("JmpLong", target, None);
+                Ok(())
+            }
+            Stmt::Continue(statement) => {
+                if statement.label.is_some() {
+                    return Err(Error::Unsupported(
+                        "labeled continue is not supported by native compilation yet".into(),
+                    ));
+                }
+                let target = self
+                    .loops
+                    .last()
+                    .ok_or_else(|| Error::Unsupported("continue outside a loop".into()))?
+                    .continue_target;
+                self.emit_branch("JmpLong", target, None);
+                Ok(())
+            }
             other => Err(unsupported_statement(other)),
         }
     }
@@ -150,6 +202,99 @@ impl Compiler {
             self.compile_statement(statement)?;
         }
         Ok(())
+    }
+
+    fn compile_if(&mut self, statement: &swc_core::ecma::ast::IfStmt) -> Result<(), Error> {
+        let alternative = self.new_label();
+        let end = statement.alt.as_ref().map(|_| self.new_label());
+        let test = self.compile_expression(&statement.test)?;
+        self.emit_branch("JmpFalseLong", alternative, Some(test));
+        self.release_register(test)?;
+        self.compile_statement(&statement.cons)?;
+        if let Some(end) = end {
+            self.emit_branch("JmpLong", end, None);
+        }
+        self.mark_label(alternative)?;
+        if let Some(alternative) = &statement.alt {
+            self.compile_statement(alternative)?;
+            self.mark_label(end.expect("alternative has an end label"))?;
+        }
+        Ok(())
+    }
+
+    fn compile_while(&mut self, statement: &swc_core::ecma::ast::WhileStmt) -> Result<(), Error> {
+        let condition = self.new_label();
+        let end = self.new_label();
+        self.mark_label(condition)?;
+        let test = self.compile_expression(&statement.test)?;
+        self.emit_branch("JmpFalseLong", end, Some(test));
+        self.release_register(test)?;
+        self.loops.push(LoopContext {
+            break_target: end,
+            continue_target: condition,
+        });
+        self.compile_statement(&statement.body)?;
+        self.loops.pop();
+        self.emit_branch("JmpLong", condition, None);
+        self.mark_label(end)
+    }
+
+    fn compile_do_while(
+        &mut self,
+        statement: &swc_core::ecma::ast::DoWhileStmt,
+    ) -> Result<(), Error> {
+        let body = self.new_label();
+        let condition = self.new_label();
+        let end = self.new_label();
+        self.mark_label(body)?;
+        self.loops.push(LoopContext {
+            break_target: end,
+            continue_target: condition,
+        });
+        self.compile_statement(&statement.body)?;
+        self.loops.pop();
+        self.mark_label(condition)?;
+        let test = self.compile_expression(&statement.test)?;
+        self.emit_branch("JmpTrueLong", body, Some(test));
+        self.release_register(test)?;
+        self.mark_label(end)
+    }
+
+    fn compile_for(&mut self, statement: &swc_core::ecma::ast::ForStmt) -> Result<(), Error> {
+        if let Some(initializer) = &statement.init {
+            match initializer {
+                VarDeclOrExpr::VarDecl(declaration) => {
+                    self.compile_var_declaration(declaration)?;
+                }
+                VarDeclOrExpr::Expr(expression) => {
+                    let value = self.compile_expression(expression)?;
+                    self.release_register(value)?;
+                }
+            }
+        }
+
+        let condition = self.new_label();
+        let update = self.new_label();
+        let end = self.new_label();
+        self.mark_label(condition)?;
+        if let Some(test) = &statement.test {
+            let value = self.compile_expression(test)?;
+            self.emit_branch("JmpFalseLong", end, Some(value));
+            self.release_register(value)?;
+        }
+        self.loops.push(LoopContext {
+            break_target: end,
+            continue_target: update,
+        });
+        self.compile_statement(&statement.body)?;
+        self.loops.pop();
+        self.mark_label(update)?;
+        if let Some(update) = &statement.update {
+            let value = self.compile_expression(update)?;
+            self.release_register(value)?;
+        }
+        self.emit_branch("JmpLong", condition, None);
+        self.mark_label(end)
     }
 
     fn compile_var_declaration(&mut self, declaration: &VarDecl) -> Result<(), Error> {
@@ -192,6 +337,17 @@ impl Compiler {
                 self.compile_expression(last)
             }
             Expr::Unary(expression) => self.compile_unary(expression.op, &expression.arg),
+            Expr::Cond(expression) => {
+                self.compile_conditional(&expression.test, &expression.cons, &expression.alt)
+            }
+            Expr::Bin(expression)
+                if matches!(
+                    expression.op,
+                    BinaryOp::LogicalAnd | BinaryOp::LogicalOr | BinaryOp::NullishCoalescing
+                ) =>
+            {
+                self.compile_short_circuit(expression.op, &expression.left, &expression.right)
+            }
             Expr::Bin(expression) => {
                 let opcode = binary_opcode(expression.op).ok_or_else(|| {
                     Error::Unsupported(format!(
@@ -216,6 +372,63 @@ impl Compiler {
             Expr::Call(call) => self.compile_call(call),
             other => Err(unsupported_expression(other)),
         }
+    }
+
+    fn compile_conditional(
+        &mut self,
+        test: &Expr,
+        consequent: &Expr,
+        alternative: &Expr,
+    ) -> Result<u8, Error> {
+        let output = self.alloc_register()?;
+        let alternative_label = self.new_label();
+        let end = self.new_label();
+        let test = self.compile_expression(test)?;
+        self.emit_branch("JmpFalseLong", alternative_label, Some(test));
+        self.release_register(test)?;
+
+        let consequent = self.compile_expression(consequent)?;
+        self.emit("Mov", vec![reg(output), reg(consequent)]);
+        self.release_register(consequent)?;
+        self.emit_branch("JmpLong", end, None);
+
+        self.mark_label(alternative_label)?;
+        let alternative = self.compile_expression(alternative)?;
+        self.emit("Mov", vec![reg(output), reg(alternative)]);
+        self.release_register(alternative)?;
+        self.mark_label(end)?;
+        Ok(output)
+    }
+
+    fn compile_short_circuit(
+        &mut self,
+        operator: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+    ) -> Result<u8, Error> {
+        let output = self.compile_expression(left)?;
+        let end = self.new_label();
+        match operator {
+            BinaryOp::LogicalAnd => self.emit_branch("JmpFalseLong", end, Some(output)),
+            BinaryOp::LogicalOr => self.emit_branch("JmpTrueLong", end, Some(output)),
+            BinaryOp::NullishCoalescing => {
+                let evaluate_right = self.new_label();
+                self.emit_branch("JmpUndefinedLong", evaluate_right, Some(output));
+                let is_null = self.alloc_register()?;
+                self.emit("LoadConstNull", vec![reg(is_null)]);
+                self.emit("StrictEq", vec![reg(is_null), reg(output), reg(is_null)]);
+                self.emit_branch("JmpFalseLong", end, Some(is_null));
+                self.release_register(is_null)?;
+                self.mark_label(evaluate_right)?;
+            }
+            _ => unreachable!(),
+        }
+
+        let right = self.compile_expression(right)?;
+        self.emit("Mov", vec![reg(output), reg(right)]);
+        self.release_register(right)?;
+        self.mark_label(end)?;
+        Ok(output)
     }
 
     fn compile_literal(&mut self, literal: &Lit) -> Result<u8, Error> {
@@ -608,25 +821,132 @@ impl Compiler {
             size: 0,
         });
     }
+
+    fn new_label(&mut self) -> usize {
+        let label = self.labels.len();
+        self.labels.push(None);
+        label
+    }
+
+    fn mark_label(&mut self, label: usize) -> Result<(), Error> {
+        let instruction = self.instructions.len();
+        let slot = self
+            .labels
+            .get_mut(label)
+            .ok_or_else(|| Error::Bytecode("native compiler referenced an invalid label".into()))?;
+        if slot.replace(instruction).is_some() {
+            return Err(Error::Bytecode(
+                "native compiler defined a label more than once".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn emit_branch(&mut self, name: &str, target: usize, condition: Option<u8>) {
+        let instruction = self.instructions.len();
+        let mut operands = vec![DecodedOperand::I32(0)];
+        if let Some(condition) = condition {
+            operands.push(reg(condition));
+        }
+        self.emit(name, operands);
+        self.branches.push(PendingBranch {
+            instruction,
+            target,
+        });
+    }
+
+    fn resolve_branches(&mut self, spec: &BytecodeSpec) -> Result<(), Error> {
+        let mut offsets = Vec::with_capacity(self.instructions.len() + 1);
+        let mut offset = 0u32;
+        for instruction in &self.instructions {
+            offsets.push(offset);
+            let size = encode_instruction(instruction, spec)
+                .map_err(|error| Error::Bytecode(error.to_string()))?
+                .len();
+            offset = offset
+                .checked_add(u32::try_from(size).expect("instruction size fits u32"))
+                .ok_or_else(|| Error::Unsupported("function bytecode is too large".into()))?;
+        }
+        offsets.push(offset);
+
+        for branch in &self.branches {
+            let target_instruction = self
+                .labels
+                .get(branch.target)
+                .and_then(|target| *target)
+                .ok_or_else(|| Error::Bytecode("native compiler left a label unresolved".into()))?;
+            let source = i64::from(offsets[branch.instruction]);
+            let target = i64::from(offsets[target_instruction]);
+            let displacement = i32::try_from(target - source)
+                .map_err(|_| Error::Unsupported("branch displacement exceeds HBC 96".into()))?;
+            self.instructions[branch.instruction].operands[0] = DecodedOperand::I32(displacement);
+        }
+
+        for (index, instruction) in self.instructions.iter_mut().enumerate() {
+            let definition = spec
+                .instructions
+                .iter()
+                .find(|definition| definition.name == instruction.name)
+                .ok_or_else(|| {
+                    Error::Bytecode(format!(
+                        "embedded HBC 96 spec has no {} instruction",
+                        instruction.name
+                    ))
+                })?;
+            instruction.offset = offsets[index];
+            instruction.opcode = definition.opcode;
+            instruction.size = usize::try_from(offsets[index + 1] - offsets[index])
+                .expect("instruction size fits usize");
+        }
+        Ok(())
+    }
 }
 
 fn collect_var_declarations(statements: &[Stmt], names: &mut Vec<String>) -> Result<(), Error> {
     for statement in statements {
-        match statement {
-            Stmt::Decl(Decl::Var(declaration)) if declaration.kind == VarDeclKind::Var => {
-                for declarator in &declaration.decls {
-                    let Pat::Ident(identifier) = &declarator.name else {
-                        return Err(Error::Unsupported(
-                            "destructuring declarations are not supported by native compilation yet"
-                                .into(),
-                        ));
-                    };
-                    names.push(identifier.id.sym.to_string());
-                }
-            }
-            Stmt::Block(block) => collect_var_declarations(&block.stmts, names)?,
-            _ => {}
+        collect_statement_var_declarations(statement, names)?;
+    }
+    Ok(())
+}
+
+fn collect_statement_var_declarations(
+    statement: &Stmt,
+    names: &mut Vec<String>,
+) -> Result<(), Error> {
+    match statement {
+        Stmt::Decl(Decl::Var(declaration)) if declaration.kind == VarDeclKind::Var => {
+            collect_declaration_names(declaration, names)?;
         }
+        Stmt::Block(block) => collect_var_declarations(&block.stmts, names)?,
+        Stmt::If(statement) => {
+            collect_statement_var_declarations(&statement.cons, names)?;
+            if let Some(alternative) = &statement.alt {
+                collect_statement_var_declarations(alternative, names)?;
+            }
+        }
+        Stmt::While(statement) => collect_statement_var_declarations(&statement.body, names)?,
+        Stmt::DoWhile(statement) => collect_statement_var_declarations(&statement.body, names)?,
+        Stmt::For(statement) => {
+            if let Some(VarDeclOrExpr::VarDecl(declaration)) = &statement.init
+                && declaration.kind == VarDeclKind::Var
+            {
+                collect_declaration_names(declaration, names)?;
+            }
+            collect_statement_var_declarations(&statement.body, names)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn collect_declaration_names(declaration: &VarDecl, names: &mut Vec<String>) -> Result<(), Error> {
+    for declarator in &declaration.decls {
+        let Pat::Ident(identifier) = &declarator.name else {
+            return Err(Error::Unsupported(
+                "destructuring declarations are not supported by native compilation yet".into(),
+            ));
+        };
+        names.push(identifier.id.sym.to_string());
     }
     Ok(())
 }
@@ -676,15 +996,15 @@ fn unsupported_statement(statement: &Stmt) -> Error {
             Stmt::With(_) => "with",
             Stmt::Return(_) => "return",
             Stmt::Labeled(_) => "labeled",
-            Stmt::Break(_) => "break",
-            Stmt::Continue(_) => "continue",
-            Stmt::If(_) => "if",
+            Stmt::Break(_) => "invalid break",
+            Stmt::Continue(_) => "invalid continue",
+            Stmt::If(_) => "invalid if",
             Stmt::Switch(_) => "switch",
             Stmt::Throw(_) => "throw",
             Stmt::Try(_) => "try",
-            Stmt::While(_) => "while",
-            Stmt::DoWhile(_) => "do-while",
-            Stmt::For(_) => "for",
+            Stmt::While(_) => "invalid while",
+            Stmt::DoWhile(_) => "invalid do-while",
+            Stmt::For(_) => "invalid for",
             Stmt::ForIn(_) => "for-in",
             Stmt::ForOf(_) => "for-of",
             Stmt::Decl(_) => "this declaration",
@@ -703,7 +1023,7 @@ fn unsupported_expression(expression: &Expr) -> Error {
             Expr::Fn(_) => "function",
             Expr::Arrow(_) => "arrow function",
             Expr::Class(_) => "class",
-            Expr::Cond(_) => "conditional",
+            Expr::Cond(_) => "invalid conditional",
             Expr::New(_) => "new",
             Expr::Update(_) => "update",
             Expr::Yield(_) => "yield",

@@ -643,6 +643,7 @@ version = "0.1.0"
 dependencies = [
  "mercury-binary",
  "mercury-ir",
+ "mercury-spec",
  "mercury-spec-builtin",
  "num-bigint",
  "swc_core",
