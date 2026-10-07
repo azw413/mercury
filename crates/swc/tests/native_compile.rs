@@ -30,6 +30,7 @@ fn compiles_swc_ast_directly_into_hbc96() {
     assert_eq!(
         names,
         [
+            "CreateEnvironment",
             "DeclareGlobalVar",
             "LoadConstUInt8",
             "LoadConstUInt8",
@@ -51,7 +52,7 @@ fn compiles_swc_ast_directly_into_hbc96() {
     let recovered = decompile(&bytes).unwrap().print();
     assert!(recovered.contains("var answer;"));
     assert!(recovered.contains(" = 40;"));
-    assert!(recovered.contains(" + _mercury_r1"));
+    assert!(recovered.contains(" + _mercury_r2"));
     assert!(recovered.contains("_mercury_apply"));
 }
 
@@ -141,6 +142,31 @@ fn compiles_updates_literals_and_construction_opcodes() {
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
+    assert!(decompile(&bytes).is_ok());
+}
+
+#[test]
+fn compiles_function_graphs_and_environment_access() {
+    let bytes = compile(
+        "function outer(seed) { var value = seed; function add(step) { value += step; return value; } return add; } var closure = outer(1); print(closure(2));",
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let names = raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .map(|instruction| instruction.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(raw.functions.len(), 3);
+    assert!(names.contains(&"CreateClosure"));
+    assert!(names.contains(&"LoadParam"));
+    assert!(names.contains(&"GetEnvironment"));
+    assert!(names.contains(&"LoadFromEnvironment"));
+    assert!(names.contains(&"StoreToEnvironment"));
     assert!(decompile(&bytes).is_ok());
 }
 
@@ -267,6 +293,73 @@ fn native_updates_literals_and_constructors_execute() {
             "5 7\n",
             "123\n",
             "2 2 3\n",
+        )
+    );
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_functions_locals_and_closures_execute() {
+    let bytes = compile(
+        r#"
+        function outer(seed) {
+            var value = seed;
+            function add(step) { value += step; return value; }
+            return add;
+        }
+        var a = outer(10);
+        var b = outer(100);
+        print(a(2), a(3), b(1));
+
+        function siblings(start) {
+            var value = start;
+            function up() { value++; return value; }
+            function down() { value--; return value; }
+            return [up, down];
+        }
+        var pair = siblings(5);
+        print(pair[0](), pair[1](), pair[0]());
+
+        function levels(a) {
+            return function(b) {
+                return function(c) { a += b + c; return a; };
+            };
+        }
+        var deepest = levels(1)(2);
+        print(deepest(3), deepest(4));
+
+        function hoisted() { return later(); function later() { return 17; } }
+        print(hoisted());
+
+        function localFactorial(input) {
+            function factorial(value) {
+                return value <= 1 ? 1 : value * factorial(value - 1);
+            }
+            return factorial(input);
+        }
+        print(localFactorial(5));
+
+        var twice = function(value) { var result = value * 2; return result; };
+        print(twice(6));
+
+        function Box(value) { this.value = value; return 1; }
+        function Factory() { return {value: 11}; }
+        var box = new Box(9);
+        var made = new Factory();
+        print(box.value, made.value);
+        "#,
+        SourceLanguage::JavaScript,
+    );
+    assert_eq!(
+        execute(bytes),
+        concat!(
+            "12 15 101\n",
+            "6 5 6\n",
+            "6 12\n",
+            "17\n",
+            "120\n",
+            "12\n",
+            "9 11\n",
         )
     );
 }

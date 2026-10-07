@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    rc::Rc,
+};
 
 use mercury_binary::{
     DecodedInstruction, DecodedOperand, MinimalFunction, MinimalModule, StringKind,
@@ -6,9 +9,9 @@ use mercury_binary::{
 };
 use mercury_spec::BytecodeSpec;
 use swc_core::ecma::ast::{
-    AssignOp, AssignTarget, BinaryOp, BlockStmt, Callee, Decl, Expr, Lit, MemberExpr, MemberProp,
-    Pat, Program, Prop, PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt, UnaryOp,
-    UpdateOp, VarDecl, VarDeclKind, VarDeclOrExpr,
+    AssignOp, AssignTarget, BinaryOp, BlockStmt, Callee, Decl, Expr, Function, Lit, MemberExpr,
+    MemberProp, Pat, Program, Prop, PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt,
+    UnaryOp, UpdateOp, VarDecl, VarDeclKind, VarDeclOrExpr,
 };
 
 use crate::{Error, SwcModule};
@@ -56,6 +59,33 @@ struct Compiler {
     branches: Vec<PendingBranch>,
     frame_moves: Vec<PendingFrameMove>,
     loops: Vec<LoopContext>,
+    pending_functions: VecDeque<PendingFunction>,
+    next_function_id: u32,
+    scope: Option<Rc<FunctionScope>>,
+    environment_register: Option<u8>,
+    base_registers: u16,
+    is_global: bool,
+}
+
+#[derive(Clone)]
+struct PendingFunction {
+    id: u32,
+    name: String,
+    function: Function,
+    parent_scope: Option<Rc<FunctionScope>>,
+}
+
+#[derive(Debug)]
+struct FunctionScope {
+    bindings: HashMap<String, u8>,
+    parent: Option<Rc<FunctionScope>>,
+}
+
+#[derive(Clone, Copy)]
+enum BindingLocation {
+    Own(u8),
+    Parent { level: u8, slot: u8 },
+    Global,
 }
 
 #[derive(Clone, Copy)]
@@ -92,18 +122,34 @@ impl Compiler {
             branches: Vec::new(),
             frame_moves: Vec::new(),
             loops: Vec::new(),
+            pending_functions: VecDeque::new(),
+            next_function_id: 1,
+            scope: None,
+            environment_register: None,
+            base_registers: 0,
+            is_global: true,
         }
     }
 
     fn compile_script(mut self, script: &Script) -> Result<Vec<u8>, Error> {
+        let spec = mercury_spec_builtin::load_spec(self.version)
+            .ok_or_else(|| Error::Bytecode("missing embedded HBC 96 spec".into()))?;
+        self.begin_function(None, true)?;
+
         let mut declarations = Vec::new();
         collect_var_declarations(&script.body, &mut declarations)?;
+        declarations.extend(
+            top_level_function_declarations(&script.body)
+                .map(|declaration| declaration.ident.sym.to_string()),
+        );
         let mut declared = HashSet::new();
         declarations.retain(|name| declared.insert(name.clone()));
         for name in declarations {
             let id = self.intern_identifier(&name)?;
             self.emit("DeclareGlobalVar", vec![DecodedOperand::U32(id)]);
         }
+
+        self.hoist_function_declarations(&script.body)?;
 
         let mut directive_prologue = true;
         for statement in &script.body {
@@ -113,15 +159,239 @@ impl Compiler {
                 ));
             }
             directive_prologue = false;
-            self.compile_statement(statement)?;
-            debug_assert_eq!(self.next_register, 0);
+            if !matches!(statement, Stmt::Decl(Decl::Fn(_))) {
+                self.compile_statement(statement)?;
+            }
+            debug_assert_eq!(self.next_register, self.base_registers);
         }
 
+        self.emit_implicit_return()?;
+        let global = self.finish_function("global".into(), 1, 0, &spec.bytecode)?;
+        let mut functions = vec![global];
+
+        while let Some(pending) = self.pending_functions.pop_front() {
+            if pending.id as usize != functions.len() {
+                return Err(Error::Bytecode(
+                    "native compiler assigned a non-contiguous function id".into(),
+                ));
+            }
+            functions.push(self.compile_pending_function(pending, &spec.bytecode)?);
+        }
+
+        let module = MinimalModule {
+            version: self.version,
+            global_code_index: 0,
+            strings: self.strings,
+            string_kinds: self.string_kinds,
+            literal_value_buffer: Vec::new(),
+            object_key_buffer: Vec::new(),
+            object_value_buffer: Vec::new(),
+            functions,
+        };
+        build_minimal_module(&module, &spec.bytecode)
+            .map_err(|error| Error::Bytecode(error.to_string()))
+    }
+
+    fn begin_function(
+        &mut self,
+        scope: Option<Rc<FunctionScope>>,
+        is_global: bool,
+    ) -> Result<(), Error> {
+        self.instructions.clear();
+        self.next_register = 0;
+        self.frame_size = 0;
+        self.max_call_arguments = 0;
+        self.next_cache = 0;
+        self.labels.clear();
+        self.branches.clear();
+        self.frame_moves.clear();
+        self.loops.clear();
+        self.scope = scope;
+        self.is_global = is_global;
+        self.base_registers = 0;
+        let environment = self.alloc_register()?;
+        self.environment_register = Some(environment);
+        self.base_registers = self.next_register;
+        self.emit("CreateEnvironment", vec![reg(environment)]);
+        Ok(())
+    }
+
+    fn hoist_function_declarations(&mut self, statements: &[Stmt]) -> Result<(), Error> {
+        for declaration in top_level_function_declarations(statements) {
+            let name = declaration.ident.sym.to_string();
+            let function_id = self.register_function(name.clone(), &declaration.function)?;
+            let closure = self.emit_create_closure(function_id)?;
+            self.emit_identifier_store(&name, closure)?;
+            self.release_register(closure)?;
+        }
+        Ok(())
+    }
+
+    fn register_function(&mut self, name: String, function: &Function) -> Result<u32, Error> {
+        if function.is_async || function.is_generator {
+            return Err(Error::Unsupported(
+                "async and generator source functions are not supported by native compilation yet"
+                    .into(),
+            ));
+        }
+        if function.body.is_none() {
+            return Err(Error::Unsupported(
+                "function declarations without bodies are not supported".into(),
+            ));
+        }
+        let id = self.next_function_id;
+        self.next_function_id = self
+            .next_function_id
+            .checked_add(1)
+            .ok_or_else(|| Error::Unsupported("too many functions for HBC 96".into()))?;
+        self.pending_functions.push_back(PendingFunction {
+            id,
+            name,
+            function: function.clone(),
+            parent_scope: if self.is_global {
+                None
+            } else {
+                self.scope.clone()
+            },
+        });
+        Ok(id)
+    }
+
+    fn emit_create_closure(&mut self, function_id: u32) -> Result<u8, Error> {
+        let output = self.alloc_register()?;
+        let environment = self.environment_register()?;
+        if let Ok(function_id) = u16::try_from(function_id) {
+            self.emit(
+                "CreateClosure",
+                vec![
+                    reg(output),
+                    reg(environment),
+                    DecodedOperand::U16(function_id),
+                ],
+            );
+        } else {
+            self.emit(
+                "CreateClosureLongIndex",
+                vec![
+                    reg(output),
+                    reg(environment),
+                    DecodedOperand::U32(function_id),
+                ],
+            );
+        }
+        Ok(output)
+    }
+
+    fn compile_pending_function(
+        &mut self,
+        pending: PendingFunction,
+        spec: &BytecodeSpec,
+    ) -> Result<MinimalFunction, Error> {
+        if pending.function.is_async || pending.function.is_generator {
+            return Err(Error::Unsupported(
+                "async and generator source functions are not supported by native compilation yet"
+                    .into(),
+            ));
+        }
+        let body = pending.function.body.as_ref().ok_or_else(|| {
+            Error::Unsupported("function declarations without bodies are not supported".into())
+        })?;
+        let mut parameter_names = Vec::with_capacity(pending.function.params.len());
+        for parameter in &pending.function.params {
+            let Pat::Ident(identifier) = &parameter.pat else {
+                return Err(Error::Unsupported(
+                    "default, rest, and destructured parameters are not supported by native compilation yet"
+                        .into(),
+                ));
+            };
+            parameter_names.push(identifier.id.sym.to_string());
+        }
+        let param_count = u32::try_from(parameter_names.len() + 1)
+            .map_err(|_| Error::Unsupported("too many function parameters".into()))?;
+        if param_count >= 128 {
+            return Err(Error::Unsupported(
+                "functions with more than 126 parameters do not fit an HBC 96 small header".into(),
+            ));
+        }
+
+        let mut binding_names = parameter_names.clone();
+        collect_var_declarations(&body.stmts, &mut binding_names)?;
+        binding_names.extend(
+            top_level_function_declarations(&body.stmts)
+                .map(|declaration| declaration.ident.sym.to_string()),
+        );
+        let mut seen = HashSet::new();
+        binding_names.retain(|name| seen.insert(name.clone()));
+        if binding_names.len() >= 256 {
+            return Err(Error::Unsupported(
+                "functions with more than 255 local bindings are not supported".into(),
+            ));
+        }
+        let bindings = binding_names
+            .iter()
+            .enumerate()
+            .map(|(slot, name)| (name.clone(), slot as u8))
+            .collect::<HashMap<_, _>>();
+        let scope = Rc::new(FunctionScope {
+            bindings,
+            parent: pending.parent_scope,
+        });
+        self.begin_function(Some(scope), false)?;
+        let environment = self.environment_register()?;
+
+        if !binding_names.is_empty() {
+            let undefined = self.alloc_register()?;
+            self.emit("LoadConstUndefined", vec![reg(undefined)]);
+            for slot in 0..binding_names.len() {
+                self.emit(
+                    "StoreToEnvironment",
+                    vec![
+                        reg(environment),
+                        DecodedOperand::U8(slot as u8),
+                        reg(undefined),
+                    ],
+                );
+            }
+            self.release_register(undefined)?;
+        }
+        for (index, name) in parameter_names.iter().enumerate() {
+            let value = self.alloc_register()?;
+            self.emit(
+                "LoadParam",
+                vec![reg(value), DecodedOperand::U8((index + 1) as u8)],
+            );
+            let slot = self.own_binding_slot(name)?;
+            self.emit(
+                "StoreToEnvironment",
+                vec![reg(environment), DecodedOperand::U8(slot), reg(value)],
+            );
+            self.release_register(value)?;
+        }
+        self.hoist_function_declarations(&body.stmts)?;
+        for statement in &body.stmts {
+            if !matches!(statement, Stmt::Decl(Decl::Fn(_))) {
+                self.compile_statement(statement)?;
+            }
+            debug_assert_eq!(self.next_register, self.base_registers);
+        }
+        self.emit_implicit_return()?;
+        self.finish_function(pending.name, param_count, binding_names.len() as u32, spec)
+    }
+
+    fn emit_implicit_return(&mut self) -> Result<(), Error> {
         let result = self.alloc_register()?;
         self.emit("LoadConstUndefined", vec![reg(result)]);
         self.emit("Ret", vec![reg(result)]);
-        self.release_register(result)?;
+        self.release_register(result)
+    }
 
+    fn finish_function(
+        &mut self,
+        name: String,
+        param_count: u32,
+        environment_size: u32,
+        spec: &BytecodeSpec,
+    ) -> Result<MinimalFunction, Error> {
         // Hermes reserves six caller registers plus the largest outgoing
         // argument area (including `this`) at the end of a function frame.
         let frame_size = if self.max_call_arguments == 0 {
@@ -135,27 +405,14 @@ impl Compiler {
             ));
         }
         self.resolve_frame_moves(frame_size)?;
-        let spec = mercury_spec_builtin::load_spec(self.version)
-            .ok_or_else(|| Error::Bytecode("missing embedded HBC 96 spec".into()))?;
-        self.resolve_branches(&spec.bytecode)?;
-        let module = MinimalModule {
-            version: self.version,
-            global_code_index: 0,
-            strings: self.strings,
-            string_kinds: self.string_kinds,
-            literal_value_buffer: Vec::new(),
-            object_key_buffer: Vec::new(),
-            object_value_buffer: Vec::new(),
-            functions: vec![MinimalFunction {
-                name: "global".into(),
-                param_count: 1,
-                frame_size: u32::from(frame_size),
-                environment_size: 0,
-                instructions: self.instructions,
-            }],
-        };
-        build_minimal_module(&module, &spec.bytecode)
-            .map_err(|error| Error::Bytecode(error.to_string()))
+        self.resolve_branches(spec)?;
+        Ok(MinimalFunction {
+            name,
+            param_count,
+            frame_size: u32::from(frame_size),
+            environment_size,
+            instructions: std::mem::take(&mut self.instructions),
+        })
     }
 
     fn compile_statement(&mut self, statement: &Stmt) -> Result<(), Error> {
@@ -171,6 +428,24 @@ impl Compiler {
             }
             Stmt::Block(block) => self.compile_block(block),
             Stmt::Decl(Decl::Var(declaration)) => self.compile_var_declaration(declaration),
+            Stmt::Decl(Decl::Fn(_)) => Err(Error::Unsupported(
+                "function declarations inside blocks are not supported by native compilation yet"
+                    .into(),
+            )),
+            Stmt::Return(statement) => {
+                if self.is_global {
+                    return Err(Error::Unsupported("return outside a function".into()));
+                }
+                let value = if let Some(argument) = &statement.arg {
+                    self.compile_expression(argument)?
+                } else {
+                    let value = self.alloc_register()?;
+                    self.emit("LoadConstUndefined", vec![reg(value)]);
+                    value
+                };
+                self.emit("Ret", vec![reg(value)]);
+                self.release_register(value)
+            }
             Stmt::If(statement) => self.compile_if(statement),
             Stmt::While(statement) => self.compile_while(statement),
             Stmt::DoWhile(statement) => self.compile_do_while(statement),
@@ -321,10 +596,7 @@ impl Compiler {
             };
             if let Some(initializer) = &declarator.init {
                 let value = self.compile_expression(initializer)?;
-                let global = self.alloc_register()?;
-                self.emit("GetGlobalObject", vec![reg(global)]);
-                self.emit_put_by_id(global, value, name.id.sym.as_ref())?;
-                self.release_register(global)?;
+                self.emit_identifier_store(name.id.sym.as_ref(), value)?;
                 self.release_register(value)?;
             }
         }
@@ -336,6 +608,11 @@ impl Compiler {
             Expr::Lit(literal) => self.compile_literal(literal),
             Expr::Array(array) => self.compile_array(array),
             Expr::Object(object) => self.compile_object(object),
+            Expr::This(_) => {
+                let output = self.alloc_register()?;
+                self.emit("LoadThisNS", vec![reg(output)]);
+                Ok(output)
+            }
             Expr::Ident(identifier) => self.compile_identifier(identifier.sym.as_ref()),
             Expr::Paren(expression) => self.compile_expression(&expression.expr),
             Expr::Seq(sequence) => {
@@ -383,6 +660,16 @@ impl Compiler {
             Expr::Update(update) => self.compile_update(update.op, update.prefix, &update.arg),
             Expr::Call(call) => self.compile_call(call),
             Expr::New(expression) => self.compile_new(expression),
+            Expr::Fn(function) => {
+                if function.ident.is_some() {
+                    return Err(Error::Unsupported(
+                        "named function expressions are not supported by native compilation yet"
+                            .into(),
+                    ));
+                }
+                let function_id = self.register_function(String::new(), &function.function)?;
+                self.emit_create_closure(function_id)
+            }
             other => Err(unsupported_expression(other)),
         }
     }
@@ -609,15 +896,120 @@ impl Compiler {
     }
 
     fn compile_identifier(&mut self, name: &str) -> Result<u8, Error> {
-        let output = self.alloc_register()?;
-        self.emit("GetGlobalObject", vec![reg(output)]);
-        self.emit_get_by_id(output, output, name, true)?;
-        Ok(output)
+        match self.resolve_binding(name)? {
+            BindingLocation::Own(slot) => {
+                let output = self.alloc_register()?;
+                let environment = self.environment_register()?;
+                self.emit(
+                    "LoadFromEnvironment",
+                    vec![reg(output), reg(environment), DecodedOperand::U8(slot)],
+                );
+                Ok(output)
+            }
+            BindingLocation::Parent { level, slot } => {
+                let output = self.alloc_register()?;
+                self.emit(
+                    "GetEnvironment",
+                    vec![reg(output), DecodedOperand::U8(level)],
+                );
+                self.emit(
+                    "LoadFromEnvironment",
+                    vec![reg(output), reg(output), DecodedOperand::U8(slot)],
+                );
+                Ok(output)
+            }
+            BindingLocation::Global => {
+                let output = self.alloc_register()?;
+                self.emit("GetGlobalObject", vec![reg(output)]);
+                self.emit_get_by_id(output, output, name, true)?;
+                Ok(output)
+            }
+        }
+    }
+
+    fn emit_identifier_store(&mut self, name: &str, value: u8) -> Result<(), Error> {
+        match self.resolve_binding(name)? {
+            BindingLocation::Own(slot) => {
+                let environment = self.environment_register()?;
+                self.emit(
+                    "StoreToEnvironment",
+                    vec![reg(environment), DecodedOperand::U8(slot), reg(value)],
+                );
+            }
+            BindingLocation::Parent { level, slot } => {
+                let environment = self.alloc_register()?;
+                self.emit(
+                    "GetEnvironment",
+                    vec![reg(environment), DecodedOperand::U8(level)],
+                );
+                self.emit(
+                    "StoreToEnvironment",
+                    vec![reg(environment), DecodedOperand::U8(slot), reg(value)],
+                );
+                self.release_register(environment)?;
+            }
+            BindingLocation::Global => {
+                let global = self.alloc_register()?;
+                self.emit("GetGlobalObject", vec![reg(global)]);
+                self.emit_put_by_id(global, value, name)?;
+                self.release_register(global)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_binding(&self, name: &str) -> Result<BindingLocation, Error> {
+        let Some(scope) = &self.scope else {
+            return Ok(BindingLocation::Global);
+        };
+        if let Some(slot) = scope.bindings.get(name) {
+            return Ok(BindingLocation::Own(*slot));
+        }
+        let mut parent = scope.parent.as_ref();
+        let mut level = 0u16;
+        while let Some(scope) = parent {
+            if let Some(slot) = scope.bindings.get(name) {
+                return Ok(BindingLocation::Parent {
+                    level: u8::try_from(level).map_err(|_| {
+                        Error::Unsupported(
+                            "closures nested more than 256 lexical levels are not supported".into(),
+                        )
+                    })?,
+                    slot: *slot,
+                });
+            }
+            level += 1;
+            parent = scope.parent.as_ref();
+        }
+        if !self.is_global && name == "arguments" {
+            return Err(Error::Unsupported(
+                "the implicit `arguments` object is not supported by native compilation yet".into(),
+            ));
+        }
+        Ok(BindingLocation::Global)
+    }
+
+    fn own_binding_slot(&self, name: &str) -> Result<u8, Error> {
+        match self.resolve_binding(name)? {
+            BindingLocation::Own(slot) => Ok(slot),
+            _ => Err(Error::Bytecode(format!(
+                "native compiler did not allocate local binding {name}"
+            ))),
+        }
+    }
+
+    fn environment_register(&self) -> Result<u8, Error> {
+        self.environment_register
+            .ok_or_else(|| Error::Bytecode("native compiler has no active environment".into()))
     }
 
     fn compile_unary(&mut self, operator: UnaryOp, argument: &Expr) -> Result<u8, Error> {
         if operator == UnaryOp::TypeOf
             && let Expr::Ident(identifier) = argument
+            && matches!(
+                self.resolve_binding(identifier.sym.as_ref())?,
+                BindingLocation::Global
+            )
         {
             let value = self.alloc_register()?;
             self.emit("GetGlobalObject", vec![reg(value)]);
@@ -675,10 +1067,7 @@ impl Compiler {
         match target {
             SimpleAssignTarget::Ident(identifier) => {
                 let value = self.compile_expression(value)?;
-                let global = self.alloc_register()?;
-                self.emit("GetGlobalObject", vec![reg(global)]);
-                self.emit_put_by_id(global, value, identifier.id.sym.as_ref())?;
-                self.release_register(global)?;
+                self.emit_identifier_store(identifier.id.sym.as_ref(), value)?;
                 Ok(value)
             }
             SimpleAssignTarget::Member(member) => self.compile_member_assignment(member, value),
@@ -728,10 +1117,7 @@ impl Compiler {
                 let right = self.compile_expression(right)?;
                 self.emit(opcode, vec![reg(current), reg(current), reg(right)]);
                 self.release_register(right)?;
-                let global = self.alloc_register()?;
-                self.emit("GetGlobalObject", vec![reg(global)]);
-                self.emit_put_by_id(global, current, identifier.id.sym.as_ref())?;
-                self.release_register(global)?;
+                self.emit_identifier_store(identifier.id.sym.as_ref(), current)?;
                 Ok(current)
             }
             SimpleAssignTarget::Member(member) => {
@@ -767,10 +1153,7 @@ impl Compiler {
                 let end = self.new_label();
                 self.emit_logical_assignment_guard(operator, current, end)?;
                 let right = self.compile_expression(right)?;
-                let global = self.alloc_register()?;
-                self.emit("GetGlobalObject", vec![reg(global)]);
-                self.emit_put_by_id(global, right, identifier.id.sym.as_ref())?;
-                self.release_register(global)?;
+                self.emit_identifier_store(identifier.id.sym.as_ref(), right)?;
                 self.emit("Mov", vec![reg(current), reg(right)]);
                 self.release_register(right)?;
                 self.mark_label(end)?;
@@ -918,10 +1301,7 @@ impl Compiler {
                 let current = self.compile_identifier(identifier.sym.as_ref())?;
                 let updated = self.alloc_register()?;
                 self.emit(opcode, vec![reg(updated), reg(current)]);
-                let global = self.alloc_register()?;
-                self.emit("GetGlobalObject", vec![reg(global)]);
-                self.emit_put_by_id(global, updated, identifier.sym.as_ref())?;
-                self.release_register(global)?;
+                self.emit_identifier_store(identifier.sym.as_ref(), updated)?;
                 if prefix {
                     self.emit("Mov", vec![reg(current), reg(updated)]);
                 }
@@ -1396,6 +1776,15 @@ fn collect_var_declarations(statements: &[Stmt], names: &mut Vec<String>) -> Res
         collect_statement_var_declarations(statement, names)?;
     }
     Ok(())
+}
+
+fn top_level_function_declarations(
+    statements: &[Stmt],
+) -> impl Iterator<Item = &swc_core::ecma::ast::FnDecl> {
+    statements.iter().filter_map(|statement| match statement {
+        Stmt::Decl(Decl::Fn(declaration)) => Some(declaration),
+        _ => None,
+    })
 }
 
 fn collect_statement_var_declarations(

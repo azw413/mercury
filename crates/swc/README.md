@@ -91,33 +91,42 @@ not enabled.
 
 ## Current native compilation contract
 
-The native compiler currently handles global scripts made from `var`
-declarations, blocks, expression statements, debugger statements, `if`/`else`,
-`while`, `do…while`, and `for`. Unlabeled `break` and `continue` work across
-nested conditionals and loops. Supported expressions include primitive literals,
-global identifiers, arithmetic, bitwise and comparison operators, unary
-coercions, property reads and writes, simple assignment, sequence and conditional
-expressions, short-circuit `&&`, `||`, and `??`, and calls with up to three
-arguments. Prefix and postfix increment/decrement, arithmetic and bitwise
-compound assignment, and `&&=`, `||=`, and `??=` preserve member evaluation
-order. Method calls preserve their receiver. Sparse array literals and object
-literals with data properties support computed keys and duplicate keys. `new`
-uses HBC's `CreateThis`, `Construct`, and `SelectObject` sequence. TypeScript
-annotations are stripped directly on a copy of the SWC tree before lowering.
+The native compiler currently handles scripts and regular function bodies made
+from `var` declarations, function declarations, blocks, expression statements,
+debugger statements, returns, `if`/`else`, `while`, `do…while`, and `for`.
+Function declarations are instantiated at function entry, including local
+recursion and calls before their textual declaration. Identifier parameters and
+local `var` bindings use parent-linked HBC environments. Nested and anonymous
+functions therefore retain captured mutation, sibling closures share one
+environment, and separate outer calls receive independent environments. Regular
+functions support `this` and can be invoked either as calls or constructors.
+
+Unlabeled `break` and `continue` work across nested conditionals and loops.
+Supported expressions include primitive literals, identifiers, arithmetic,
+bitwise and comparison operators, unary coercions, property reads and writes,
+simple assignment, sequence and conditional expressions, short-circuit `&&`,
+`||`, and `??`, and calls with up to three arguments. Prefix and postfix
+increment/decrement, arithmetic and bitwise compound assignment, and `&&=`,
+`||=`, and `??=` preserve member evaluation order. Method calls preserve their
+receiver. Sparse array literals and object literals with data properties support
+computed keys and duplicate keys. `new` uses HBC's `CreateThis`, `Construct`, and
+`SelectObject` sequence. TypeScript annotations are stripped directly on a copy
+of the SWC tree before lowering.
 
 Branches use compiler-owned symbolic labels that are resolved to HBC byte
 displacements after instruction selection. This keeps source lowering independent
 of encoded instruction sizes and supports forward and backward jumps.
 
-Lexical declarations, functions, classes, modules, directive prologues,
-exponentiation assignment, labeled control flow, `switch`, `try`, `throw`,
-`for…in`, `for…of`, call and literal spreads, object methods/accessors and
-object-literal `__proto__` setters return `Unsupported`. Calls accept up to three
-arguments; constructors are limited by the HBC small-frame size. The compiler
-emits one global function through Mercury's native HBC container builder.
-Expanding these source constructs is the remaining forward-compiler work;
-decompiler opcode coverage does not imply matching source-language coverage in
-this direction.
+Lexical declarations and block scopes, arrow functions, named function
+expressions, default/rest/destructuring parameters, the implicit `arguments`
+object, block-level function declarations, async and generator functions,
+classes, modules, directive prologues, exponentiation assignment, labeled
+control flow, `switch`, `try`, `throw`, `for…in`, `for…of`, call and literal
+spreads, object methods/accessors, and object-literal `__proto__` setters return
+`Unsupported`. Calls accept up to three arguments; constructors are limited by
+the HBC small-frame size. Expanding these source constructs is the remaining
+forward-compiler work; decompiler opcode coverage does not imply matching
+source-language coverage in this direction.
 
 ## Current decompilation contract
 
@@ -229,8 +238,11 @@ HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
 The execution tests cover arithmetic, calls, an if/else and loop, short-circuit
 logic, a receiver whose `.call` property has been replaced, side effects, NaN-like
 relational comparisons, helper-name collisions, TS enum lowering, and mutable
-captured variables. Closure checks cover independent outer calls, sibling
-closures sharing one environment, and captures across multiple lexical levels.
+captured variables. Native source-to-HBC closure checks cover parameters, local
+variables, hoisting, recursion, anonymous functions, independent outer calls,
+sibling closures sharing one environment, captures across multiple lexical
+levels, and using compiled functions as constructors. Decompiler closure checks
+cover the same environment-sharing boundaries.
 Array checks cover length, holes, indexed mutation, every serialized primitive
 kind, dynamic elements, closure elements, and inherited index setters. The main
 Object checks cover serialized primitive values, key order, numeric and computed
