@@ -114,6 +114,53 @@ fn resolves_symbolic_control_flow_into_hbc_branches() {
 }
 
 #[test]
+fn compiles_updates_literals_and_construction_opcodes() {
+    let bytes = compile(
+        "var i = 1; i++; i += 2; var a = [i, , 3]; var o = {value: a[0], ['x']: 4}; o.x *= 2; var d = new Date(1); print(d.getTime());",
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let names = raw.functions[0]
+        .instructions
+        .iter()
+        .map(|instruction| instruction.name.as_str())
+        .collect::<Vec<_>>();
+
+    for expected in [
+        "Inc",
+        "Add",
+        "NewArray",
+        "PutOwnByIndex",
+        "NewObject",
+        "PutOwnByVal",
+        "CreateThis",
+        "Construct",
+        "SelectObject",
+    ] {
+        assert!(names.contains(&expected), "missing {expected}");
+    }
+    assert!(decompile(&bytes).is_ok());
+}
+
+#[test]
+fn rejects_object_prototype_setters_until_parent_construction_is_supported() {
+    let module = SwcModule::parse(
+        "input.js",
+        "var object = { __proto__: null };",
+        SourceLanguage::JavaScript,
+        SourceKind::Script,
+    )
+    .unwrap();
+    let error = HbcCompiler::new(96).compile(&module).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "unsupported: object-literal `__proto__` setters are not supported by native compilation yet"
+    );
+}
+
+#[test]
 fn typeof_an_unbound_global_does_not_use_a_throwing_lookup() {
     let bytes = compile("print(typeof missing);", SourceLanguage::JavaScript);
     let spec = load_spec(96).unwrap();
@@ -167,6 +214,60 @@ fn native_control_flow_and_short_circuiting_execute() {
     assert_eq!(
         execute(bytes),
         "while 8\ntotal 13\nfalse\ntrue\n9\n0\nyes\n"
+    );
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_updates_literals_and_constructors_execute() {
+    let bytes = compile(
+        r#"
+        var i = 1;
+        print(i++, i, ++i);
+        i += 4;
+        i *= 2;
+        print(i);
+
+        var array = [10, , 30];
+        var keyIndex = 0;
+        var old = array[keyIndex++]++;
+        var changed = array[0] += 5;
+        print(old, changed, keyIndex);
+        print(array.length, 1 in array, array[0]);
+
+        var key = "x";
+        var object = {a: 1, [key]: 2, a: 3};
+        object[key] *= 4;
+        print(object.a, object.x, Object.keys(object).join(","));
+
+        var left = 0;
+        left &&= missing;
+        left ||= 5;
+        left ??= missing;
+        var holder = {v: null};
+        holder.v ??= 6;
+        holder.v &&= 7;
+        print(left, holder.v);
+
+        var date = new Date(123);
+        print(date.getTime());
+        var made = new Array(2, 3);
+        print(made.length, made[0], made[1]);
+        "#,
+        SourceLanguage::JavaScript,
+    );
+    assert_eq!(
+        execute(bytes),
+        concat!(
+            "1 2 3\n",
+            "14\n",
+            "10 16 1\n",
+            "3 false 16\n",
+            "3 8 a,x\n",
+            "5 7\n",
+            "123\n",
+            "2 2 3\n",
+        )
     );
 }
 

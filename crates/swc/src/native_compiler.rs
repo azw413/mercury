@@ -7,7 +7,8 @@ use mercury_binary::{
 use mercury_spec::BytecodeSpec;
 use swc_core::ecma::ast::{
     AssignOp, AssignTarget, BinaryOp, BlockStmt, Callee, Decl, Expr, Lit, MemberExpr, MemberProp,
-    Pat, Program, Script, SimpleAssignTarget, Stmt, UnaryOp, VarDecl, VarDeclKind, VarDeclOrExpr,
+    Pat, Program, Prop, PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt, UnaryOp,
+    UpdateOp, VarDecl, VarDeclKind, VarDeclOrExpr,
 };
 
 use crate::{Error, SwcModule};
@@ -53,6 +54,7 @@ struct Compiler {
     next_cache: u16,
     labels: Vec<Option<usize>>,
     branches: Vec<PendingBranch>,
+    frame_moves: Vec<PendingFrameMove>,
     loops: Vec<LoopContext>,
 }
 
@@ -60,6 +62,12 @@ struct Compiler {
 struct PendingBranch {
     instruction: usize,
     target: usize,
+}
+
+#[derive(Clone, Copy)]
+struct PendingFrameMove {
+    instruction: usize,
+    slot: u16,
 }
 
 #[derive(Clone, Copy)]
@@ -82,6 +90,7 @@ impl Compiler {
             next_cache: 0,
             labels: Vec::new(),
             branches: Vec::new(),
+            frame_moves: Vec::new(),
             loops: Vec::new(),
         }
     }
@@ -113,9 +122,6 @@ impl Compiler {
         self.emit("Ret", vec![reg(result)]);
         self.release_register(result)?;
 
-        let spec = mercury_spec_builtin::load_spec(self.version)
-            .ok_or_else(|| Error::Bytecode("missing embedded HBC 96 spec".into()))?;
-        self.resolve_branches(&spec.bytecode)?;
         // Hermes reserves six caller registers plus the largest outgoing
         // argument area (including `this`) at the end of a function frame.
         let frame_size = if self.max_call_arguments == 0 {
@@ -128,6 +134,10 @@ impl Compiler {
                 "script needs a function frame too large for an HBC 96 small header".into(),
             ));
         }
+        self.resolve_frame_moves(frame_size)?;
+        let spec = mercury_spec_builtin::load_spec(self.version)
+            .ok_or_else(|| Error::Bytecode("missing embedded HBC 96 spec".into()))?;
+        self.resolve_branches(&spec.bytecode)?;
         let module = MinimalModule {
             version: self.version,
             global_code_index: 0,
@@ -324,6 +334,8 @@ impl Compiler {
     fn compile_expression(&mut self, expression: &Expr) -> Result<u8, Error> {
         match expression {
             Expr::Lit(literal) => self.compile_literal(literal),
+            Expr::Array(array) => self.compile_array(array),
+            Expr::Object(object) => self.compile_object(object),
             Expr::Ident(identifier) => self.compile_identifier(identifier.sym.as_ref()),
             Expr::Paren(expression) => self.compile_expression(&expression.expr),
             Expr::Seq(sequence) => {
@@ -365,13 +377,124 @@ impl Compiler {
             Expr::Assign(assignment) if assignment.op == AssignOp::Assign => {
                 self.compile_assignment(&assignment.left, &assignment.right)
             }
-            Expr::Assign(assignment) => Err(Error::Unsupported(format!(
-                "assignment operator `{}` is not supported by native compilation yet",
-                assignment.op
-            ))),
+            Expr::Assign(assignment) => {
+                self.compile_compound_assignment(assignment.op, &assignment.left, &assignment.right)
+            }
+            Expr::Update(update) => self.compile_update(update.op, update.prefix, &update.arg),
             Expr::Call(call) => self.compile_call(call),
+            Expr::New(expression) => self.compile_new(expression),
             other => Err(unsupported_expression(other)),
         }
+    }
+
+    fn compile_array(&mut self, array: &swc_core::ecma::ast::ArrayLit) -> Result<u8, Error> {
+        let length = u16::try_from(array.elems.len()).map_err(|_| {
+            Error::Unsupported("array literals with more than 65535 slots are not supported".into())
+        })?;
+        let output = self.alloc_register()?;
+        self.emit("NewArray", vec![reg(output), DecodedOperand::U16(length)]);
+        for (index, element) in array.elems.iter().enumerate() {
+            let Some(element) = element else {
+                continue;
+            };
+            if element.spread.is_some() {
+                return Err(Error::Unsupported(
+                    "array spread is not supported by native compilation yet".into(),
+                ));
+            }
+            let value = self.compile_expression(&element.expr)?;
+            if let Ok(index) = u8::try_from(index) {
+                self.emit(
+                    "PutOwnByIndex",
+                    vec![reg(output), reg(value), DecodedOperand::U8(index)],
+                );
+            } else {
+                self.emit(
+                    "PutOwnByIndexL",
+                    vec![reg(output), reg(value), DecodedOperand::U32(index as u32)],
+                );
+            }
+            self.release_register(value)?;
+        }
+        Ok(output)
+    }
+
+    fn compile_object(&mut self, object: &swc_core::ecma::ast::ObjectLit) -> Result<u8, Error> {
+        let output = self.alloc_register()?;
+        self.emit("NewObject", vec![reg(output)]);
+        for property in &object.props {
+            let PropOrSpread::Prop(property) = property else {
+                return Err(Error::Unsupported(
+                    "object spread is not supported by native compilation yet".into(),
+                ));
+            };
+            match &**property {
+                Prop::Shorthand(identifier) => {
+                    let key = self.compile_string_value(identifier.sym.as_ref())?;
+                    let value = self.compile_identifier(identifier.sym.as_ref())?;
+                    self.emit_define_own(output, value, key);
+                    self.release_register(value)?;
+                    self.release_register(key)?;
+                }
+                Prop::KeyValue(property) => {
+                    if is_proto_setter_name(&property.key) {
+                        return Err(Error::Unsupported(
+                            "object-literal `__proto__` setters are not supported by native compilation yet"
+                                .into(),
+                        ));
+                    }
+                    let key = self.compile_property_name(&property.key)?;
+                    let value = self.compile_expression(&property.value)?;
+                    self.emit_define_own(output, value, key);
+                    self.release_register(value)?;
+                    self.release_register(key)?;
+                }
+                _ => {
+                    return Err(Error::Unsupported(
+                        "object methods and accessors require native function compilation".into(),
+                    ));
+                }
+            }
+        }
+        Ok(output)
+    }
+
+    fn compile_property_name(&mut self, name: &PropName) -> Result<u8, Error> {
+        match name {
+            PropName::Ident(identifier) => self.compile_string_value(identifier.sym.as_ref()),
+            PropName::Str(string) => {
+                let value = string.value.as_str().ok_or_else(|| {
+                    Error::Unsupported(
+                        "property names containing lone UTF-16 surrogates are not supported by native compilation yet"
+                            .into(),
+                    )
+                })?;
+                self.compile_string_value(value)
+            }
+            PropName::Num(number) => {
+                let output = self.alloc_register()?;
+                self.emit_number(output, number.value);
+                Ok(output)
+            }
+            PropName::Computed(property) => self.compile_expression(&property.expr),
+            PropName::BigInt(_) => Err(Error::Unsupported(
+                "BigInt property names are not supported by native compilation yet".into(),
+            )),
+        }
+    }
+
+    fn compile_string_value(&mut self, value: &str) -> Result<u8, Error> {
+        let output = self.alloc_register()?;
+        let id = self.intern_string(value)?;
+        self.emit_load_string(output, id);
+        Ok(output)
+    }
+
+    fn emit_define_own(&mut self, object: u8, value: u8, key: u8) {
+        self.emit(
+            "PutOwnByVal",
+            vec![reg(object), reg(value), reg(key), DecodedOperand::U8(1)],
+        );
     }
 
     fn compile_conditional(
@@ -571,6 +694,293 @@ impl Compiler {
         }
     }
 
+    fn compile_compound_assignment(
+        &mut self,
+        operator: AssignOp,
+        target: &AssignTarget,
+        right: &Expr,
+    ) -> Result<u8, Error> {
+        if matches!(
+            operator,
+            AssignOp::AndAssign | AssignOp::OrAssign | AssignOp::NullishAssign
+        ) {
+            return self.compile_logical_assignment(operator, target, right);
+        }
+        let binary = operator.to_update().ok_or_else(|| {
+            Error::Unsupported(format!(
+                "assignment operator `{operator}` is not supported by native compilation yet"
+            ))
+        })?;
+        let opcode = binary_opcode(binary).ok_or_else(|| {
+            Error::Unsupported(format!(
+                "assignment operator `{operator}` is not supported by native compilation yet"
+            ))
+        })?;
+        let AssignTarget::Simple(target) = target else {
+            return Err(Error::Unsupported(
+                "destructuring compound assignment is not supported by native compilation yet"
+                    .into(),
+            ));
+        };
+        match target {
+            SimpleAssignTarget::Ident(identifier) => {
+                let current = self.compile_identifier(identifier.id.sym.as_ref())?;
+                let right = self.compile_expression(right)?;
+                self.emit(opcode, vec![reg(current), reg(current), reg(right)]);
+                self.release_register(right)?;
+                let global = self.alloc_register()?;
+                self.emit("GetGlobalObject", vec![reg(global)]);
+                self.emit_put_by_id(global, current, identifier.id.sym.as_ref())?;
+                self.release_register(global)?;
+                Ok(current)
+            }
+            SimpleAssignTarget::Member(member) => {
+                self.compile_member_compound_assignment(member, opcode, right)
+            }
+            SimpleAssignTarget::Paren(paren) => {
+                let nested = AssignTarget::try_from(paren.expr.clone()).map_err(|_| {
+                    Error::Unsupported("invalid parenthesized assignment target".into())
+                })?;
+                self.compile_compound_assignment(operator, &nested, right)
+            }
+            _ => Err(Error::Unsupported(
+                "this compound assignment target is not supported by native compilation yet".into(),
+            )),
+        }
+    }
+
+    fn compile_logical_assignment(
+        &mut self,
+        operator: AssignOp,
+        target: &AssignTarget,
+        right: &Expr,
+    ) -> Result<u8, Error> {
+        let AssignTarget::Simple(target) = target else {
+            return Err(Error::Unsupported(
+                "destructuring logical assignment is not supported by native compilation yet"
+                    .into(),
+            ));
+        };
+        match target {
+            SimpleAssignTarget::Ident(identifier) => {
+                let current = self.compile_identifier(identifier.id.sym.as_ref())?;
+                let end = self.new_label();
+                self.emit_logical_assignment_guard(operator, current, end)?;
+                let right = self.compile_expression(right)?;
+                let global = self.alloc_register()?;
+                self.emit("GetGlobalObject", vec![reg(global)]);
+                self.emit_put_by_id(global, right, identifier.id.sym.as_ref())?;
+                self.release_register(global)?;
+                self.emit("Mov", vec![reg(current), reg(right)]);
+                self.release_register(right)?;
+                self.mark_label(end)?;
+                Ok(current)
+            }
+            SimpleAssignTarget::Member(member) => {
+                self.compile_member_logical_assignment(member, operator, right)
+            }
+            SimpleAssignTarget::Paren(paren) => {
+                let nested = AssignTarget::try_from(paren.expr.clone()).map_err(|_| {
+                    Error::Unsupported("invalid parenthesized assignment target".into())
+                })?;
+                self.compile_logical_assignment(operator, &nested, right)
+            }
+            _ => Err(Error::Unsupported(
+                "this logical assignment target is not supported by native compilation yet".into(),
+            )),
+        }
+    }
+
+    fn compile_member_logical_assignment(
+        &mut self,
+        member: &MemberExpr,
+        operator: AssignOp,
+        right: &Expr,
+    ) -> Result<u8, Error> {
+        let object = self.compile_expression(&member.obj)?;
+        match &member.prop {
+            MemberProp::Ident(property) => {
+                let current = self.alloc_register()?;
+                self.emit_get_by_id(current, object, property.sym.as_ref(), false)?;
+                let end = self.new_label();
+                self.emit_logical_assignment_guard(operator, current, end)?;
+                let right = self.compile_expression(right)?;
+                self.emit_put_by_id(object, right, property.sym.as_ref())?;
+                self.emit("Mov", vec![reg(current), reg(right)]);
+                self.release_register(right)?;
+                self.mark_label(end)?;
+                self.emit("Mov", vec![reg(object), reg(current)]);
+                self.release_register(current)?;
+            }
+            MemberProp::Computed(property) => {
+                let key = self.compile_expression(&property.expr)?;
+                let current = self.alloc_register()?;
+                self.emit("GetByVal", vec![reg(current), reg(object), reg(key)]);
+                let end = self.new_label();
+                self.emit_logical_assignment_guard(operator, current, end)?;
+                let right = self.compile_expression(right)?;
+                self.emit("PutByVal", vec![reg(object), reg(key), reg(right)]);
+                self.emit("Mov", vec![reg(current), reg(right)]);
+                self.release_register(right)?;
+                self.mark_label(end)?;
+                self.emit("Mov", vec![reg(object), reg(current)]);
+                self.release_register(current)?;
+                self.release_register(key)?;
+            }
+            MemberProp::PrivateName(_) => {
+                return Err(Error::Unsupported(
+                    "private property assignment is not supported by native compilation yet".into(),
+                ));
+            }
+        }
+        Ok(object)
+    }
+
+    fn emit_logical_assignment_guard(
+        &mut self,
+        operator: AssignOp,
+        current: u8,
+        end: usize,
+    ) -> Result<(), Error> {
+        match operator {
+            AssignOp::AndAssign => self.emit_branch("JmpFalseLong", end, Some(current)),
+            AssignOp::OrAssign => self.emit_branch("JmpTrueLong", end, Some(current)),
+            AssignOp::NullishAssign => {
+                let assign = self.new_label();
+                self.emit_branch("JmpUndefinedLong", assign, Some(current));
+                let is_null = self.alloc_register()?;
+                self.emit("LoadConstNull", vec![reg(is_null)]);
+                self.emit("StrictEq", vec![reg(is_null), reg(current), reg(is_null)]);
+                self.emit_branch("JmpFalseLong", end, Some(is_null));
+                self.release_register(is_null)?;
+                self.mark_label(assign)?;
+            }
+            _ => {
+                return Err(Error::Bytecode(
+                    "native compiler used a non-logical assignment guard".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn compile_member_compound_assignment(
+        &mut self,
+        member: &MemberExpr,
+        opcode: &str,
+        right: &Expr,
+    ) -> Result<u8, Error> {
+        let object = self.compile_expression(&member.obj)?;
+        match &member.prop {
+            MemberProp::Ident(property) => {
+                let current = self.alloc_register()?;
+                self.emit_get_by_id(current, object, property.sym.as_ref(), false)?;
+                let right = self.compile_expression(right)?;
+                self.emit(opcode, vec![reg(current), reg(current), reg(right)]);
+                self.release_register(right)?;
+                self.emit_put_by_id(object, current, property.sym.as_ref())?;
+                self.emit("Mov", vec![reg(object), reg(current)]);
+                self.release_register(current)?;
+            }
+            MemberProp::Computed(property) => {
+                let key = self.compile_expression(&property.expr)?;
+                let current = self.alloc_register()?;
+                self.emit("GetByVal", vec![reg(current), reg(object), reg(key)]);
+                let right = self.compile_expression(right)?;
+                self.emit(opcode, vec![reg(current), reg(current), reg(right)]);
+                self.release_register(right)?;
+                self.emit("PutByVal", vec![reg(object), reg(key), reg(current)]);
+                self.emit("Mov", vec![reg(object), reg(current)]);
+                self.release_register(current)?;
+                self.release_register(key)?;
+            }
+            MemberProp::PrivateName(_) => {
+                return Err(Error::Unsupported(
+                    "private property assignment is not supported by native compilation yet".into(),
+                ));
+            }
+        }
+        Ok(object)
+    }
+
+    fn compile_update(
+        &mut self,
+        operator: UpdateOp,
+        prefix: bool,
+        argument: &Expr,
+    ) -> Result<u8, Error> {
+        let opcode = match operator {
+            UpdateOp::PlusPlus => "Inc",
+            UpdateOp::MinusMinus => "Dec",
+        };
+        match argument {
+            Expr::Ident(identifier) => {
+                let current = self.compile_identifier(identifier.sym.as_ref())?;
+                let updated = self.alloc_register()?;
+                self.emit(opcode, vec![reg(updated), reg(current)]);
+                let global = self.alloc_register()?;
+                self.emit("GetGlobalObject", vec![reg(global)]);
+                self.emit_put_by_id(global, updated, identifier.sym.as_ref())?;
+                self.release_register(global)?;
+                if prefix {
+                    self.emit("Mov", vec![reg(current), reg(updated)]);
+                }
+                self.release_register(updated)?;
+                Ok(current)
+            }
+            Expr::Member(member) => self.compile_member_update(member, opcode, prefix),
+            Expr::Paren(paren) => self.compile_update(operator, prefix, &paren.expr),
+            _ => Err(Error::Unsupported(
+                "this update target is not supported by native compilation yet".into(),
+            )),
+        }
+    }
+
+    fn compile_member_update(
+        &mut self,
+        member: &MemberExpr,
+        opcode: &str,
+        prefix: bool,
+    ) -> Result<u8, Error> {
+        let object = self.compile_expression(&member.obj)?;
+        match &member.prop {
+            MemberProp::Ident(property) => {
+                let current = self.alloc_register()?;
+                self.emit_get_by_id(current, object, property.sym.as_ref(), false)?;
+                let updated = self.alloc_register()?;
+                self.emit(opcode, vec![reg(updated), reg(current)]);
+                self.emit_put_by_id(object, updated, property.sym.as_ref())?;
+                self.emit(
+                    "Mov",
+                    vec![reg(object), reg(if prefix { updated } else { current })],
+                );
+                self.release_register(updated)?;
+                self.release_register(current)?;
+            }
+            MemberProp::Computed(property) => {
+                let key = self.compile_expression(&property.expr)?;
+                let current = self.alloc_register()?;
+                self.emit("GetByVal", vec![reg(current), reg(object), reg(key)]);
+                let updated = self.alloc_register()?;
+                self.emit(opcode, vec![reg(updated), reg(current)]);
+                self.emit("PutByVal", vec![reg(object), reg(key), reg(updated)]);
+                self.emit(
+                    "Mov",
+                    vec![reg(object), reg(if prefix { updated } else { current })],
+                );
+                self.release_register(updated)?;
+                self.release_register(current)?;
+                self.release_register(key)?;
+            }
+            MemberProp::PrivateName(_) => {
+                return Err(Error::Unsupported(
+                    "private property updates are not supported by native compilation yet".into(),
+                ));
+            }
+        }
+        Ok(object)
+    }
+
     fn compile_member_assignment(
         &mut self,
         member: &MemberExpr,
@@ -678,6 +1088,59 @@ impl Compiler {
             self.release_register(this_value)?;
         }
         Ok(result)
+    }
+
+    fn compile_new(&mut self, expression: &swc_core::ecma::ast::NewExpr) -> Result<u8, Error> {
+        let arguments = expression.args.as_deref().unwrap_or_default();
+        if arguments.iter().any(|argument| argument.spread.is_some()) {
+            return Err(Error::Unsupported(
+                "spread constructor arguments are not supported by native compilation yet".into(),
+            ));
+        }
+        let argument_count = u8::try_from(arguments.len() + 1).map_err(|_| {
+            Error::Unsupported("constructors with more than 254 arguments are not supported".into())
+        })?;
+        self.max_call_arguments = self.max_call_arguments.max(u16::from(argument_count));
+
+        let constructor = self.compile_expression(&expression.callee)?;
+        let receiver = self.alloc_register()?;
+        self.emit_get_by_id(receiver, constructor, "prototype", false)?;
+        self.emit(
+            "CreateThis",
+            vec![reg(receiver), reg(receiver), reg(constructor)],
+        );
+
+        let mut values = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            values.push(self.compile_expression(&argument.expr)?);
+        }
+        self.emit_frame_move(receiver, 0);
+        for (index, value) in values.iter().enumerate() {
+            self.emit_frame_move(
+                *value,
+                u16::try_from(index + 1).expect("constructor argument count fits u16"),
+            );
+        }
+
+        let raw_result = self.alloc_register()?;
+        self.emit(
+            "Construct",
+            vec![
+                reg(raw_result),
+                reg(constructor),
+                DecodedOperand::U8(argument_count),
+            ],
+        );
+        self.emit(
+            "SelectObject",
+            vec![reg(constructor), reg(receiver), reg(raw_result)],
+        );
+        self.release_register(raw_result)?;
+        while let Some(value) = values.pop() {
+            self.release_register(value)?;
+        }
+        self.release_register(receiver)?;
+        Ok(constructor)
     }
 
     fn emit_get_by_id(
@@ -855,6 +1318,32 @@ impl Compiler {
         });
     }
 
+    fn emit_frame_move(&mut self, source: u8, slot: u16) {
+        let instruction = self.instructions.len();
+        self.emit("Mov", vec![DecodedOperand::U8(0), reg(source)]);
+        self.frame_moves
+            .push(PendingFrameMove { instruction, slot });
+    }
+
+    fn resolve_frame_moves(&mut self, frame_size: u16) -> Result<(), Error> {
+        if self.frame_moves.is_empty() {
+            return Ok(());
+        }
+        let this_register = frame_size.checked_sub(7).ok_or_else(|| {
+            Error::Bytecode("native compiler produced an invalid outgoing frame".into())
+        })?;
+        for pending in &self.frame_moves {
+            let destination = this_register.checked_sub(pending.slot).ok_or_else(|| {
+                Error::Bytecode("constructor arguments exceed the outgoing frame".into())
+            })?;
+            self.instructions[pending.instruction].operands[0] =
+                DecodedOperand::U8(u8::try_from(destination).map_err(|_| {
+                    Error::Bytecode("outgoing register does not fit HBC 96".into())
+                })?);
+        }
+        Ok(())
+    }
+
     fn resolve_branches(&mut self, spec: &BytecodeSpec) -> Result<(), Error> {
         let mut offsets = Vec::with_capacity(self.instructions.len() + 1);
         let mut offset = 0u32;
@@ -953,6 +1442,14 @@ fn collect_declaration_names(declaration: &VarDecl, names: &mut Vec<String>) -> 
 
 fn is_string_expression(statement: &Stmt) -> bool {
     matches!(statement, Stmt::Expr(statement) if matches!(&*statement.expr, Expr::Lit(Lit::Str(_))))
+}
+
+fn is_proto_setter_name(name: &PropName) -> bool {
+    match name {
+        PropName::Ident(identifier) => identifier.sym == "__proto__",
+        PropName::Str(string) => string.value.as_str() == Some("__proto__"),
+        _ => false,
+    }
 }
 
 fn binary_opcode(operator: BinaryOp) -> Option<&'static str> {

@@ -98,20 +98,26 @@ nested conditionals and loops. Supported expressions include primitive literals,
 global identifiers, arithmetic, bitwise and comparison operators, unary
 coercions, property reads and writes, simple assignment, sequence and conditional
 expressions, short-circuit `&&`, `||`, and `??`, and calls with up to three
-arguments. Method calls preserve their receiver. TypeScript annotations are
-stripped directly on a copy of the SWC tree before lowering.
+arguments. Prefix and postfix increment/decrement, arithmetic and bitwise
+compound assignment, and `&&=`, `||=`, and `??=` preserve member evaluation
+order. Method calls preserve their receiver. Sparse array literals and object
+literals with data properties support computed keys and duplicate keys. `new`
+uses HBC's `CreateThis`, `Construct`, and `SelectObject` sequence. TypeScript
+annotations are stripped directly on a copy of the SWC tree before lowering.
 
 Branches use compiler-owned symbolic labels that are resolved to HBC byte
 displacements after instruction selection. This keeps source lowering independent
 of encoded instruction sizes and supports forward and backward jumps.
 
-Lexical declarations, functions, classes, object and array literals,
-constructors, modules, directive prologues, compound assignment, labeled control
-flow, `switch`, `try`, `throw`, `for…in`, `for…of`, and calls with more arguments
-return `Unsupported`. The compiler emits one global function through Mercury's
-native HBC container builder. Expanding these source constructs is the remaining
-forward-compiler work; decompiler opcode coverage does not imply matching
-source-language coverage in this direction.
+Lexical declarations, functions, classes, modules, directive prologues,
+exponentiation assignment, labeled control flow, `switch`, `try`, `throw`,
+`for…in`, `for…of`, call and literal spreads, object methods/accessors and
+object-literal `__proto__` setters return `Unsupported`. Calls accept up to three
+arguments; constructors are limited by the HBC small-frame size. The compiler
+emits one global function through Mercury's native HBC container builder.
+Expanding these source constructs is the remaining forward-compiler work;
+decompiler opcode coverage does not imply matching source-language coverage in
+this direction.
 
 ## Current decompilation contract
 

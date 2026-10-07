@@ -143,7 +143,9 @@ non-string passthrough, and completion values.
 Native source compilation now includes arithmetic, global and property access,
 fixed-arity calls, short-circuit expressions, conditionals, and structured
 `if`/loop control flow. Compiler-owned labels are resolved to bytecode
-displacements after instruction selection.
+displacements after instruction selection. Update and compound assignments,
+sparse arrays, data-property object literals, and constructor calls lower to
+native HBC operations as well.
 
 ```sh
 cargo run -p mercury-swc --example compile -- input.js /tmp/example.hbc
