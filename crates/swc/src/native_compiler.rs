@@ -470,7 +470,7 @@ impl Compiler {
             ));
         }
 
-        let mut bindings = Vec::new();
+        let mut parameter_bindings = Vec::new();
         let simple_parameters = pending
             .params
             .iter()
@@ -481,8 +481,9 @@ impl Compiler {
             BindingKind::Parameter
         };
         for parameter in &pending.params {
-            collect_pattern_bindings(parameter, parameter_kind, &mut bindings)?;
+            collect_pattern_bindings(parameter, parameter_kind, &mut parameter_bindings)?;
         }
+        let mut body_bindings = Vec::new();
         let block = match &pending.body {
             PendingFunctionBody::Block(block) => Some(block),
             PendingFunctionBody::Expression(_) => None,
@@ -491,32 +492,32 @@ impl Compiler {
             let mut var_names = Vec::new();
             collect_var_declarations(&body.stmts, &mut var_names)?;
             for name in var_names {
-                add_binding(&mut bindings, name, BindingKind::Var)?;
+                add_binding(&mut body_bindings, name, BindingKind::Var)?;
             }
             for declaration in top_level_function_declarations(&body.stmts) {
                 add_binding(
-                    &mut bindings,
+                    &mut body_bindings,
                     declaration.ident.sym.to_string(),
                     BindingKind::Var,
                 )?;
             }
             for (name, kind) in direct_lexical_bindings(&body.stmts)? {
-                add_binding(&mut bindings, name, kind)?;
+                add_binding(&mut body_bindings, name, kind)?;
             }
         }
-        let arguments_is_shadowed = bindings
+        let arguments_is_shadowed = pending
+            .params
             .iter()
-            .any(|(name, kind)| name == "arguments" && *kind != BindingKind::Var)
-            || pending
-                .params
-                .iter()
-                .any(|parameter| pattern_binds(parameter, "arguments"));
+            .any(|parameter| pattern_binds(parameter, "arguments"));
         let has_implicit_arguments =
             pending.kind == NativeFunctionKind::Regular && !arguments_is_shadowed;
         if has_implicit_arguments {
-            bindings.retain(|(name, kind)| name != "arguments" || *kind != BindingKind::Var);
+            if simple_parameters {
+                body_bindings
+                    .retain(|(name, kind)| name != "arguments" || *kind != BindingKind::Var);
+            }
             add_binding(
-                &mut bindings,
+                &mut parameter_bindings,
                 LEXICAL_ARGUMENTS_BINDING.into(),
                 BindingKind::Var,
             )?;
@@ -525,12 +526,21 @@ impl Compiler {
             && (pending_body_contains_arrow(&pending.body)
                 || patterns_contain_arrow(&pending.params));
         if captures_this {
-            add_binding(&mut bindings, LEXICAL_THIS_BINDING.into(), BindingKind::Var)?;
+            add_binding(
+                &mut parameter_bindings,
+                LEXICAL_THIS_BINDING.into(),
+                BindingKind::Var,
+            )?;
         }
-        let environment_size = bindings.len() as u32;
+        if simple_parameters {
+            for (name, kind) in body_bindings.drain(..) {
+                add_binding(&mut parameter_bindings, name, kind)?;
+            }
+        }
+        let environment_size = parameter_bindings.len() as u32;
         self.begin_function(
             pending.id,
-            bindings,
+            parameter_bindings,
             pending.parent_scope,
             false,
             pending.kind,
@@ -568,6 +578,9 @@ impl Compiler {
                 self.release_register(value)?;
             }
         }
+        if !simple_parameters && !body_bindings.is_empty() {
+            self.enter_function_body_scope(body_bindings)?;
+        }
         match &pending.body {
             PendingFunctionBody::Block(body) => {
                 self.hoist_function_declarations(&body.stmts)?;
@@ -586,6 +599,48 @@ impl Compiler {
         }
         self.emit_implicit_return()?;
         self.finish_function(pending.name, param_count, environment_size, spec)
+    }
+
+    fn enter_function_body_scope(
+        &mut self,
+        bindings: Vec<(String, BindingKind)>,
+    ) -> Result<(), Error> {
+        let outer_scope = self
+            .scope
+            .clone()
+            .ok_or_else(|| Error::Bytecode("native compiler has no parameter scope".into()))?;
+        let outer_environment = self.environment_register()?;
+        let copies = bindings
+            .iter()
+            .filter_map(|(name, kind)| {
+                if *kind != BindingKind::Var {
+                    return None;
+                }
+                let source = outer_scope.bindings.get(name).copied().or_else(|| {
+                    (name == "arguments")
+                        .then(|| outer_scope.bindings.get(LEXICAL_ARGUMENTS_BINDING).copied())
+                        .flatten()
+                });
+                source.map(|binding| (name.clone(), binding))
+            })
+            .collect::<Vec<_>>();
+
+        let _ = self.enter_lexical_scope(bindings)?;
+        for (name, source) in copies {
+            let value = self.alloc_register()?;
+            self.emit(
+                "LoadFromEnvironment",
+                vec![
+                    reg(value),
+                    reg(outer_environment),
+                    DecodedOperand::U8(source.slot),
+                ],
+            );
+            self.emit_binding_initialization(&name, value)?;
+            self.release_register(value)?;
+        }
+        self.base_registers = self.next_register;
+        Ok(())
     }
 
     fn initialize_implicit_arguments(&mut self) -> Result<(), Error> {

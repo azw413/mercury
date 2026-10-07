@@ -617,6 +617,14 @@ fn native_rich_parameters_bindings_and_arguments_execute() {
         function argumentDefault(first = arguments[1], second) { return first; }
         print(argumentDefault(undefined, 6));
 
+        var outerDefault = 7;
+        function scopedDefault(first = outerDefault) { var outerDefault = 1; return [first, outerDefault]; }
+        var scoped = scopedDefault();
+        print(scoped[0], scoped[1]);
+        function copiedParameter(first = 3) { var first; return first; }
+        function varArguments(first = 1) { var arguments; return arguments.length; }
+        print(copiedParameter(), varArguments());
+
         function characters([first, , third, ...tail]) { return [first, third, tail.length, tail[0]]; }
         var chars = characters("abcd");
         print(chars[0], chars[1], chars[2]);
@@ -658,8 +666,8 @@ fn native_rich_parameters_bindings_and_arguments_execute() {
         SourceLanguage::JavaScript,
     );
     let expected = concat!(
-        "2 5 1\n", "7 10 1\n", "1 2 2\n", "3\n", "2 1 9\n", "6\n", "a c 1\n", "d\n", "1 9 8\n",
-        "3 5 4\n", "6\n", "3 a c\n", "4 8 1\n", "2 1 2\n", "true\n", "11\n",
+        "2 5 1\n", "7 10 1\n", "1 2 2\n", "3\n", "2 1 9\n", "6\n", "7 1\n", "3 0\n", "a c 1\n",
+        "d\n", "1 9 8\n", "3 5 4\n", "6\n", "3 a c\n", "4 8 1\n", "2 1 2\n", "true\n", "11\n",
     );
     assert_eq!(execute(bytes.clone()), expected);
     assert_eq!(
