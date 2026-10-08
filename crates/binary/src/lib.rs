@@ -21,7 +21,7 @@ pub use functions::{
     FunctionHeader, FunctionHeaderFlags, FunctionInfo,
 };
 pub use header::{HbcHeaderLayout, write_file_header, BytecodeOptions, HbcVersionedFileHeader};
-pub use module::{build_minimal_module, HbcBuildError, MinimalFunction, MinimalModule};
+pub use module::{build_minimal_module, HbcBuildError, HbcString, MinimalFunction, MinimalModule};
 pub use sections::HbcSectionBoundaries;
 pub use tables::{
     write_overflow_string_table_entries, write_pair_table_entries,

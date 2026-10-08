@@ -4,14 +4,14 @@ use std::{
 };
 
 use mercury_binary::{
-    DecodedInstruction, DecodedOperand, ExceptionHandlerEntry, MinimalFunction, MinimalModule,
-    StringKind, build_minimal_module, encode_instruction,
+    DecodedInstruction, DecodedOperand, ExceptionHandlerEntry, HbcString, MinimalFunction,
+    MinimalModule, StringKind, build_minimal_module, encode_instruction,
 };
 use mercury_spec::BytecodeSpec;
 use swc_core::ecma::ast::{
     ArrowExpr, AssignOp, AssignTarget, BinaryOp, BlockStmt, BlockStmtOrExpr, Callee, Decl, Expr,
-    Function, Lit, MemberExpr, MemberProp, MetaPropKind, ObjectPatProp, Pat, Program, Prop,
-    PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt, UnaryOp, UpdateOp, VarDecl,
+    ForHead, Function, Lit, MemberExpr, MemberProp, MetaPropKind, ObjectPatProp, Pat, Program,
+    Prop, PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt, UnaryOp, UpdateOp, VarDecl,
     VarDeclKind, VarDeclOrExpr,
 };
 use swc_core::ecma::visit::{Visit, VisitWith};
@@ -24,6 +24,7 @@ const LEXICAL_ARGUMENTS_BINDING: &str = "\0mercury_lexical_arguments";
 const THROW_TYPE_ERROR_BUILTIN: u8 = 42;
 const COPY_DATA_PROPERTIES_BUILTIN: u8 = 44;
 const COPY_REST_ARGS_BUILTIN: u8 = 45;
+const EXPONENTIATION_BUILTIN: u8 = 49;
 
 /// Native SWC-AST to Hermes-bytecode compiler.
 ///
@@ -57,9 +58,9 @@ impl HbcCompiler {
 struct Compiler {
     version: u32,
     instructions: Vec<DecodedInstruction>,
-    strings: Vec<String>,
+    strings: Vec<HbcString>,
     string_kinds: Vec<StringKind>,
-    string_ids: HashMap<String, u32>,
+    string_ids: HashMap<HbcString, u32>,
     next_register: u16,
     frame_size: u16,
     max_call_arguments: u16,
@@ -800,6 +801,7 @@ impl Compiler {
             Stmt::While(statement) => self.compile_while(statement),
             Stmt::DoWhile(statement) => self.compile_do_while(statement),
             Stmt::For(statement) => self.compile_for(statement),
+            Stmt::ForIn(statement) => self.compile_for_in(statement),
             Stmt::Switch(statement) => self.compile_switch(statement),
             Stmt::Try(statement) => self.compile_try(statement),
             Stmt::Throw(statement) => {
@@ -1044,6 +1046,155 @@ impl Compiler {
         }
         self.emit_branch("JmpLong", condition, None);
         self.mark_label(end)
+    }
+
+    fn compile_for_in(
+        &mut self,
+        statement: &swc_core::ecma::ast::ForInStmt,
+    ) -> Result<(), Error> {
+        let lexical_bindings = match &statement.left {
+            ForHead::VarDecl(declaration) if declaration.kind != VarDeclKind::Var => {
+                Some(declaration_bindings(declaration)?)
+            }
+            _ => None,
+        };
+        if let ForHead::VarDecl(declaration) = &statement.left
+            && (declaration.decls.len() != 1 || declaration.decls[0].init.is_some())
+        {
+            return Err(Error::Unsupported(
+                "for-in declarations require one uninitialized binding".into(),
+            ));
+        }
+
+        // The right-hand expression is evaluated before a lexical loop binding
+        // enters scope.
+        let object = self.compile_expression(&statement.right)?;
+        let lexical_scope = if let Some(bindings) = lexical_bindings {
+            let (previous_scope, parent_environment, iteration_environment) =
+                self.enter_lexical_scope(bindings)?;
+            let iteration_bindings = self.sorted_current_bindings()?;
+            Some((
+                previous_scope,
+                parent_environment,
+                iteration_environment,
+                iteration_bindings,
+            ))
+        } else {
+            None
+        };
+
+        let list = self.alloc_register()?;
+        let index = self.alloc_register()?;
+        let size = self.alloc_register()?;
+        let property = self.alloc_register()?;
+        let next = self.new_label();
+        let advance = self.new_label();
+        let end = self.new_label();
+
+        self.emit(
+            "GetPNameList",
+            vec![reg(list), reg(object), reg(index), reg(size)],
+        );
+        self.emit_branch("JmpUndefinedLong", end, Some(list));
+        self.mark_label(next)?;
+        self.emit(
+            "GetNextPName",
+            vec![reg(property), reg(list), reg(object), reg(index), reg(size)],
+        );
+        self.emit_branch("JmpUndefinedLong", end, Some(property));
+        self.compile_for_in_head(&statement.left, property)?;
+
+        let finally_depth = self.finally_stack.len();
+        self.break_targets.push(ControlTarget {
+            label: end,
+            finally_depth,
+        });
+        self.continue_targets.push(ControlTarget {
+            label: advance,
+            finally_depth,
+        });
+        self.compile_statement(&statement.body)?;
+        self.continue_targets.pop();
+        self.break_targets.pop();
+
+        self.mark_label(advance)?;
+        if let Some((_, parent_environment, iteration_environment, bindings)) = &lexical_scope {
+            self.reset_iteration_environment(
+                *parent_environment,
+                *iteration_environment,
+                bindings,
+            )?;
+        }
+        self.emit_branch("JmpLong", next, None);
+        self.mark_label(end)?;
+
+        self.release_register(property)?;
+        self.release_register(size)?;
+        self.release_register(index)?;
+        self.release_register(list)?;
+        if let Some((previous_scope, parent_environment, iteration_environment, _)) = lexical_scope {
+            self.leave_lexical_scope(
+                previous_scope,
+                parent_environment,
+                iteration_environment,
+            )?;
+        }
+        self.release_register(object)
+    }
+
+    fn compile_for_in_head(&mut self, head: &ForHead, value: u8) -> Result<(), Error> {
+        match head {
+            ForHead::VarDecl(declaration) => {
+                self.compile_pattern_initialization(&declaration.decls[0].name, value)
+            }
+            ForHead::Pat(pattern) => self.compile_assignment_pattern(pattern, value),
+            ForHead::UsingDecl(_) => Err(Error::Unsupported(
+                "using declarations in for-in are not supported by native compilation yet".into(),
+            )),
+        }
+    }
+
+    fn compile_assignment_pattern(&mut self, pattern: &Pat, value: u8) -> Result<(), Error> {
+        match pattern {
+            Pat::Ident(identifier) => self.emit_identifier_store(identifier.id.sym.as_ref(), value),
+            Pat::Expr(expression) => self.compile_assignment_target_value(expression, value),
+            _ => Err(Error::Unsupported(
+                "destructuring for-in assignment targets are not supported by native compilation yet"
+                    .into(),
+            )),
+        }
+    }
+
+    fn compile_assignment_target_value(&mut self, target: &Expr, value: u8) -> Result<(), Error> {
+        match target {
+            Expr::Ident(identifier) => self.emit_identifier_store(identifier.sym.as_ref(), value),
+            Expr::Member(member) => {
+                let object = self.compile_expression(&member.obj)?;
+                match &member.prop {
+                    MemberProp::Ident(property) => {
+                        self.emit_put_by_id(object, value, property.sym.as_ref())?;
+                    }
+                    MemberProp::Computed(property) => {
+                        let key = self.compile_expression(&property.expr)?;
+                        self.emit("PutByVal", vec![reg(object), reg(key), reg(value)]);
+                        self.release_register(key)?;
+                    }
+                    MemberProp::PrivateName(_) => {
+                        return Err(Error::Unsupported(
+                            "private for-in targets are not supported by native compilation yet"
+                                .into(),
+                        ));
+                    }
+                }
+                self.release_register(object)
+            }
+            Expr::Paren(parenthesized) => {
+                self.compile_assignment_target_value(&parenthesized.expr, value)
+            }
+            _ => Err(Error::Unsupported(
+                "this for-in assignment target is not supported by native compilation yet".into(),
+            )),
+        }
     }
 
     fn compile_switch(&mut self, statement: &swc_core::ecma::ast::SwitchStmt) -> Result<(), Error> {
@@ -1344,6 +1495,41 @@ impl Compiler {
         self.release_register(next_environment)
     }
 
+    fn reset_iteration_environment(
+        &mut self,
+        parent_environment: u8,
+        iteration_environment: u8,
+        bindings: &[Binding],
+    ) -> Result<(), Error> {
+        let next_environment = self.alloc_register()?;
+        self.emit(
+            "CreateInnerEnvironment",
+            vec![
+                reg(next_environment),
+                reg(parent_environment),
+                DecodedOperand::U32(bindings.len() as u32),
+            ],
+        );
+        for binding in bindings {
+            let empty = self.alloc_register()?;
+            self.emit("LoadConstEmpty", vec![reg(empty)]);
+            self.emit(
+                "StoreToEnvironment",
+                vec![
+                    reg(next_environment),
+                    DecodedOperand::U8(binding.slot),
+                    reg(empty),
+                ],
+            );
+            self.release_register(empty)?;
+        }
+        self.emit(
+            "Mov",
+            vec![reg(iteration_environment), reg(next_environment)],
+        );
+        self.release_register(next_environment)
+    }
+
     fn compile_var_declaration(&mut self, declaration: &VarDecl) -> Result<(), Error> {
         for declarator in &declaration.decls {
             if let Some(initializer) = &declarator.init {
@@ -1556,6 +1742,26 @@ impl Compiler {
         Ok(output)
     }
 
+    fn emit_binary_operation(
+        &mut self,
+        operator: BinaryOp,
+        left: u8,
+        right: u8,
+    ) -> Result<(), Error> {
+        if operator == BinaryOp::Exp {
+            let output = self.emit_builtin_call(EXPONENTIATION_BUILTIN, &[left, right])?;
+            self.emit("Mov", vec![reg(left), reg(output)]);
+            return self.release_register(output);
+        }
+        let opcode = binary_opcode(operator).ok_or_else(|| {
+            Error::Unsupported(format!(
+                "binary operator `{operator}` is not supported by native compilation yet"
+            ))
+        })?;
+        self.emit(opcode, vec![reg(left), reg(left), reg(right)]);
+        Ok(())
+    }
+
     fn compile_expression(&mut self, expression: &Expr) -> Result<u8, Error> {
         match expression {
             Expr::Lit(literal) => self.compile_literal(literal),
@@ -1599,15 +1805,9 @@ impl Compiler {
                 self.compile_short_circuit(expression.op, &expression.left, &expression.right)
             }
             Expr::Bin(expression) => {
-                let opcode = binary_opcode(expression.op).ok_or_else(|| {
-                    Error::Unsupported(format!(
-                        "binary operator `{}` is not supported by native compilation yet",
-                        expression.op
-                    ))
-                })?;
                 let left = self.compile_expression(&expression.left)?;
                 let right = self.compile_expression(&expression.right)?;
-                self.emit(opcode, vec![reg(left), reg(left), reg(right)]);
+                self.emit_binary_operation(expression.op, left, right)?;
                 self.release_register(right)?;
                 Ok(left)
             }
@@ -1714,13 +1914,11 @@ impl Compiler {
         match name {
             PropName::Ident(identifier) => self.compile_string_value(identifier.sym.as_ref()),
             PropName::Str(string) => {
-                let value = string.value.as_str().ok_or_else(|| {
-                    Error::Unsupported(
-                        "property names containing lone UTF-16 surrogates are not supported by native compilation yet"
-                            .into(),
-                    )
-                })?;
-                self.compile_string_value(value)
+                let value = match string.value.as_str() {
+                    Some(value) => HbcString::from(value),
+                    None => HbcString::Utf16(string.value.to_ill_formed_utf16().collect()),
+                };
+                self.compile_hbc_string_value(value)
             }
             PropName::Num(number) => {
                 let output = self.alloc_register()?;
@@ -1735,8 +1933,12 @@ impl Compiler {
     }
 
     fn compile_string_value(&mut self, value: &str) -> Result<u8, Error> {
+        self.compile_hbc_string_value(value.into())
+    }
+
+    fn compile_hbc_string_value(&mut self, value: HbcString) -> Result<u8, Error> {
         let output = self.alloc_register()?;
-        let id = self.intern_string(value)?;
+        let id = self.intern(value, StringKind::String)?;
         self.emit_load_string(output, id);
         Ok(output)
     }
@@ -1819,13 +2021,11 @@ impl Compiler {
             ),
             Lit::Num(number) => self.emit_number(output, number.value),
             Lit::Str(string) => {
-                let value = string.value.as_str().ok_or_else(|| {
-                    Error::Unsupported(
-                        "string literals containing lone UTF-16 surrogates are not supported by native compilation yet"
-                            .into(),
-                    )
-                })?;
-                let id = self.intern_string(value)?;
+                let value = match string.value.as_str() {
+                    Some(value) => HbcString::from(value),
+                    None => HbcString::Utf16(string.value.to_ill_formed_utf16().collect()),
+                };
+                let id = self.intern(value, StringKind::String)?;
                 self.emit_load_string(output, id);
             }
             _ => {
@@ -2217,11 +2417,6 @@ impl Compiler {
                 "assignment operator `{operator}` is not supported by native compilation yet"
             ))
         })?;
-        let opcode = binary_opcode(binary).ok_or_else(|| {
-            Error::Unsupported(format!(
-                "assignment operator `{operator}` is not supported by native compilation yet"
-            ))
-        })?;
         let AssignTarget::Simple(target) = target else {
             return Err(Error::Unsupported(
                 "destructuring compound assignment is not supported by native compilation yet"
@@ -2232,13 +2427,13 @@ impl Compiler {
             SimpleAssignTarget::Ident(identifier) => {
                 let current = self.compile_identifier(identifier.id.sym.as_ref())?;
                 let right = self.compile_expression(right)?;
-                self.emit(opcode, vec![reg(current), reg(current), reg(right)]);
+                self.emit_binary_operation(binary, current, right)?;
                 self.release_register(right)?;
                 self.emit_identifier_store(identifier.id.sym.as_ref(), current)?;
                 Ok(current)
             }
             SimpleAssignTarget::Member(member) => {
-                self.compile_member_compound_assignment(member, opcode, right)
+                self.compile_member_compound_assignment(member, binary, right)
             }
             SimpleAssignTarget::Paren(paren) => {
                 let nested = AssignTarget::try_from(paren.expr.clone()).map_err(|_| {
@@ -2367,7 +2562,7 @@ impl Compiler {
     fn compile_member_compound_assignment(
         &mut self,
         member: &MemberExpr,
-        opcode: &str,
+        operator: BinaryOp,
         right: &Expr,
     ) -> Result<u8, Error> {
         let object = self.compile_expression(&member.obj)?;
@@ -2376,7 +2571,7 @@ impl Compiler {
                 let current = self.alloc_register()?;
                 self.emit_get_by_id(current, object, property.sym.as_ref(), false)?;
                 let right = self.compile_expression(right)?;
-                self.emit(opcode, vec![reg(current), reg(current), reg(right)]);
+                self.emit_binary_operation(operator, current, right)?;
                 self.release_register(right)?;
                 self.emit_put_by_id(object, current, property.sym.as_ref())?;
                 self.emit("Mov", vec![reg(object), reg(current)]);
@@ -2387,7 +2582,7 @@ impl Compiler {
                 let current = self.alloc_register()?;
                 self.emit("GetByVal", vec![reg(current), reg(object), reg(key)]);
                 let right = self.compile_expression(right)?;
-                self.emit(opcode, vec![reg(current), reg(current), reg(right)]);
+                self.emit_binary_operation(operator, current, right)?;
                 self.release_register(right)?;
                 self.emit("PutByVal", vec![reg(object), reg(key), reg(current)]);
                 self.emit("Mov", vec![reg(object), reg(current)]);
@@ -2748,24 +2943,20 @@ impl Compiler {
     }
 
     fn intern_identifier(&mut self, value: &str) -> Result<u32, Error> {
-        let id = self.intern(value, StringKind::Identifier)?;
+        let id = self.intern(value.into(), StringKind::Identifier)?;
         self.string_kinds[id as usize] = StringKind::Identifier;
         Ok(id)
     }
 
-    fn intern_string(&mut self, value: &str) -> Result<u32, Error> {
-        self.intern(value, StringKind::String)
-    }
-
-    fn intern(&mut self, value: &str, kind: StringKind) -> Result<u32, Error> {
-        if let Some(id) = self.string_ids.get(value) {
+    fn intern(&mut self, value: HbcString, kind: StringKind) -> Result<u32, Error> {
+        if let Some(id) = self.string_ids.get(&value) {
             return Ok(*id);
         }
         let id = u32::try_from(self.strings.len())
             .map_err(|_| Error::Unsupported("too many strings for HBC 96".into()))?;
-        self.strings.push(value.to_owned());
+        self.strings.push(value.clone());
         self.string_kinds.push(kind);
-        self.string_ids.insert(value.to_owned(), id);
+        self.string_ids.insert(value, id);
         Ok(id)
     }
 
@@ -3142,6 +3333,14 @@ fn collect_statement_var_declarations(
         Stmt::DoWhile(statement) => collect_statement_var_declarations(&statement.body, names)?,
         Stmt::For(statement) => {
             if let Some(VarDeclOrExpr::VarDecl(declaration)) = &statement.init
+                && declaration.kind == VarDeclKind::Var
+            {
+                collect_declaration_names(declaration, names)?;
+            }
+            collect_statement_var_declarations(&statement.body, names)?;
+        }
+        Stmt::ForIn(statement) => {
+            if let ForHead::VarDecl(declaration) = &statement.left
                 && declaration.kind == VarDeclKind::Var
             {
                 collect_declaration_names(declaration, names)?;

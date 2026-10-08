@@ -100,7 +100,7 @@ fn compiles_property_reads_writes_and_receiver_calls() {
 fn rejects_unsupported_syntax_at_the_native_boundary() {
     let module = SwcModule::parse(
         "input.js",
-        "for (var key in value) print(key);",
+        "for (var value of values) print(value);",
         SourceLanguage::JavaScript,
         SourceKind::Script,
     )
@@ -108,8 +108,44 @@ fn rejects_unsupported_syntax_at_the_native_boundary() {
     let error = HbcCompiler::new(96).compile(&module).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "unsupported: for-in statements are not supported by native compilation yet"
+        "unsupported: for-of statements are not supported by native compilation yet"
     );
+}
+
+#[test]
+fn compiles_for_in_exponentiation_and_wtf8_strings() {
+    let bytes = compile(
+        r#"
+        var key;
+        var target = {};
+        for (key in target) target.last = key;
+        for (let lexical in target) (() => lexical)();
+        for (target.key in target) break;
+        var value = 2 ** 3;
+        value **= 2;
+        target.value **= value;
+        var lone = "\ud800";
+        "#,
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let names = raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .map(|instruction| instruction.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&"GetPNameList"));
+    assert!(names.contains(&"GetNextPName"));
+    assert!(names.contains(&"CallBuiltin"));
+    assert!(container
+        .small_string_table_entries
+        .iter()
+        .any(|entry| entry.is_utf16 && entry.length == 1));
+    decompile(&bytes).unwrap();
 }
 
 #[test]
@@ -838,6 +874,55 @@ fn native_strictness_and_general_exception_control_flow_execute() {
             "7 f0f1f2l0l1x\n",
         )
     );
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_for_in_exponentiation_and_wtf8_strings_execute() {
+    let bytes = compile(
+        r#"
+        var parent = { inherited: 1 };
+        var object = Object.create(parent);
+        object.first = 1;
+        object.second = 2;
+        var names = [];
+        for (var key in object) {
+            if (key === "second") continue;
+            names.push(key);
+            if (key === "inherited") break;
+        }
+
+        var closures = [];
+        for (let name in { alpha: 1, beta: 2 }) closures.push(() => name);
+        var constants = [];
+        for (const name in { gamma: 3, delta: 4 }) constants.push(() => name);
+        var target = {};
+        for (target.key in { assigned: true }) {}
+
+        var order = "";
+        function base() { order += "b"; return 2; }
+        function power() { order += "p"; return 3; }
+        var holder = { value: 2 };
+        holder.value **= 3;
+        var lone = "\ud800";
+
+        print(names.join(","));
+        print(closures[0](), closures[1](), constants[0](), constants[1](), target.key);
+        print(base() ** power(), order, holder.value);
+        print(lone.length, lone.charCodeAt(0));
+        "#,
+        SourceLanguage::JavaScript,
+    );
+    let expected = concat!(
+        "first,inherited\n",
+        "alpha beta gamma delta assigned\n",
+        "8 bp 8\n",
+        "1 55296\n",
+    );
+    let recovered = decompile(&bytes).unwrap();
+    assert_eq!(execute(bytes), expected);
+    let rebuilt = HbcCompiler::new(96).compile(&recovered).unwrap();
+    assert_eq!(execute(rebuilt), expected);
 }
 
 #[test]

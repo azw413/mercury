@@ -14,6 +14,7 @@ use crate::tables::{
 use crate::{DecodedInstruction, DecodedOperand};
 use mercury_spec::BytecodeSpec;
 use sha1::{Digest, Sha1};
+use std::borrow::Cow;
 use thiserror::Error;
 
 const SMALL_FUNCTION_HEADER_SIZE: usize = 16;
@@ -28,12 +29,49 @@ const SMALL_STRING_MAX_LENGTH: u32 = 0xff - 1;
 pub struct MinimalModule {
     pub version: u32,
     pub global_code_index: u32,
-    pub strings: Vec<String>,
+    pub strings: Vec<HbcString>,
     pub string_kinds: Vec<StringKind>,
     pub literal_value_buffer: Vec<u8>,
     pub object_key_buffer: Vec<u8>,
     pub object_value_buffer: Vec<u8>,
     pub functions: Vec<MinimalFunction>,
+}
+
+/// A JavaScript string represented either as valid UTF-8 or as exact UTF-16
+/// code units. The latter preserves lone surrogates, which Rust [`String`]
+/// cannot represent.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum HbcString {
+    Utf8(String),
+    Utf16(Vec<u16>),
+}
+
+impl HbcString {
+    fn as_utf8(&self) -> Option<&str> {
+        match self {
+            Self::Utf8(value) => Some(value),
+            Self::Utf16(_) => None,
+        }
+    }
+
+    fn utf16_units(&self) -> Cow<'_, [u16]> {
+        match self {
+            Self::Utf8(value) => Cow::Owned(value.encode_utf16().collect()),
+            Self::Utf16(value) => Cow::Borrowed(value),
+        }
+    }
+}
+
+impl From<String> for HbcString {
+    fn from(value: String) -> Self {
+        Self::Utf8(value)
+    }
+}
+
+impl From<&str> for HbcString {
+    fn from(value: &str) -> Self {
+        Self::Utf8(value.to_owned())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -462,21 +500,26 @@ fn ensure_small_header_fits(header: &FunctionHeader) -> Option<()> {
     }
 }
 
-fn build_string_tables(strings: &[String]) -> BuiltStringTable {
+fn build_string_tables(strings: &[HbcString]) -> BuiltStringTable {
     let mut storage = Vec::new();
     let mut small_entries = Vec::with_capacity(strings.len());
     let mut overflow_entries = Vec::new();
 
     for string in strings {
-        let is_utf16 = !string.is_ascii();
+        let is_utf16 = !string.as_utf8().is_some_and(str::is_ascii);
         let offset = storage.len() as u32;
-        let encoded = if is_utf16 {
-            encode_utf16le(string)
+        let utf16 = is_utf16.then(|| string.utf16_units());
+        let encoded = if let Some(units) = &utf16 {
+            encode_utf16le(units)
         } else {
-            string.as_bytes().to_vec()
+            string
+                .as_utf8()
+                .expect("ASCII HBC string is valid UTF-8")
+                .as_bytes()
+                .to_vec()
         };
-        let length_units = if is_utf16 {
-            string.encode_utf16().count() as u32
+        let length_units = if let Some(units) = &utf16 {
+            units.len() as u32
         } else {
             encoded.len() as u32
         };
@@ -515,7 +558,7 @@ fn build_string_tables(strings: &[String]) -> BuiltStringTable {
 
 fn classify_string_kinds(
     module: &MinimalModule,
-    string_pool: &[String],
+    string_pool: &[HbcString],
 ) -> Result<Vec<StringKind>, HbcBuildError> {
     let mut kinds = vec![StringKind::String; string_pool.len()];
 
@@ -553,7 +596,7 @@ fn instruction_string_id(instruction: &DecodedInstruction) -> Option<u32> {
     }
 }
 
-fn build_identifier_hashes(strings: &[String], kinds: &[StringKind]) -> Vec<u32> {
+fn build_identifier_hashes(strings: &[HbcString], kinds: &[StringKind]) -> Vec<u32> {
     strings
         .iter()
         .zip(kinds.iter())
@@ -592,24 +635,27 @@ fn count_runs(kinds: &[StringKind]) -> usize {
     encode_string_kind_entries(kinds).len()
 }
 
-fn encode_utf16le(value: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    for unit in value.encode_utf16() {
+fn encode_utf16le(value: &[u16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(value.len() * 2);
+    for unit in value.iter().copied() {
         out.extend_from_slice(&unit.to_le_bytes());
     }
     out
 }
 
 fn intern_string_with_kind(
-    pool: &mut Vec<String>,
+    pool: &mut Vec<HbcString>,
     kinds: &mut Vec<StringKind>,
     value: &str,
     kind: StringKind,
 ) -> u32 {
-    if let Some(index) = pool.iter().position(|candidate| candidate == value) {
+    if let Some(index) = pool
+        .iter()
+        .position(|candidate| candidate.as_utf8() == Some(value))
+    {
         index as u32
     } else {
-        pool.push(value.to_owned());
+        pool.push(value.into());
         kinds.push(kind);
         (pool.len() - 1) as u32
     }
@@ -623,8 +669,8 @@ fn write_u32_array(values: &[u32]) -> Vec<u8> {
     bytes
 }
 
-fn hash_string(value: &str) -> u32 {
-    value.encode_utf16().fold(0u32, |hash, c| {
+fn hash_string(value: &HbcString) -> u32 {
+    value.utf16_units().iter().copied().fold(0u32, |hash, c| {
         let hash = hash.wrapping_add(c as u32);
         let hash = hash.wrapping_add(hash << 10);
         hash ^ (hash >> 6)

@@ -105,9 +105,9 @@ not enabled.
 The native compiler currently handles scripts and regular function bodies made
 from `var`, `let`, and `const` declarations, function declarations, blocks,
 expression statements, debugger statements, returns, `if`/`else`, `while`,
-`do…while`, `for`, `switch`, `throw`, and `try`/`catch`/`finally`. Switch cases
-preserve fallthrough, and unlabeled breaks and continues retain the correct
-switch/loop nesting.
+`do…while`, `for`, `for…in`, `switch`, `throw`, and `try`/`catch`/`finally`.
+Switch cases preserve fallthrough, and unlabeled breaks and continues retain the
+correct switch/loop nesting.
 Function declarations are instantiated at function entry, including local
 recursion and calls before their textual declaration. Parameters and local
 bindings use parent-linked HBC environments. Defaults are evaluated from left to
@@ -139,6 +139,9 @@ reads, `typeof`, or assignments in that interval raise a `ReferenceError` throug
 `ThrowIfEmpty`. Escaping closures retain block bindings. Loop-body blocks receive
 a fresh environment on every entry, and `for (let …)` clones its environment
 before each update so closures retain the value from their own iteration.
+`for…in` uses Hermes property-name enumeration opcodes and creates a fresh empty
+environment for each lexical iteration, preserving `let` and `const` closure
+capture.
 Top-level lexical bindings remain separate from properties on the global object,
 and declarations that conflict with restricted global properties throw a
 `SyntaxError`. Writes to `const` evaluate their right-hand side and then throw a
@@ -151,9 +154,11 @@ simple assignment, sequence and conditional expressions, short-circuit `&&`,
 `||`, and `??`, calls, `new.target`, and property deletion. Calls use fixed HBC
 forms for up to three arguments and the general call form above that. Prefix and
 postfix increment/decrement, arithmetic and bitwise compound assignment, and `&&=`,
-`||=`, and `??=` preserve member evaluation order. Method calls preserve their
-receiver. Sparse array literals and object literals with data properties support
-computed keys and duplicate keys. `new` uses HBC's `CreateThis`, `Construct`, and
+`||=`, `??=`, and `**=` preserve member evaluation order. Exponentiation uses the
+HBC 96 exponentiation builtin. Method calls preserve their receiver. Sparse array
+literals and object literals with data properties support computed keys and
+duplicate keys. String values and property keys retain exact UTF-16 code units,
+including lone surrogates. `new` uses HBC's `CreateThis`, `Construct`, and
 `SelectObject` sequence. TypeScript annotations are stripped directly on a copy
 of the SWC tree before lowering.
 
@@ -170,9 +175,9 @@ expressions retain their HBC function names, which is sufficient for recovered
 functions; a named expression's source-level self-binding is not implemented yet.
 
 Destructuring assignments, block-level function declarations, async and
-generator functions, classes, modules, exponentiation assignment, labeled
-control flow, `for…in`, `for…of`, call and literal spreads, object
-methods/accessors, and object-literal `__proto__` setters return `Unsupported`.
+generator functions, classes, modules, labeled control flow, `for…of`, call and
+literal spreads, object methods/accessors, and object-literal `__proto__` setters
+return `Unsupported`.
 Constructors remain limited by the HBC small-frame size. Expanding these source
 constructs is the remaining forward-compiler work; decompiler opcode coverage
 does not imply matching source-language coverage in this direction.

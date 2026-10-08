@@ -86,7 +86,7 @@ fn build_test_module(strings: Vec<String>, functions: Vec<MinimalFunction>) -> V
         &MinimalModule {
             version: 96,
             global_code_index: 0,
-            strings,
+            strings: strings.into_iter().map(Into::into).collect(),
             string_kinds: vec![],
             literal_value_buffer: vec![],
             object_key_buffer: vec![],
@@ -916,11 +916,21 @@ fn object_spread_and_rest_preserve_keys_descriptors_and_proxy_order() {
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn utf16_strings_preserve_paired_and_unpaired_surrogates() {
-    assert_runtime_roundtrip(
+    let expected = "units 1 d800 1 dfff 2 d83d de00 3 d800 41 dfff\nbuffered dfff 2 3 dfff 2 3 d800\nproperty true true true false\n";
+    let module = SwcModule::parse(
         "utf16-strings.js",
         include_str!("fixtures/utf16_strings.js"),
-        "units 1 d800 1 dfff 2 d83d de00 3 d800 41 dfff\nbuffered dfff 2 3 dfff 2 3 d800\nproperty true true true false\n",
-    );
+        SourceLanguage::JavaScript,
+        SourceKind::Script,
+    )
+    .unwrap();
+    let original = compiler().compile(&module).unwrap();
+    assert_eq!(execute(&original), expected, "original source");
+    let recovered = decompile(&original).unwrap();
+    let external = compiler().compile(&recovered).unwrap();
+    assert_eq!(execute(&external), expected, "external rebuild");
+    let native = HbcCompiler::new(96).compile(&recovered).unwrap();
+    assert_eq!(execute(&native), expected, "native rebuild");
 }
 
 #[test]

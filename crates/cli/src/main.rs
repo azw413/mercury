@@ -256,7 +256,7 @@ fn build_minimal_module_from_semantic(
     MinimalModule {
         version: target_version,
         global_code_index: 0,
-        strings: raised.strings.clone(),
+        strings: raised.strings.iter().cloned().map(Into::into).collect(),
         string_kinds: raised
             .strings
             .iter()

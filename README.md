@@ -153,7 +153,9 @@ fixed-arity calls, short-circuit expressions, conditionals, and structured
 `if`/loop control flow. Compiler-owned labels are resolved to bytecode
 displacements after instruction selection. Update and compound assignments,
 sparse arrays, data-property object literals, and constructor calls lower to
-native HBC operations as well. Regular function declarations and anonymous
+native HBC operations as well. Property enumeration uses native `for…in`
+opcodes, exponentiation uses the HBC builtin, and the string builder preserves
+lone UTF-16 surrogates. Regular function declarations and anonymous
 functions compile into a multi-function HBC graph with parameter and local
 bindings in parent-linked environments. This supports hoisting, recursion,
 multilevel capture, shared mutation between sibling closures, independent state
