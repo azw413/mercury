@@ -101,7 +101,7 @@ fn compiles_property_reads_writes_and_receiver_calls() {
 fn rejects_unsupported_syntax_at_the_native_boundary() {
     let module = SwcModule::parse(
         "input.js",
-        "var value = { method() {} };",
+        "var value = class {};",
         SourceLanguage::JavaScript,
         SourceKind::Script,
     )
@@ -109,7 +109,7 @@ fn rejects_unsupported_syntax_at_the_native_boundary() {
     let error = HbcCompiler::new(96).compile(&module).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "unsupported: object methods and accessors require native function compilation"
+        "unsupported: class expressions are not supported by native compilation yet"
     );
 }
 
@@ -461,19 +461,34 @@ fn compiles_constant_writes_as_runtime_type_errors() {
 }
 
 #[test]
-fn rejects_object_prototype_setters_until_parent_construction_is_supported() {
-    let module = SwcModule::parse(
-        "input.js",
-        "var object = { __proto__: null };",
+fn compiles_object_methods_accessors_and_prototype_setters() {
+    let bytes = compile(
+        "var parent = {}; var key = 'value'; var object = { before: 1, __proto__: parent, method(value) { return value; }, get fixed() { return 2; }, set fixed(value) { this.saved = value; }, get [key]() { return 3; }, set [key](value) { this.saved = value; }, ['__proto__']: 4 };",
         SourceLanguage::JavaScript,
-        SourceKind::Script,
-    )
-    .unwrap();
-    let error = HbcCompiler::new(96).compile(&module).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "unsupported: object-literal `__proto__` setters are not supported by native compilation yet"
     );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let names = raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .map(|instruction| instruction.name.as_str())
+        .collect::<Vec<_>>();
+    let builtins = raw.functions[0]
+        .instructions
+        .iter()
+        .filter(|instruction| instruction.name == "CallBuiltin")
+        .filter_map(|instruction| match instruction.operands.get(1) {
+            Some(RawOperand::U8(value)) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&"PutOwnGetterSetterByVal"));
+    assert!(names.contains(&"CreateClosure"));
+    assert!(builtins.contains(&37), "prototype-set builtin missing");
+    decompile(&bytes).unwrap();
 }
 
 #[test]
@@ -597,6 +612,23 @@ fn native_spreads_execute_and_self_host() {
         "call 16\n",
         "new 6 true\n",
         "events array0,array1,array2,get,callee,call0,call1,new0,new1\n",
+    );
+    let original = compile(source, SourceLanguage::JavaScript);
+    assert_eq!(execute(original.clone()), expected);
+    let recovered = decompile(&original).unwrap();
+    let rebuilt = HbcCompiler::new(96).compile(&recovered).unwrap();
+    assert_eq!(execute(rebuilt), expected);
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_object_methods_accessors_and_prototypes_self_host() {
+    let source = include_str!("fixtures/object_methods.js");
+    let expected = concat!(
+        "values 12 9 11 4 true 7 method\n",
+        "descriptors true true get fixed set fixed __proto__\n",
+        "prototypes true false true 3\n",
+        "events before,key:method,key:value,key:value,proto,after,set:9,method,get\n",
     );
     let original = compile(source, SourceLanguage::JavaScript);
     assert_eq!(execute(original.clone()), expected);

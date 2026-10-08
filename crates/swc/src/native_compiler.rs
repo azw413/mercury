@@ -21,6 +21,7 @@ use crate::{Error, SwcModule};
 const LEXICAL_THIS_BINDING: &str = "\0mercury_lexical_this";
 const LEXICAL_ARGUMENTS_BINDING: &str = "\0mercury_lexical_arguments";
 // Hermes 0.12's HBC 96 runtime uses the legacy private-builtin layout.
+const SILENT_SET_PROTOTYPE_OF_BUILTIN: u8 = 37;
 const THROW_TYPE_ERROR_BUILTIN: u8 = 42;
 const COPY_DATA_PROPERTIES_BUILTIN: u8 = 44;
 const COPY_REST_ARGS_BUILTIN: u8 = 45;
@@ -449,6 +450,25 @@ impl Compiler {
                 .iter()
                 .map(|parameter| parameter.pat.clone())
                 .collect(),
+            PendingFunctionBody::Block(body),
+            NativeFunctionKind::Regular,
+            strict,
+        )
+    }
+
+    fn register_accessor(
+        &mut self,
+        name: String,
+        params: Vec<Pat>,
+        body: &Option<BlockStmt>,
+    ) -> Result<u32, Error> {
+        let body = body.clone().ok_or_else(|| {
+            Error::Unsupported("object accessors without bodies are not supported".into())
+        })?;
+        let strict = self.current_function_strict || directive_prologue(&body.stmts).1;
+        self.register_pending_function(
+            name,
+            params,
             PendingFunctionBody::Block(body),
             NativeFunctionKind::Regular,
             strict,
@@ -2081,10 +2101,14 @@ impl Compiler {
                 }
                 Prop::KeyValue(property) => {
                     if is_proto_setter_name(&property.key) {
-                        return Err(Error::Unsupported(
-                            "object-literal `__proto__` setters are not supported by native compilation yet"
-                                .into(),
-                        ));
+                        let parent = self.compile_expression(&property.value)?;
+                        let updated = self.emit_builtin_call(
+                            SILENT_SET_PROTOTYPE_OF_BUILTIN,
+                            &[output, parent],
+                        )?;
+                        self.release_register(updated)?;
+                        self.release_register(parent)?;
+                        continue;
                     }
                     let key = self.compile_property_name(&property.key)?;
                     let value = self.compile_expression(&property.value)?;
@@ -2092,9 +2116,40 @@ impl Compiler {
                     self.release_register(value)?;
                     self.release_register(key)?;
                 }
-                _ => {
+                Prop::Method(method) => {
+                    let key = self.compile_property_name(&method.key)?;
+                    let name = property_function_name(&method.key, "");
+                    let function_id = self.register_function(name, &method.function)?;
+                    let value = self.emit_create_closure(function_id)?;
+                    self.emit_define_own(output, value, key);
+                    self.release_register(value)?;
+                    self.release_register(key)?;
+                }
+                Prop::Getter(getter) => {
+                    let key = self.compile_property_name(&getter.key)?;
+                    let name = property_function_name(&getter.key, "get ");
+                    let function_id = self.register_accessor(name, Vec::new(), &getter.body)?;
+                    let value = self.emit_create_closure(function_id)?;
+                    self.emit_define_accessor(output, key, Some(value), None)?;
+                    self.release_register(value)?;
+                    self.release_register(key)?;
+                }
+                Prop::Setter(setter) => {
+                    let key = self.compile_property_name(&setter.key)?;
+                    let name = property_function_name(&setter.key, "set ");
+                    let function_id = self.register_accessor(
+                        name,
+                        vec![(*setter.param).clone()],
+                        &setter.body,
+                    )?;
+                    let value = self.emit_create_closure(function_id)?;
+                    self.emit_define_accessor(output, key, None, Some(value))?;
+                    self.release_register(value)?;
+                    self.release_register(key)?;
+                }
+                Prop::Assign(_) => {
                     return Err(Error::Unsupported(
-                        "object methods and accessors require native function compilation".into(),
+                        "assignment properties are not valid in object literals".into(),
                     ));
                 }
             }
@@ -2140,6 +2195,28 @@ impl Compiler {
             "PutOwnByVal",
             vec![reg(object), reg(value), reg(key), DecodedOperand::U8(1)],
         );
+    }
+
+    fn emit_define_accessor(
+        &mut self,
+        object: u8,
+        key: u8,
+        getter: Option<u8>,
+        setter: Option<u8>,
+    ) -> Result<(), Error> {
+        let missing = self.alloc_register()?;
+        self.emit("LoadConstUndefined", vec![reg(missing)]);
+        self.emit(
+            "PutOwnGetterSetterByVal",
+            vec![
+                reg(object),
+                reg(key),
+                reg(getter.unwrap_or(missing)),
+                reg(setter.unwrap_or(missing)),
+                DecodedOperand::U8(1),
+            ],
+        );
+        self.release_register(missing)
     }
 
     fn compile_conditional(
@@ -3637,6 +3714,21 @@ fn is_proto_setter_name(name: &PropName) -> bool {
         PropName::Str(string) => string.value.as_str() == Some("__proto__"),
         _ => false,
     }
+}
+
+fn property_function_name(name: &PropName, prefix: &str) -> String {
+    let value = match name {
+        PropName::Ident(identifier) => identifier.sym.to_string(),
+        PropName::Str(string) => match string.value.as_str() {
+            Some(value) => value.to_owned(),
+            None => return String::new(),
+        },
+        PropName::Num(number) if number.value == 0.0 => "0".into(),
+        PropName::Num(number) => number.value.to_string(),
+        PropName::BigInt(value) => value.value.to_string(),
+        PropName::Computed(_) => return String::new(),
+    };
+    format!("{prefix}{value}")
 }
 
 fn binary_opcode(operator: BinaryOp) -> Option<&'static str> {

@@ -915,6 +915,21 @@ fn object_spread_and_rest_preserve_keys_descriptors_and_proxy_order() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn object_methods_accessors_and_prototype_setters_preserve_semantics() {
+    assert_runtime_roundtrip(
+        "object-methods.js",
+        include_str!("fixtures/object_methods.js"),
+        concat!(
+            "values 12 9 11 4 true 7 method\n",
+            "descriptors true true get fixed set fixed __proto__\n",
+            "prototypes true false true 3\n",
+            "events before,key:method,key:value,key:value,proto,after,set:9,method,get\n",
+        ),
+    );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn literal_call_and_constructor_spreads_preserve_iteration_and_order() {
     assert_runtime_roundtrip(
         "spread.js",

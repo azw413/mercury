@@ -135,6 +135,9 @@ original runtime output. The self-hosted integration also applies an SWC visitor
 that renames Mercury's generated bindings before rebuilding.
 Native argument-object reads and object-literal getter/setter definitions are
 also recovered with their observable parameter, descriptor, and name semantics.
+Native source compilation now emits concise object methods, getter/setter
+descriptors, and `__proto__` prototype selection, including computed-key order
+and null or primitive prototype values.
 Property enumeration, value iteration, iterator closing, object spread/rest,
 array, call, and constructor spread, exponentiation, and non-finite numeric
 constants are now covered as well. The native compiler uses Hermes' iterable

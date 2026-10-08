@@ -165,8 +165,11 @@ including lone surrogates. `new` uses HBC's `CreateThis`, `Construct`, and
 `SelectObject` sequence. Array and object literal spreads, spread calls, and
 spread constructors lower through HBC 96's private iterable/copy/apply builtins;
 callee evaluation, method receivers, sparse slots, and iterator order are
-retained. TypeScript annotations are stripped directly on a copy of the SWC tree
-before lowering.
+retained. Object literals also compile concise methods, paired or computed
+getters/setters, and the special non-computed `__proto__` setter. Accessor
+descriptors, function names, property order, and null/object/primitive prototype
+selection follow HBC 96 behavior. TypeScript annotations are stripped directly
+on a copy of the SWC tree before lowering.
 
 Branches use compiler-owned symbolic labels that are resolved to HBC byte
 displacements after instruction selection. This keeps source lowering independent
@@ -181,9 +184,8 @@ expressions retain their HBC function names, which is sufficient for recovered
 functions; a named expression's source-level self-binding is not implemented yet.
 
 Destructuring assignments, block-level function declarations, async and
-generator functions, classes, modules, labeled control flow, `for await…of`,
-object methods/accessors, and object-literal `__proto__` setters return
-`Unsupported`.
+generator functions, classes, modules, labeled control flow, and `for await…of`
+return `Unsupported`.
 Constructors remain limited by the HBC small-frame size. Expanding these source
 constructs is the remaining forward-compiler work; decompiler opcode coverage
 does not imply matching source-language coverage in this direction.

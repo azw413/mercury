@@ -131,6 +131,8 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         .into_iter()
         .any(|name| has_opcode(&raw, name));
     let ensure_object_builtin = if modern_private_builtins { 45 } else { 40 };
+    let silent_set_prototype_builtin = ensure_object_builtin - 3;
+    let needs_prototype_runtime = has_builtin(&raw, silent_set_prototype_builtin);
     let needs_private_builtin_runtime =
         (0..=2).any(|offset| has_builtin(&raw, ensure_object_builtin + offset));
     let needs_construction = raw.functions.iter().any(|function| {
@@ -201,6 +203,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     }
     if needs_copy_data_runtime {
         factories.extend(copy_data_properties_runtime());
+    }
+    if needs_prototype_runtime {
+        factories.extend(prototype_runtime());
     }
     if needs_array_spread_runtime {
         factories.extend(array_spread_runtime());
@@ -368,6 +373,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         || needs_copy_data_runtime
         || needs_coerce_this
         || needs_restricted_global
+        || needs_prototype_runtime
     {
         wrapper_params.push("_object".into());
         wrapper_args.push(b::member(b::this(), b::string("Object")));
@@ -405,6 +411,13 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         wrapper_args.push(b::member(
             b::member(b::this(), b::string("Object")),
             b::string("getOwnPropertyDescriptor"),
+        ));
+    }
+    if needs_prototype_runtime {
+        wrapper_params.push("_set_prototype_of".into());
+        wrapper_args.push(b::member(
+            b::member(b::this(), b::string("Object")),
+            b::string("setPrototypeOf"),
         ));
     }
     if needs_construction {
@@ -1234,6 +1247,12 @@ impl Lower<'_> {
                 let apply = ensure_object + 7;
                 let exponentiation = if self.modern_private_builtins { 54 } else { 49 };
                 match builtin {
+                    value if value == ensure_object - 3 && args.len() == 2 => {
+                        b::call(b::id("_silent_set_prototype_of"), args)
+                    }
+                    value if value == ensure_object - 3 => {
+                        return Err(unsupported(f, op, "invalid prototype-set arguments"));
+                    }
                     value if value == ensure_object => b::call(b::id("_ensure_object"), args),
                     value if value == ensure_object + 1 => b::call(b::id("_get_method"), args),
                     value if value == ensure_object + 2 => {
@@ -1913,6 +1932,17 @@ function _copy_data_properties(_target, _source, _excluded) {
 "#;
     embedded_runtime("mercury-copy-data-properties-runtime.js", SOURCE)
 }
+fn prototype_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _silent_set_prototype_of(_target, _parent) {
+    if (_parent === null || typeof _parent === "object" || typeof _parent === "function") {
+        _apply(_set_prototype_of, _object, [_target, _parent]);
+    }
+    return _target;
+}
+"#;
+    embedded_runtime("mercury-prototype-runtime.js", SOURCE)
+}
 fn array_spread_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
 function _array_spread(_target, _source, _index) {
@@ -2195,8 +2225,24 @@ fn define_accessor(
 ) -> Vec<Stmt> {
     vec![
         b::assign(b::id("_desc"), b::empty_object()),
-        b::assign(b::member(b::id("_desc"), b::string("get")), getter),
-        b::assign(b::member(b::id("_desc"), b::string("set")), setter),
+        Stmt::If(IfStmt {
+            span: DUMMY_SP,
+            test: b::binary(BinaryOp::NotEqEq, getter.clone(), b::undefined()),
+            cons: Box::new(b::assign(
+                b::member(b::id("_desc"), b::string("get")),
+                getter,
+            )),
+            alt: None,
+        }),
+        Stmt::If(IfStmt {
+            span: DUMMY_SP,
+            test: b::binary(BinaryOp::NotEqEq, setter.clone(), b::undefined()),
+            cons: Box::new(b::assign(
+                b::member(b::id("_desc"), b::string("set")),
+                setter,
+            )),
+            alt: None,
+        }),
         b::assign(
             b::member(b::id("_desc"), b::string("enumerable")),
             b::boolean(enumerable),
