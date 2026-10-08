@@ -55,3 +55,16 @@ The SWC module adds self-contained source/AST and bytecode tests plus optional
 execution tests requiring both `HERMESC_BIN` and `HERMES_BIN`. See
 [the module instructions](../crates/swc/README.md). Set all three toolchain
 variables when running the full workspace with `--include-ignored`.
+
+Its corpus roundtrip test recursively compiles the committed JavaScript fixtures
+with `hermesc` at `-O0` and `-O`, executes each reference file, rebuilds it through
+Mercury's HBC-to-SWC-to-native-HBC path, and requires the same status, stdout,
+and normalized stderr. Run it directly with:
+
+```sh
+HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
+  cargo test -p mercury-swc --test corpus_roundtrip -- --ignored
+```
+
+`MERCURY_JS_CORPUS` can point at a larger standalone JavaScript corpus; see the
+module README for filtering and limiting controls.

@@ -301,6 +301,25 @@ HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
   cargo test -p mercury-swc -- --include-ignored
 ```
 
+`tests/corpus_roundtrip.rs` discovers every `.js` file under the committed
+`tests/fixtures` tree. Each file is compiled by `hermesc` in both `-O0` and `-O`
+modes, executed as reference HBC, decompiled to SWC, rebuilt with the native
+`HbcCompiler`, and executed again. The test compares exit status, stdout bytes,
+and stderr after normalizing temporary filenames, and reports every failing
+fixture rather than stopping at the first one:
+
+```sh
+HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
+  cargo test -p mercury-swc --test corpus_roundtrip -- --ignored
+```
+
+Set `MERCURY_JS_CORPUS` to one or more platform-separated files or directories
+to run another standalone JavaScript corpus recursively. Optional
+`MERCURY_JS_CORPUS_FILTER` and `MERCURY_JS_CORPUS_LIMIT` values select a stable
+subset, while `MERCURY_HERMESC_MODES` overrides the comma-separated optimization
+flags. Corpus files must be executable scripts rather than parser-negative tests
+or tests that depend on an external harness.
+
 The execution tests cover arithmetic, calls, an if/else and loop, short-circuit
 logic, a receiver whose `.call` property has been replaced, side effects, NaN-like
 relational comparisons, helper-name collisions, TS enum lowering, and mutable
