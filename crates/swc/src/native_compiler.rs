@@ -4,15 +4,15 @@ use std::{
 };
 
 use mercury_binary::{
-    DecodedInstruction, DecodedOperand, MinimalFunction, MinimalModule, StringKind,
-    build_minimal_module, encode_instruction,
+    DecodedInstruction, DecodedOperand, ExceptionHandlerEntry, MinimalFunction, MinimalModule,
+    StringKind, build_minimal_module, encode_instruction,
 };
 use mercury_spec::BytecodeSpec;
 use swc_core::ecma::ast::{
     ArrowExpr, AssignOp, AssignTarget, BinaryOp, BlockStmt, BlockStmtOrExpr, Callee, Decl, Expr,
-    Function, Lit, MemberExpr, MemberProp, ObjectPatProp, Pat, Program, Prop, PropName,
-    PropOrSpread, Script, SimpleAssignTarget, Stmt, UnaryOp, UpdateOp, VarDecl, VarDeclKind,
-    VarDeclOrExpr,
+    Function, Lit, MemberExpr, MemberProp, MetaPropKind, ObjectPatProp, Pat, Program, Prop,
+    PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt, UnaryOp, UpdateOp, VarDecl,
+    VarDeclKind, VarDeclOrExpr,
 };
 use swc_core::ecma::visit::{Visit, VisitWith};
 
@@ -67,7 +67,9 @@ struct Compiler {
     labels: Vec<Option<usize>>,
     branches: Vec<PendingBranch>,
     frame_moves: Vec<PendingFrameMove>,
-    loops: Vec<LoopContext>,
+    exception_handlers: Vec<PendingExceptionHandler>,
+    break_targets: Vec<usize>,
+    continue_targets: Vec<usize>,
     pending_functions: VecDeque<PendingFunction>,
     next_function_id: u32,
     scope: Option<Rc<FunctionScope>>,
@@ -157,9 +159,10 @@ struct PendingFrameMove {
 }
 
 #[derive(Clone, Copy)]
-struct LoopContext {
-    break_target: usize,
-    continue_target: usize,
+struct PendingExceptionHandler {
+    start: usize,
+    end: usize,
+    target: usize,
 }
 
 impl Compiler {
@@ -177,7 +180,9 @@ impl Compiler {
             labels: Vec::new(),
             branches: Vec::new(),
             frame_moves: Vec::new(),
-            loops: Vec::new(),
+            exception_handlers: Vec::new(),
+            break_targets: Vec::new(),
+            continue_targets: Vec::new(),
             pending_functions: VecDeque::new(),
             next_function_id: 1,
             scope: None,
@@ -292,7 +297,9 @@ impl Compiler {
         self.labels.clear();
         self.branches.clear();
         self.frame_moves.clear();
-        self.loops.clear();
+        self.exception_handlers.clear();
+        self.break_targets.clear();
+        self.continue_targets.clear();
         self.is_global = is_global;
         self.current_function_id = function_id;
         self.current_function_kind = kind;
@@ -670,7 +677,12 @@ impl Compiler {
         let frame_size = if self.max_call_arguments == 0 {
             self.frame_size.max(1)
         } else {
-            self.frame_size + 6 + self.max_call_arguments
+            self.frame_size
+                .checked_add(6)
+                .and_then(|size| size.checked_add(self.max_call_arguments))
+                .ok_or_else(|| {
+                    Error::Unsupported("script needs an HBC frame larger than u16".into())
+                })?
         };
         if frame_size >= 128 {
             return Err(Error::Unsupported(
@@ -679,12 +691,14 @@ impl Compiler {
         }
         self.resolve_frame_moves(frame_size)?;
         self.resolve_branches(spec)?;
+        let exception_handlers = self.resolve_exception_handlers()?;
         Ok(MinimalFunction {
             name,
             param_count,
             frame_size: u32::from(frame_size),
             environment_size,
             prohibit_invoke: self.current_function_kind.prohibit_invoke(),
+            exception_handlers,
             instructions: std::mem::take(&mut self.instructions),
         })
     }
@@ -724,6 +738,13 @@ impl Compiler {
             Stmt::While(statement) => self.compile_while(statement),
             Stmt::DoWhile(statement) => self.compile_do_while(statement),
             Stmt::For(statement) => self.compile_for(statement),
+            Stmt::Switch(statement) => self.compile_switch(statement),
+            Stmt::Try(statement) => self.compile_try(statement),
+            Stmt::Throw(statement) => {
+                let value = self.compile_expression(&statement.arg)?;
+                self.emit("Throw", vec![reg(value)]);
+                self.release_register(value)
+            }
             Stmt::Break(statement) => {
                 if statement.label.is_some() {
                     return Err(Error::Unsupported(
@@ -731,11 +752,10 @@ impl Compiler {
                     ));
                 }
                 let target = self
-                    .loops
+                    .break_targets
                     .last()
-                    .ok_or_else(|| Error::Unsupported("break outside a loop".into()))?
-                    .break_target;
-                self.emit_branch("JmpLong", target, None);
+                    .ok_or_else(|| Error::Unsupported("break outside a loop or switch".into()))?;
+                self.emit_branch("JmpLong", *target, None);
                 Ok(())
             }
             Stmt::Continue(statement) => {
@@ -745,11 +765,10 @@ impl Compiler {
                     ));
                 }
                 let target = self
-                    .loops
+                    .continue_targets
                     .last()
-                    .ok_or_else(|| Error::Unsupported("continue outside a loop".into()))?
-                    .continue_target;
-                self.emit_branch("JmpLong", target, None);
+                    .ok_or_else(|| Error::Unsupported("continue outside a loop".into()))?;
+                self.emit_branch("JmpLong", *target, None);
                 Ok(())
             }
             other => Err(unsupported_statement(other)),
@@ -842,12 +861,11 @@ impl Compiler {
         let test = self.compile_expression(&statement.test)?;
         self.emit_branch("JmpFalseLong", end, Some(test));
         self.release_register(test)?;
-        self.loops.push(LoopContext {
-            break_target: end,
-            continue_target: condition,
-        });
+        self.break_targets.push(end);
+        self.continue_targets.push(condition);
         self.compile_statement(&statement.body)?;
-        self.loops.pop();
+        self.continue_targets.pop();
+        self.break_targets.pop();
         self.emit_branch("JmpLong", condition, None);
         self.mark_label(end)
     }
@@ -860,12 +878,11 @@ impl Compiler {
         let condition = self.new_label();
         let end = self.new_label();
         self.mark_label(body)?;
-        self.loops.push(LoopContext {
-            break_target: end,
-            continue_target: condition,
-        });
+        self.break_targets.push(end);
+        self.continue_targets.push(condition);
         self.compile_statement(&statement.body)?;
-        self.loops.pop();
+        self.continue_targets.pop();
+        self.break_targets.pop();
         self.mark_label(condition)?;
         let test = self.compile_expression(&statement.test)?;
         self.emit_branch("JmpTrueLong", body, Some(test));
@@ -925,12 +942,11 @@ impl Compiler {
             self.emit_branch("JmpFalseLong", end, Some(value));
             self.release_register(value)?;
         }
-        self.loops.push(LoopContext {
-            break_target: end,
-            continue_target: update,
-        });
+        self.break_targets.push(end);
+        self.continue_targets.push(update);
         self.compile_statement(&statement.body)?;
-        self.loops.pop();
+        self.continue_targets.pop();
+        self.break_targets.pop();
         self.mark_label(update)?;
         if let Some((parent_environment, iteration_environment, bindings)) = iteration_scope {
             self.clone_iteration_environment(parent_environment, iteration_environment, bindings)?;
@@ -941,6 +957,91 @@ impl Compiler {
         }
         self.emit_branch("JmpLong", condition, None);
         self.mark_label(end)
+    }
+
+    fn compile_switch(&mut self, statement: &swc_core::ecma::ast::SwitchStmt) -> Result<(), Error> {
+        let discriminant = self.compile_expression(&statement.discriminant)?;
+        let labels = statement
+            .cases
+            .iter()
+            .map(|_| self.new_label())
+            .collect::<Vec<_>>();
+        let end = self.new_label();
+        let default = statement
+            .cases
+            .iter()
+            .position(|case| case.test.is_none())
+            .map_or(end, |index| labels[index]);
+
+        for (case, label) in statement.cases.iter().zip(labels.iter().copied()) {
+            let Some(test) = &case.test else {
+                continue;
+            };
+            let comparison = self.compile_expression(test)?;
+            self.emit(
+                "StrictEq",
+                vec![reg(comparison), reg(discriminant), reg(comparison)],
+            );
+            self.emit_branch("JmpTrueLong", label, Some(comparison));
+            self.release_register(comparison)?;
+        }
+        self.release_register(discriminant)?;
+        self.emit_branch("JmpLong", default, None);
+
+        self.break_targets.push(end);
+        for (case, label) in statement.cases.iter().zip(labels) {
+            self.mark_label(label)?;
+            for consequent in &case.cons {
+                self.compile_statement(consequent)?;
+            }
+        }
+        self.break_targets.pop();
+        self.mark_label(end)
+    }
+
+    fn compile_try(&mut self, statement: &swc_core::ecma::ast::TryStmt) -> Result<(), Error> {
+        if statement.handler.is_some() {
+            return Err(Error::Unsupported(
+                "try/catch is not supported by native compilation yet".into(),
+            ));
+        }
+        let finalizer = statement.finalizer.as_ref().ok_or_else(|| {
+            Error::Unsupported("try statements currently require a finally block".into())
+        })?;
+        let [Stmt::Return(return_statement)] = statement.block.stmts.as_slice() else {
+            return Err(Error::Unsupported(
+                "try/finally currently requires a single return in the try block".into(),
+            ));
+        };
+
+        let protected_start = self.new_label();
+        let protected_end = self.new_label();
+        let handler = self.new_label();
+        self.mark_label(protected_start)?;
+        let result = if let Some(argument) = &return_statement.arg {
+            self.compile_expression(argument)?
+        } else {
+            let result = self.alloc_register()?;
+            self.emit("LoadConstUndefined", vec![reg(result)]);
+            result
+        };
+        self.mark_label(protected_end)?;
+        self.compile_block(finalizer)?;
+        self.emit("Ret", vec![reg(result)]);
+        self.release_register(result)?;
+
+        self.mark_label(handler)?;
+        let exception = self.alloc_register()?;
+        self.emit("Catch", vec![reg(exception)]);
+        self.compile_block(finalizer)?;
+        self.emit("Throw", vec![reg(exception)]);
+        self.release_register(exception)?;
+        self.exception_handlers.push(PendingExceptionHandler {
+            start: protected_start,
+            end: protected_end,
+            target: handler,
+        });
+        Ok(())
     }
 
     fn sorted_current_bindings(&self) -> Result<Vec<Binding>, Error> {
@@ -1220,6 +1321,11 @@ impl Compiler {
                 self.emit("LoadThisNS", vec![reg(output)]);
                 Ok(output)
             }
+            Expr::MetaProp(property) if property.kind == MetaPropKind::NewTarget => {
+                let output = self.alloc_register()?;
+                self.emit("GetNewTarget", vec![reg(output)]);
+                Ok(output)
+            }
             Expr::Ident(identifier) => self.compile_identifier(identifier.sym.as_ref()),
             Expr::Paren(expression) => self.compile_expression(&expression.expr),
             Expr::Seq(sequence) => {
@@ -1268,13 +1374,12 @@ impl Compiler {
             Expr::Call(call) => self.compile_call(call),
             Expr::New(expression) => self.compile_new(expression),
             Expr::Fn(function) => {
-                if function.ident.is_some() {
-                    return Err(Error::Unsupported(
-                        "named function expressions are not supported by native compilation yet"
-                            .into(),
-                    ));
-                }
-                let function_id = self.register_function(String::new(), &function.function)?;
+                let name = function
+                    .ident
+                    .as_ref()
+                    .map(|identifier| identifier.sym.to_string())
+                    .unwrap_or_default();
+                let function_id = self.register_function(name, &function.function)?;
                 self.emit_create_closure(function_id)
             }
             Expr::Arrow(arrow) => {
@@ -1730,6 +1835,9 @@ impl Compiler {
     }
 
     fn compile_unary(&mut self, operator: UnaryOp, argument: &Expr) -> Result<u8, Error> {
+        if operator == UnaryOp::Delete {
+            return self.compile_delete(argument);
+        }
         if operator == UnaryOp::TypeOf
             && let Expr::Ident(identifier) = argument
             && matches!(
@@ -1754,14 +1862,49 @@ impl Compiler {
                 self.emit("LoadConstUndefined", vec![reg(value)]);
                 return Ok(value);
             }
-            UnaryOp::Delete => {
-                return Err(Error::Unsupported(
-                    "delete expressions are not supported by native compilation yet".into(),
-                ));
-            }
+            UnaryOp::Delete => unreachable!("delete was handled before evaluating its operand"),
         };
         self.emit(opcode, vec![reg(value), reg(value)]);
         Ok(value)
+    }
+
+    fn compile_delete(&mut self, argument: &Expr) -> Result<u8, Error> {
+        if let Expr::Paren(parenthesized) = argument {
+            return self.compile_delete(&parenthesized.expr);
+        }
+        let Expr::Member(member) = argument else {
+            return Err(Error::Unsupported(
+                "delete currently requires a property reference".into(),
+            ));
+        };
+        let object = self.compile_expression(&member.obj)?;
+        match &member.prop {
+            MemberProp::Ident(property) => {
+                let id = self.intern_identifier(property.sym.as_ref())?;
+                if let Ok(id) = u16::try_from(id) {
+                    self.emit(
+                        "DelById",
+                        vec![reg(object), reg(object), DecodedOperand::U16(id)],
+                    );
+                } else {
+                    self.emit(
+                        "DelByIdLong",
+                        vec![reg(object), reg(object), DecodedOperand::U32(id)],
+                    );
+                }
+            }
+            MemberProp::Computed(property) => {
+                let key = self.compile_expression(&property.expr)?;
+                self.emit("DelByVal", vec![reg(object), reg(object), reg(key)]);
+                self.release_register(key)?;
+            }
+            MemberProp::PrivateName(_) => {
+                return Err(Error::Unsupported(
+                    "private properties cannot be deleted".into(),
+                ));
+            }
+        }
+        Ok(object)
     }
 
     fn compile_member_read(&mut self, member: &MemberExpr) -> Result<u8, Error> {
@@ -2118,19 +2261,17 @@ impl Compiler {
     }
 
     fn compile_call(&mut self, call: &swc_core::ecma::ast::CallExpr) -> Result<u8, Error> {
-        if call.args.len() > 3 {
-            return Err(Error::Unsupported(
-                "native compilation currently supports calls with at most three arguments".into(),
-            ));
-        }
         if call.args.iter().any(|argument| argument.spread.is_some()) {
             return Err(Error::Unsupported(
                 "spread call arguments are not supported by native compilation yet".into(),
             ));
         }
-        self.max_call_arguments = self
-            .max_call_arguments
-            .max(u16::try_from(call.args.len() + 1).expect("calls are limited to four operands"));
+        let argument_count = u32::try_from(call.args.len() + 1)
+            .map_err(|_| Error::Unsupported("too many call arguments".into()))?;
+        self.max_call_arguments = self.max_call_arguments.max(
+            u16::try_from(argument_count)
+                .map_err(|_| Error::Unsupported("too many call arguments".into()))?,
+        );
         let Callee::Expr(callee) = &call.callee else {
             return Err(Error::Unsupported(
                 "super and import calls are not supported by native compilation yet".into(),
@@ -2173,16 +2314,46 @@ impl Compiler {
             arguments.push(self.compile_expression(&argument.expr)?);
         }
         let output = self.alloc_register()?;
-        let mut operands = vec![reg(output), reg(function), reg(this_value)];
-        operands.extend(arguments.iter().copied().map(reg));
-        let opcode = match arguments.len() {
-            0 => "Call1",
-            1 => "Call2",
-            2 => "Call3",
-            3 => "Call4",
-            _ => unreachable!(),
-        };
-        self.emit(opcode, operands);
+        if arguments.len() <= 3 {
+            let mut operands = vec![reg(output), reg(function), reg(this_value)];
+            operands.extend(arguments.iter().copied().map(reg));
+            let opcode = match arguments.len() {
+                0 => "Call1",
+                1 => "Call2",
+                2 => "Call3",
+                3 => "Call4",
+                _ => unreachable!(),
+            };
+            self.emit(opcode, operands);
+        } else {
+            self.emit_frame_move(this_value, 0);
+            for (index, argument) in arguments.iter().enumerate() {
+                self.emit_frame_move(
+                    *argument,
+                    u16::try_from(index + 1)
+                        .map_err(|_| Error::Unsupported("too many call arguments".into()))?,
+                );
+            }
+            if let Ok(argument_count) = u8::try_from(argument_count) {
+                self.emit(
+                    "Call",
+                    vec![
+                        reg(output),
+                        reg(function),
+                        DecodedOperand::U8(argument_count),
+                    ],
+                );
+            } else {
+                self.emit(
+                    "CallLong",
+                    vec![
+                        reg(output),
+                        reg(function),
+                        DecodedOperand::U32(argument_count),
+                    ],
+                );
+            }
+        }
         self.emit("Mov", vec![reg(result), reg(output)]);
         self.release_register(output)?;
         while let Some(argument) = arguments.pop() {
@@ -2494,6 +2665,38 @@ impl Compiler {
                 .expect("instruction size fits usize");
         }
         Ok(())
+    }
+
+    fn resolve_exception_handlers(&self) -> Result<Vec<ExceptionHandlerEntry>, Error> {
+        let bytecode_end = self
+            .instructions
+            .last()
+            .map(|instruction| instruction.offset + instruction.size as u32)
+            .unwrap_or_default();
+        let label_offset = |label: usize| -> Result<u32, Error> {
+            let instruction = self
+                .labels
+                .get(label)
+                .and_then(|instruction| *instruction)
+                .ok_or_else(|| {
+                    Error::Bytecode("exception handler has an unresolved label".into())
+                })?;
+            Ok(self
+                .instructions
+                .get(instruction)
+                .map(|instruction| instruction.offset)
+                .unwrap_or(bytecode_end))
+        };
+        self.exception_handlers
+            .iter()
+            .map(|handler| {
+                Ok(ExceptionHandlerEntry {
+                    start: label_offset(handler.start)?,
+                    end: label_offset(handler.end)?,
+                    target: label_offset(handler.target)?,
+                })
+            })
+            .collect()
     }
 }
 

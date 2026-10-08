@@ -1,5 +1,8 @@
 use crate::encode::{HbcEncodeError, encode_instructions};
-use crate::functions::{FunctionHeader, FunctionHeaderFlags, write_small_function_header};
+use crate::functions::{
+    ExceptionHandlerEntry, FunctionHeader, FunctionHeaderFlags, write_exception_handler_table,
+    write_small_function_header,
+};
 use crate::header::{
     BytecodeOptions, FILE_HEADER_SIZE, HERMES_MAGIC, HbcVersionedFileHeader, write_file_header,
 };
@@ -15,6 +18,7 @@ use thiserror::Error;
 
 const SMALL_FUNCTION_HEADER_SIZE: usize = 16;
 const BYTECODE_ALIGNMENT: usize = 4;
+const INFO_ALIGNMENT: usize = 4;
 const FOOTER_SIZE: usize = 20;
 const SMALL_STRING_MAX_OFFSET: u32 = (1 << 23) - 1;
 const SMALL_STRING_MAX_LENGTH: u32 = 0xff - 1;
@@ -42,6 +46,7 @@ pub struct MinimalFunction {
     /// Hermes invocation restriction: 0 = construct-only, 1 = call-only,
     /// 2 = callable and constructable.
     pub prohibit_invoke: u8,
+    pub exception_handlers: Vec<ExceptionHandlerEntry>,
     pub instructions: Vec<DecodedInstruction>,
 }
 
@@ -102,6 +107,24 @@ pub fn build_minimal_module(
             return Err(HbcBuildError::InvalidModule {
                 reason: format!("function {} has no instructions", function.name),
             });
+        }
+        let bytecode_size = function
+            .instructions
+            .last()
+            .map(|instruction| instruction.offset + instruction.size as u32)
+            .unwrap_or_default();
+        for handler in &function.exception_handlers {
+            if handler.start >= handler.end
+                || handler.end > bytecode_size
+                || handler.target >= bytecode_size
+            {
+                return Err(HbcBuildError::InvalidModule {
+                    reason: format!(
+                        "function {} has an invalid exception handler",
+                        function.name
+                    ),
+                });
+            }
         }
         for instruction in &function.instructions {
             if let Some(spec) = bytecode_spec
@@ -232,11 +255,33 @@ pub fn build_minimal_module(
         BYTECODE_ALIGNMENT,
     );
 
+    let function_bodies_end =
+        function_bodies_start + encoded_bodies.iter().map(Vec::len).sum::<usize>();
+    let function_infos_start = align_up(function_bodies_end, INFO_ALIGNMENT);
+    let mut function_info_offsets = Vec::with_capacity(module.functions.len());
+    let mut function_info_bytes = Vec::new();
+    for function in &module.functions {
+        if function.exception_handlers.is_empty() {
+            function_info_offsets.push(0);
+            continue;
+        }
+        let absolute_offset = function_infos_start + function_info_bytes.len();
+        let aligned_offset = align_up(absolute_offset, INFO_ALIGNMENT);
+        function_info_bytes.resize(
+            function_info_bytes.len() + (aligned_offset - absolute_offset),
+            0,
+        );
+        function_info_offsets.push(aligned_offset as u32);
+        function_info_bytes
+            .extend_from_slice(&write_exception_handler_table(&function.exception_handlers));
+    }
+
     let function_headers = build_function_headers(
         module,
         &function_name_ids,
         &encoded_bodies,
         function_bodies_start,
+        &function_info_offsets,
     )?;
 
     let mut bytes = Vec::new();
@@ -267,6 +312,9 @@ pub fn build_minimal_module(
     for body in &encoded_bodies {
         bytes.extend_from_slice(body);
     }
+
+    pad_to(&mut bytes, function_infos_start);
+    bytes.extend_from_slice(&function_info_bytes);
 
     let debug_info_offset = align_up(bytes.len(), BYTECODE_ALIGNMENT);
     pad_to(&mut bytes, debug_info_offset);
@@ -325,15 +373,17 @@ fn build_function_headers(
     function_name_ids: &[u32],
     encoded_bodies: &[Vec<u8>],
     function_bodies_start: usize,
+    function_info_offsets: &[u32],
 ) -> Result<Vec<FunctionHeader>, HbcBuildError> {
     let mut headers = Vec::with_capacity(module.functions.len());
     let mut body_offset = function_bodies_start as u32;
 
-    for ((function, function_name), body) in module
+    for (((function, function_name), body), info_offset) in module
         .functions
         .iter()
         .zip(function_name_ids.iter().copied())
         .zip(encoded_bodies.iter())
+        .zip(function_info_offsets.iter().copied())
     {
         let read_cache = highest_cache_index(body, &function.instructions, true);
         let write_cache = highest_cache_index(body, &function.instructions, false);
@@ -342,7 +392,7 @@ fn build_function_headers(
             param_count: function.param_count,
             bytecode_size_in_bytes: body.len() as u32,
             function_name,
-            info_offset: 0,
+            info_offset,
             frame_size: function.frame_size,
             environment_size: function.environment_size,
             highest_read_cache_index: read_cache,
@@ -351,7 +401,7 @@ fn build_function_headers(
                 raw: 0,
                 prohibit_invoke: function.prohibit_invoke,
                 strict_mode: false,
-                has_exception_handler: false,
+                has_exception_handler: !function.exception_handlers.is_empty(),
                 has_debug_info: false,
                 overflowed: false,
             },
@@ -639,6 +689,7 @@ mod tests {
                     frame_size: 3,
                     environment_size: 0,
                     prohibit_invoke: 2,
+                    exception_handlers: vec![],
                     instructions: vec![
                         DecodedInstruction {
                             offset: 0,
@@ -676,6 +727,7 @@ mod tests {
                     frame_size: 2,
                     environment_size: 0,
                     prohibit_invoke: 1,
+                    exception_handlers: vec![],
                     instructions: vec![
                         DecodedInstruction {
                             offset: 0,
@@ -723,6 +775,78 @@ mod tests {
     }
 
     #[test]
+    fn builds_and_reparses_exception_handler_tables() {
+        let spec = load_spec(96).expect("embedded hbc96 spec");
+        let handler = ExceptionHandlerEntry {
+            start: 0,
+            end: 4,
+            target: 4,
+        };
+        let module = MinimalModule {
+            version: 96,
+            global_code_index: 0,
+            strings: vec![],
+            string_kinds: vec![],
+            literal_value_buffer: vec![],
+            object_key_buffer: vec![],
+            object_value_buffer: vec![],
+            functions: vec![MinimalFunction {
+                name: "global".into(),
+                param_count: 1,
+                frame_size: 1,
+                environment_size: 0,
+                prohibit_invoke: 2,
+                exception_handlers: vec![handler.clone()],
+                instructions: vec![
+                    DecodedInstruction {
+                        offset: 0,
+                        opcode: 113,
+                        name: "LoadConstUndefined".into(),
+                        operands: vec![DecodedOperand::U8(0)],
+                        size: 2,
+                    },
+                    DecodedInstruction {
+                        offset: 2,
+                        opcode: 87,
+                        name: "Throw".into(),
+                        operands: vec![DecodedOperand::U8(0)],
+                        size: 2,
+                    },
+                    DecodedInstruction {
+                        offset: 4,
+                        opcode: 89,
+                        name: "Catch".into(),
+                        operands: vec![DecodedOperand::U8(0)],
+                        size: 2,
+                    },
+                    DecodedInstruction {
+                        offset: 6,
+                        opcode: 86,
+                        name: "Ret".into(),
+                        operands: vec![DecodedOperand::U8(0)],
+                        size: 2,
+                    },
+                ],
+            }],
+        };
+
+        let bytes = build_minimal_module(&module, &spec.bytecode).expect("builds");
+        let container = parse_hbc_container_with_spec(&bytes, &spec.container).expect("reparses");
+        let raw = decode_raw_module(&container, &bytes, &spec.bytecode).expect("decodes");
+
+        assert!(container.function_headers[0].flags.has_exception_handler);
+        assert_ne!(container.function_headers[0].info_offset, 0);
+        assert_eq!(
+            container.function_infos[0].exception_handlers,
+            vec![handler]
+        );
+        assert_eq!(raw.functions[0].exception_handlers.len(), 1);
+        assert_eq!(raw.functions[0].exception_handlers[0].start, 0);
+        assert_eq!(raw.functions[0].exception_handlers[0].end, 4);
+        assert_eq!(raw.functions[0].exception_handlers[0].target, 4);
+    }
+
+    #[test]
     fn restricted_global_operand_is_emitted_as_an_identifier() {
         let spec = load_spec(96).expect("embedded hbc96 spec");
         let module = MinimalModule {
@@ -739,6 +863,7 @@ mod tests {
                 frame_size: 1,
                 environment_size: 0,
                 prohibit_invoke: 2,
+                exception_handlers: vec![],
                 instructions: vec![DecodedInstruction {
                     offset: 0,
                     opcode: 53,

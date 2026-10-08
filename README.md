@@ -130,7 +130,9 @@ now covers `Construct`, `ConstructLong`, `CreateThis`, `SelectObject`, and
 inheritance, methods, accessors, static methods, and `super` calls.
 Increment/decrement, numeric and string coercions, and property deletion complete
 the opcode families used by the committed Box2D fixture; all 983 functions now
-decompile to SWC, recompile to HBC, and produce the original runtime output.
+decompile to SWC, recompile natively to HBC without `hermesc`, and produce the
+original runtime output. The self-hosted integration also applies an SWC visitor
+that renames Mercury's generated bindings before rebuilding.
 Native argument-object reads and object-literal getter/setter definitions are
 also recovered with their observable parameter, descriptor, and name semantics.
 Property enumeration, value iteration, iterator closing, object spread/rest,
@@ -159,6 +161,8 @@ headers that reject construction.
 cargo run -p mercury-swc --example compile -- input.js /tmp/example.hbc
 cargo run -p mercury-cli -- decompile /tmp/example.hbc -o /tmp/example.js
 cargo run -p mercury-swc --example decompile -- test/hex.hbc /tmp/hex.js
+cargo run -p mercury-swc --example roundtrip -- \
+  test/box2d.hbc /tmp/box2d-rebuilt.hbc --rename-generated
 ```
 
 See the module README for the supported contract, Rust interface, and execution

@@ -2,11 +2,30 @@ use std::{fs, process::Command};
 
 use mercury_binary::{decode_raw_module, parse_hbc_container_with_spec};
 use mercury_spec_builtin::load_spec;
-use mercury_swc::{HbcCompiler, SourceKind, SourceLanguage, SwcModule, decompile};
+use mercury_swc::{
+    HbcCompiler, SourceKind, SourceLanguage, SwcModule,
+    ast::Ident,
+    decompile,
+    visit::{VisitMut, VisitMutWith},
+};
 
 fn compile(source: &str, language: SourceLanguage) -> Vec<u8> {
     let module = SwcModule::parse("input", source, language, SourceKind::Script).unwrap();
     HbcCompiler::new(96).compile(&module).unwrap()
+}
+
+struct RenameGeneratedBindings;
+
+impl VisitMut for RenameGeneratedBindings {
+    fn visit_mut_ident(&mut self, identifier: &mut Ident) {
+        if let Some(suffix) = identifier.sym.as_ref().strip_prefix("_mercury_") {
+            identifier.sym = format!("_self_hosted_{suffix}").into();
+        }
+    }
+}
+
+fn rename_generated_bindings(module: &mut SwcModule) {
+    module.with_ast(|program| program.visit_mut_with(&mut RenameGeneratedBindings));
 }
 
 #[test]
@@ -81,7 +100,7 @@ fn compiles_property_reads_writes_and_receiver_calls() {
 fn rejects_unsupported_syntax_at_the_native_boundary() {
     let module = SwcModule::parse(
         "input.js",
-        "switch (value) { case 1: print(1); }",
+        "try { print(value); } catch (error) { print(error); }",
         SourceLanguage::JavaScript,
         SourceKind::Script,
     )
@@ -89,7 +108,69 @@ fn rejects_unsupported_syntax_at_the_native_boundary() {
     let error = HbcCompiler::new(96).compile(&module).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "unsupported: switch statements are not supported by native compilation yet"
+        "unsupported: try/catch is not supported by native compilation yet"
+    );
+}
+
+#[test]
+fn compiles_switch_fallthrough_breaks_and_outer_continues() {
+    let bytes = compile(
+        "function choose(value) { var result = 0; switch (value) { case 1: result += 1; case 2: result += 2; break; default: result = 9; } return result; } var count = 0; while (count < 2) { count++; switch (count) { case 1: continue; default: break; } } print(choose(1), choose(2), choose(3));",
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let names = raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .map(|instruction| instruction.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&"StrictEq"));
+    assert!(names.contains(&"JmpTrueLong"));
+    assert!(decompile(&bytes).is_ok());
+}
+
+#[test]
+fn compiles_self_hosted_runtime_boundary_opcodes() {
+    let bytes = compile(
+        r#"
+        function invoke(callback) {
+            try { return callback(1, 2, 3, 4); }
+            finally { print("finally"); }
+        }
+        function Constructor() {
+            print(new.target === Constructor);
+            this.value = 1;
+            print(delete this.value);
+        }
+        function add(a, b, c, d) { return a + b + c + d; }
+        print(invoke(add));
+        new Constructor();
+        "#,
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let names = raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .map(|instruction| instruction.name.as_str())
+        .collect::<Vec<_>>();
+
+    for expected in ["Call", "GetNewTarget", "DelById", "Catch", "Throw"] {
+        assert!(names.contains(&expected), "missing {expected}");
+    }
+    assert_eq!(
+        raw.functions
+            .iter()
+            .map(|function| function.exception_handlers.len())
+            .sum::<usize>(),
+        1
     );
 }
 
@@ -589,6 +670,72 @@ fn native_lexical_scopes_closures_and_iterations_execute() {
             "0 1 2\n",
         )
     );
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_self_hosted_control_flow_roundtrip_survives_renaming() {
+    let original = include_bytes!("fixtures/control_flow.hbc");
+    let mut module = decompile(original).unwrap();
+    rename_generated_bindings(&mut module);
+    assert!(module.print().contains("_self_hosted_pc"));
+
+    let rebuilt = HbcCompiler::new(96).compile(&module).unwrap();
+    assert_eq!(execute(original.to_vec()), "18\n");
+    assert_eq!(execute(rebuilt), "18\n");
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_self_hosted_large_fixtures_roundtrip_survives_renaming() {
+    let expected_box2d = (0..20)
+        .map(|step| format!("Completed step {step}\n"))
+        .collect::<String>();
+    for (original, expected) in [
+        (&include_bytes!("../../../test/hex.hbc")[..], "".to_owned()),
+        (
+            &include_bytes!("../../../test/box2d.hbc")[..],
+            expected_box2d,
+        ),
+    ] {
+        let mut module = decompile(original).unwrap();
+        rename_generated_bindings(&mut module);
+        let rebuilt = HbcCompiler::new(96).compile(&module).unwrap();
+
+        assert_eq!(execute(original.to_vec()), expected);
+        assert_eq!(execute(rebuilt), expected);
+    }
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_self_hosted_runtime_boundaries_execute() {
+    let bytes = compile(
+        r#"
+        function invoke(callback) {
+            try { return callback(1, 2, 3, 4); }
+            finally { print("finally"); }
+        }
+        function Constructor() {
+            print(new.target === Constructor);
+            this.value = 1;
+            print(delete this.value, this.value);
+        }
+        function add(a, b, c, d) { return a + b + c + d; }
+        print(invoke(add));
+        new Constructor();
+        "#,
+        SourceLanguage::JavaScript,
+    );
+    assert_eq!(execute(bytes), "finally\n10\ntrue\ntrue undefined\n");
+
+    let failure = execute_output(compile(
+        "function fail() { try { return missing(); } finally { print('cleanup'); } } fail();",
+        SourceLanguage::JavaScript,
+    ));
+    assert!(!failure.status.success());
+    assert_eq!(String::from_utf8(failure.stdout).unwrap(), "cleanup\n");
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("ReferenceError"));
 }
 
 #[test]

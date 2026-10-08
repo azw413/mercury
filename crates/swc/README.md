@@ -74,6 +74,17 @@ cargo run -p mercury-swc --example decompile -- \
   test/box2d.hbc /tmp/box2d.js
 ```
 
+[`examples/roundtrip.rs`](examples/roundtrip.rs) keeps the recovered SWC tree in
+memory and compiles it back to HBC without `hermesc`:
+
+```sh
+cargo run -p mercury-swc --example roundtrip -- \
+  test/box2d.hbc /tmp/box2d-rebuilt.hbc --rename-generated
+```
+
+The optional flag applies an SWC visitor that renames Mercury's generated
+bindings before compilation, demonstrating the transformation seam.
+
 ## CLI
 
 From the workspace root:
@@ -94,7 +105,8 @@ not enabled.
 The native compiler currently handles scripts and regular function bodies made
 from `var`, `let`, and `const` declarations, function declarations, blocks,
 expression statements, debugger statements, returns, `if`/`else`, `while`,
-`do…while`, and `for`.
+`do…while`, `for`, `switch`, and `throw`. Switch cases preserve fallthrough,
+and unlabeled breaks and continues retain the correct switch/loop nesting.
 Function declarations are instantiated at function entry, including local
 recursion and calls before their textual declaration. Parameters and local
 bindings use parent-linked HBC environments. Defaults are evaluated from left to
@@ -133,8 +145,9 @@ Unlabeled `break` and `continue` work across nested conditionals and loops.
 Supported expressions include primitive literals, identifiers, arithmetic,
 bitwise and comparison operators, unary coercions, property reads and writes,
 simple assignment, sequence and conditional expressions, short-circuit `&&`,
-`||`, and `??`, and calls with up to three arguments. Prefix and postfix
-increment/decrement, arithmetic and bitwise compound assignment, and `&&=`,
+`||`, and `??`, calls, `new.target`, and property deletion. Calls use fixed HBC
+forms for up to three arguments and the general call form above that. Prefix and
+postfix increment/decrement, arithmetic and bitwise compound assignment, and `&&=`,
 `||=`, and `??=` preserve member evaluation order. Method calls preserve their
 receiver. Sparse array literals and object literals with data properties support
 computed keys and duplicate keys. `new` uses HBC's `CreateThis`, `Construct`, and
@@ -145,15 +158,20 @@ Branches use compiler-owned symbolic labels that are resolved to HBC byte
 displacements after instruction selection. This keeps source lowering independent
 of encoded instruction sizes and supports forward and backward jumps.
 
-Named function expressions, destructuring assignments, block-level function
-declarations, async and generator functions, classes, modules, directive
-prologues, exponentiation assignment, labeled control flow, `switch`, `try`,
-`throw`, `for…in`, `for…of`, call and literal spreads, object methods/accessors,
-and object-literal `__proto__` setters return `Unsupported`. Calls accept up to
-three arguments; constructors are limited by the HBC small-frame size. Expanding
-these source constructs is the remaining forward-compiler work; decompiler
-opcode coverage does not imply matching source-language coverage in this
-direction.
+The canonical `try { return expression; } finally { cleanup; }` form emitted by
+the decompiler writes a real HBC exception table and runs cleanup after either a
+normal result or a thrown exception. Named function expressions retain their HBC
+function names, which is sufficient for recovered functions; a named
+expression's source-level self-binding is not implemented yet.
+
+Destructuring assignments, block-level function declarations, async and
+generator functions, classes, modules, directive prologues, exponentiation
+assignment, labeled control flow, general `try`/`catch`/`finally`, `for…in`,
+`for…of`, call and literal spreads, object methods/accessors, and object-literal
+`__proto__` setters return `Unsupported`. Constructors remain limited by the HBC
+small-frame size. Expanding these source constructs is the remaining
+forward-compiler work; decompiler opcode coverage does not imply matching
+source-language coverage in this direction.
 
 ## Current decompilation contract
 
@@ -250,10 +268,11 @@ than the HBC decompiler.
 lowering, scope identity, visitor edits, diagnostics, the committed bytecode
 fixture, and generated JS syntax without an installed Hermes toolchain.
 
-The ignored `native_hbc_executes_without_hermes_compiler` test needs only
-`HERMES_BIN` and executes native compiler output. The older decompiler runtime
-suite still uses `HERMESC_BIN` to recompile its generated JavaScript for
-behavioral comparison.
+The ignored native tests need only `HERMES_BIN`. They execute native compiler
+output and exercise the self-hosted HBC-to-SWC-to-HBC path over the control-flow,
+`hex.hbc`, and 983-function `box2d.hbc` fixtures after an SWC identifier-renaming
+visitor. The older decompiler runtime suite still uses `HERMESC_BIN` to compile
+its generated JavaScript for a separate behavioral comparison.
 
 For executable checks:
 
@@ -319,7 +338,8 @@ properties, while fatal-sentinel coverage verifies that protected bytecode canno
 catch `Unreachable`. The complete HBC-96 opcode vocabulary now has an SWC lowering.
 Committed-fixture checks decompile and rebuild all three functions in `hex.hbc`
 and all 983 functions in `box2d.hbc`, then compare their runtime output with the
-original bytecode.
+original bytecode. The native fixture checks rebuild those files directly with
+`HbcCompiler`, without `hermesc`.
 
 `tests/fixtures/control_flow.hbc` was generated from the adjacent authored JS
 fixture with the local compiler reporting Hermes release 0.12.0 / HBC 96:
