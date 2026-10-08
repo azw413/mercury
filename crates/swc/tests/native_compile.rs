@@ -100,7 +100,7 @@ fn compiles_property_reads_writes_and_receiver_calls() {
 fn rejects_unsupported_syntax_at_the_native_boundary() {
     let module = SwcModule::parse(
         "input.js",
-        "try { print(value); } catch (error) { print(error); }",
+        "for (var key in value) print(key);",
         SourceLanguage::JavaScript,
         SourceKind::Script,
     )
@@ -108,7 +108,7 @@ fn rejects_unsupported_syntax_at_the_native_boundary() {
     let error = HbcCompiler::new(96).compile(&module).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "unsupported: try/catch is not supported by native compilation yet"
+        "unsupported: for-in statements are not supported by native compilation yet"
     );
 }
 
@@ -165,13 +165,49 @@ fn compiles_self_hosted_runtime_boundary_opcodes() {
     for expected in ["Call", "GetNewTarget", "DelById", "Catch", "Throw"] {
         assert!(names.contains(&expected), "missing {expected}");
     }
-    assert_eq!(
+    assert!(
         raw.functions
             .iter()
             .map(|function| function.exception_handlers.len())
-            .sum::<usize>(),
-        1
+            .sum::<usize>()
+            >= 1
     );
+}
+
+#[test]
+fn compiles_strict_functions_and_general_exception_regions() {
+    let bytes = compile(
+        r#"
+        "use strict";
+        function flow(value) {
+            try {
+                if (value) throw value;
+                return this;
+            } catch (error) {
+                return error;
+            } finally {
+                print("cleanup");
+            }
+        }
+        flow();
+        "#,
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+
+    assert!(raw.functions[0].flags.strict_mode);
+    assert!(raw.functions.iter().all(|function| function.flags.strict_mode));
+    assert!(raw
+        .functions
+        .iter()
+        .any(|function| !function.exception_handlers.is_empty()));
+    assert!(raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .any(|instruction| instruction.name == "Catch"));
 }
 
 #[test]
@@ -736,6 +772,72 @@ fn native_self_hosted_runtime_boundaries_execute() {
     assert!(!failure.status.success());
     assert_eq!(String::from_utf8(failure.stdout).unwrap(), "cleanup\n");
     assert!(String::from_utf8_lossy(&failure.stderr).contains("ReferenceError"));
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_strictness_and_general_exception_control_flow_execute() {
+    let bytes = compile(
+        r#"
+        "use strict";
+        function strictReceiver() { return this === undefined; }
+
+        var log = "";
+        function flow(mode) {
+            try {
+                if (mode === 0) return "returned";
+                if (mode === 1) throw "thrown";
+                return "normal";
+            } catch (error) {
+                return "caught:" + error;
+            } finally {
+                log += "f" + mode;
+            }
+        }
+
+        function loop() {
+            for (var index = 0; index < 3; index++) {
+                try {
+                    if (index === 0) continue;
+                    if (index === 1) break;
+                } finally {
+                    log += "l" + index;
+                }
+            }
+        }
+
+        function overriddenReturn() {
+            try { return 1; } finally { return 2; }
+        }
+        function overriddenThrow() {
+            try { throw 1; }
+            catch (error) { throw 2; }
+            finally { throw 3; }
+        }
+        function cleanupThrowsOnce() {
+            try { return 1; }
+            finally { log += "x"; throw 7; }
+        }
+
+        print(strictReceiver());
+        print(flow(0), flow(1), flow(2));
+        loop();
+        print(log, overriddenReturn());
+        try { overriddenThrow(); } catch (error) { print(error); }
+        try { cleanupThrowsOnce(); } catch (error) { print(error, log); }
+        "#,
+        SourceLanguage::JavaScript,
+    );
+    assert_eq!(
+        execute(bytes),
+        concat!(
+            "true\n",
+            "returned caught:thrown normal\n",
+            "f0f1f2l0l1 2\n",
+            "3\n",
+            "7 f0f1f2l0l1x\n",
+        )
+    );
 }
 
 #[test]

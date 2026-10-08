@@ -247,6 +247,7 @@ fn build_minimal_module_from_semantic(
             frame_size: semantic.frame,
             environment_size: semantic.env,
             prohibit_invoke: 2,
+            strict_mode: false,
             exception_handlers: Vec::new(),
             instructions: raised.instructions.clone(),
         })

@@ -46,6 +46,7 @@ pub struct MinimalFunction {
     /// Hermes invocation restriction: 0 = construct-only, 1 = call-only,
     /// 2 = callable and constructable.
     pub prohibit_invoke: u8,
+    pub strict_mode: bool,
     pub exception_handlers: Vec<ExceptionHandlerEntry>,
     pub instructions: Vec<DecodedInstruction>,
 }
@@ -400,7 +401,7 @@ fn build_function_headers(
             flags: FunctionHeaderFlags {
                 raw: 0,
                 prohibit_invoke: function.prohibit_invoke,
-                strict_mode: false,
+                strict_mode: function.strict_mode,
                 has_exception_handler: !function.exception_handlers.is_empty(),
                 has_debug_info: false,
                 overflowed: false,
@@ -689,6 +690,7 @@ mod tests {
                     frame_size: 3,
                     environment_size: 0,
                     prohibit_invoke: 2,
+                    strict_mode: false,
                     exception_handlers: vec![],
                     instructions: vec![
                         DecodedInstruction {
@@ -727,6 +729,7 @@ mod tests {
                     frame_size: 2,
                     environment_size: 0,
                     prohibit_invoke: 1,
+                    strict_mode: true,
                     exception_handlers: vec![],
                     instructions: vec![
                         DecodedInstruction {
@@ -770,6 +773,8 @@ mod tests {
         assert_eq!(raw.functions.len(), 2);
         assert_eq!(raw.functions[0].flags.prohibit_invoke, 2);
         assert_eq!(raw.functions[1].flags.prohibit_invoke, 1);
+        assert!(!raw.functions[0].flags.strict_mode);
+        assert!(raw.functions[1].flags.strict_mode);
         assert_eq!(raw.functions[0].instructions[0].name, "DeclareGlobalVar");
         assert_eq!(raw.functions[1].instructions[0].name, "LoadConstString");
     }
@@ -796,6 +801,7 @@ mod tests {
                 frame_size: 1,
                 environment_size: 0,
                 prohibit_invoke: 2,
+                strict_mode: false,
                 exception_handlers: vec![handler.clone()],
                 instructions: vec![
                     DecodedInstruction {
@@ -863,6 +869,7 @@ mod tests {
                 frame_size: 1,
                 environment_size: 0,
                 prohibit_invoke: 2,
+                strict_mode: false,
                 exception_handlers: vec![],
                 instructions: vec![DecodedInstruction {
                     offset: 0,

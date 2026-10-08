@@ -68,8 +68,10 @@ struct Compiler {
     branches: Vec<PendingBranch>,
     frame_moves: Vec<PendingFrameMove>,
     exception_handlers: Vec<PendingExceptionHandler>,
-    break_targets: Vec<usize>,
-    continue_targets: Vec<usize>,
+    active_exception_regions: Vec<ActiveExceptionRegion>,
+    finally_stack: Vec<FinallyContext>,
+    break_targets: Vec<ControlTarget>,
+    continue_targets: Vec<ControlTarget>,
     pending_functions: VecDeque<PendingFunction>,
     next_function_id: u32,
     scope: Option<Rc<FunctionScope>>,
@@ -78,6 +80,7 @@ struct Compiler {
     is_global: bool,
     current_function_id: u32,
     current_function_kind: NativeFunctionKind,
+    current_function_strict: bool,
 }
 
 #[derive(Clone)]
@@ -87,6 +90,7 @@ struct PendingFunction {
     params: Vec<Pat>,
     body: PendingFunctionBody,
     kind: NativeFunctionKind,
+    strict: bool,
     parent_scope: Option<Rc<FunctionScope>>,
 }
 
@@ -165,6 +169,26 @@ struct PendingExceptionHandler {
     target: usize,
 }
 
+#[derive(Clone, Copy)]
+struct ActiveExceptionRegion {
+    start: Option<usize>,
+    target: usize,
+}
+
+#[derive(Clone)]
+struct FinallyContext {
+    block: BlockStmt,
+    exception_depth: usize,
+    scope: Option<Rc<FunctionScope>>,
+    environment_register: u8,
+}
+
+#[derive(Clone, Copy)]
+struct ControlTarget {
+    label: usize,
+    finally_depth: usize,
+}
+
 impl Compiler {
     fn new(version: u32) -> Self {
         Self {
@@ -181,6 +205,8 @@ impl Compiler {
             branches: Vec::new(),
             frame_moves: Vec::new(),
             exception_handlers: Vec::new(),
+            active_exception_regions: Vec::new(),
+            finally_stack: Vec::new(),
             break_targets: Vec::new(),
             continue_targets: Vec::new(),
             pending_functions: VecDeque::new(),
@@ -191,12 +217,14 @@ impl Compiler {
             is_global: true,
             current_function_id: 0,
             current_function_kind: NativeFunctionKind::Regular,
+            current_function_strict: false,
         }
     }
 
     fn compile_script(mut self, script: &Script) -> Result<Vec<u8>, Error> {
         let spec = mercury_spec_builtin::load_spec(self.version)
             .ok_or_else(|| Error::Bytecode("missing embedded HBC 96 spec".into()))?;
+        let (directive_count, strict) = directive_prologue(&script.body);
         let mut lexical_bindings = direct_lexical_bindings(&script.body)?;
         let lexical_names = lexical_bindings
             .iter()
@@ -210,7 +238,14 @@ impl Compiler {
                 BindingKind::Var,
             )?;
         }
-        self.begin_function(0, lexical_bindings, None, true, NativeFunctionKind::Regular)?;
+        self.begin_function(
+            0,
+            lexical_bindings,
+            None,
+            true,
+            NativeFunctionKind::Regular,
+            strict,
+        )?;
         self.initialize_scope_bindings()?;
         if captures_this {
             self.initialize_lexical_this()?;
@@ -238,14 +273,7 @@ impl Compiler {
 
         self.hoist_function_declarations(&script.body)?;
 
-        let mut directive_prologue = true;
-        for statement in &script.body {
-            if directive_prologue && is_string_expression(statement) {
-                return Err(Error::Unsupported(
-                    "directive prologues are not supported by native compilation yet".into(),
-                ));
-            }
-            directive_prologue = false;
+        for statement in &script.body[directive_count..] {
             if !matches!(statement, Stmt::Decl(Decl::Fn(_))) {
                 self.compile_statement(statement)?;
             }
@@ -288,6 +316,7 @@ impl Compiler {
         parent_scope: Option<Rc<FunctionScope>>,
         is_global: bool,
         kind: NativeFunctionKind,
+        strict: bool,
     ) -> Result<(), Error> {
         self.instructions.clear();
         self.next_register = 0;
@@ -298,11 +327,14 @@ impl Compiler {
         self.branches.clear();
         self.frame_moves.clear();
         self.exception_handlers.clear();
+        self.active_exception_regions.clear();
+        self.finally_stack.clear();
         self.break_targets.clear();
         self.continue_targets.clear();
         self.is_global = is_global;
         self.current_function_id = function_id;
         self.current_function_kind = kind;
+        self.current_function_strict = strict;
         self.base_registers = 0;
         let environment = self.alloc_register()?;
         self.environment_register = Some(environment);
@@ -319,9 +351,20 @@ impl Compiler {
 
     fn initialize_lexical_this(&mut self) -> Result<(), Error> {
         let value = self.alloc_register()?;
-        self.emit("LoadThisNS", vec![reg(value)]);
+        self.emit_this_load(value);
         self.emit_binding_initialization(LEXICAL_THIS_BINDING, value)?;
         self.release_register(value)
+    }
+
+    fn emit_this_load(&mut self, output: u8) {
+        if self.current_function_strict {
+            self.emit(
+                "LoadParam",
+                vec![reg(output), DecodedOperand::U8(0)],
+            );
+        } else {
+            self.emit("LoadThisNS", vec![reg(output)]);
+        }
     }
 
     fn initialize_scope_bindings(&mut self) -> Result<(), Error> {
@@ -383,6 +426,7 @@ impl Compiler {
         let body = function.body.clone().ok_or_else(|| {
             Error::Unsupported("function declarations without bodies are not supported".into())
         })?;
+        let strict = self.current_function_strict || directive_prologue(&body.stmts).1;
         self.register_pending_function(
             name,
             function
@@ -392,6 +436,7 @@ impl Compiler {
                 .collect(),
             PendingFunctionBody::Block(body),
             NativeFunctionKind::Regular,
+            strict,
         )
     }
 
@@ -408,11 +453,17 @@ impl Compiler {
                 PendingFunctionBody::Expression(expression.clone())
             }
         };
+        let strict = self.current_function_strict
+            || match &body {
+                PendingFunctionBody::Block(block) => directive_prologue(&block.stmts).1,
+                PendingFunctionBody::Expression(_) => false,
+            };
         self.register_pending_function(
             String::new(),
             arrow.params.clone(),
             body,
             NativeFunctionKind::Arrow,
+            strict,
         )
     }
 
@@ -422,6 +473,7 @@ impl Compiler {
         params: Vec<Pat>,
         body: PendingFunctionBody,
         kind: NativeFunctionKind,
+        strict: bool,
     ) -> Result<u32, Error> {
         let id = self.next_function_id;
         self.next_function_id = self
@@ -434,6 +486,7 @@ impl Compiler {
             params,
             body,
             kind,
+            strict,
             parent_scope: self.scope.clone(),
         });
         Ok(id)
@@ -551,6 +604,7 @@ impl Compiler {
             pending.parent_scope,
             false,
             pending.kind,
+            pending.strict,
         )?;
         self.initialize_scope_bindings()?;
         if has_implicit_arguments {
@@ -591,7 +645,8 @@ impl Compiler {
         match &pending.body {
             PendingFunctionBody::Block(body) => {
                 self.hoist_function_declarations(&body.stmts)?;
-                for statement in &body.stmts {
+                let (directive_count, _) = directive_prologue(&body.stmts);
+                for statement in &body.stmts[directive_count..] {
                     if !matches!(statement, Stmt::Decl(Decl::Fn(_))) {
                         self.compile_statement(statement)?;
                     }
@@ -672,6 +727,11 @@ impl Compiler {
         environment_size: u32,
         spec: &BytecodeSpec,
     ) -> Result<MinimalFunction, Error> {
+        if !self.active_exception_regions.is_empty() || !self.finally_stack.is_empty() {
+            return Err(Error::Bytecode(
+                "native compiler finished with an active exception context".into(),
+            ));
+        }
         // Hermes reserves six caller registers plus the largest outgoing
         // argument area (including `this`) at the end of a function frame.
         let frame_size = if self.max_call_arguments == 0 {
@@ -698,6 +758,7 @@ impl Compiler {
             frame_size: u32::from(frame_size),
             environment_size,
             prohibit_invoke: self.current_function_kind.prohibit_invoke(),
+            strict_mode: self.current_function_strict,
             exception_handlers,
             instructions: std::mem::take(&mut self.instructions),
         })
@@ -731,6 +792,7 @@ impl Compiler {
                     self.emit("LoadConstUndefined", vec![reg(value)]);
                     value
                 };
+                self.compile_finalizers_to_depth(0)?;
                 self.emit("Ret", vec![reg(value)]);
                 self.release_register(value)
             }
@@ -754,8 +816,10 @@ impl Compiler {
                 let target = self
                     .break_targets
                     .last()
+                    .copied()
                     .ok_or_else(|| Error::Unsupported("break outside a loop or switch".into()))?;
-                self.emit_branch("JmpLong", *target, None);
+                self.compile_finalizers_to_depth(target.finally_depth)?;
+                self.emit_branch("JmpLong", target.label, None);
                 Ok(())
             }
             Stmt::Continue(statement) => {
@@ -767,8 +831,10 @@ impl Compiler {
                 let target = self
                     .continue_targets
                     .last()
+                    .copied()
                     .ok_or_else(|| Error::Unsupported("continue outside a loop".into()))?;
-                self.emit_branch("JmpLong", *target, None);
+                self.compile_finalizers_to_depth(target.finally_depth)?;
+                self.emit_branch("JmpLong", target.label, None);
                 Ok(())
             }
             other => Err(unsupported_statement(other)),
@@ -861,8 +927,15 @@ impl Compiler {
         let test = self.compile_expression(&statement.test)?;
         self.emit_branch("JmpFalseLong", end, Some(test));
         self.release_register(test)?;
-        self.break_targets.push(end);
-        self.continue_targets.push(condition);
+        let finally_depth = self.finally_stack.len();
+        self.break_targets.push(ControlTarget {
+            label: end,
+            finally_depth,
+        });
+        self.continue_targets.push(ControlTarget {
+            label: condition,
+            finally_depth,
+        });
         self.compile_statement(&statement.body)?;
         self.continue_targets.pop();
         self.break_targets.pop();
@@ -878,8 +951,15 @@ impl Compiler {
         let condition = self.new_label();
         let end = self.new_label();
         self.mark_label(body)?;
-        self.break_targets.push(end);
-        self.continue_targets.push(condition);
+        let finally_depth = self.finally_stack.len();
+        self.break_targets.push(ControlTarget {
+            label: end,
+            finally_depth,
+        });
+        self.continue_targets.push(ControlTarget {
+            label: condition,
+            finally_depth,
+        });
         self.compile_statement(&statement.body)?;
         self.continue_targets.pop();
         self.break_targets.pop();
@@ -942,8 +1022,15 @@ impl Compiler {
             self.emit_branch("JmpFalseLong", end, Some(value));
             self.release_register(value)?;
         }
-        self.break_targets.push(end);
-        self.continue_targets.push(update);
+        let finally_depth = self.finally_stack.len();
+        self.break_targets.push(ControlTarget {
+            label: end,
+            finally_depth,
+        });
+        self.continue_targets.push(ControlTarget {
+            label: update,
+            finally_depth,
+        });
         self.compile_statement(&statement.body)?;
         self.continue_targets.pop();
         self.break_targets.pop();
@@ -988,7 +1075,10 @@ impl Compiler {
         self.release_register(discriminant)?;
         self.emit_branch("JmpLong", default, None);
 
-        self.break_targets.push(end);
+        self.break_targets.push(ControlTarget {
+            label: end,
+            finally_depth: self.finally_stack.len(),
+        });
         for (case, label) in statement.cases.iter().zip(labels) {
             self.mark_label(label)?;
             for consequent in &case.cons {
@@ -1000,48 +1090,206 @@ impl Compiler {
     }
 
     fn compile_try(&mut self, statement: &swc_core::ecma::ast::TryStmt) -> Result<(), Error> {
-        if statement.handler.is_some() {
-            return Err(Error::Unsupported(
-                "try/catch is not supported by native compilation yet".into(),
-            ));
+        let after = self.new_label();
+        let catch_target = statement.handler.as_ref().map(|_| self.new_label());
+        let exceptional_finally = statement.finalizer.as_ref().map(|_| self.new_label());
+        let normal_finally = statement.finalizer.as_ref().map(|_| self.new_label());
+        let exception_depth = self.active_exception_regions.len();
+        let finally_context = statement
+            .finalizer
+            .as_ref()
+            .map(|block| -> Result<FinallyContext, Error> {
+                Ok(FinallyContext {
+                    block: block.clone(),
+                    exception_depth,
+                    scope: self.scope.clone(),
+                    environment_register: self.environment_register()?,
+                })
+            })
+            .transpose()?;
+        if let Some(context) = &finally_context {
+            self.finally_stack.push(context.clone());
         }
-        let finalizer = statement.finalizer.as_ref().ok_or_else(|| {
-            Error::Unsupported("try statements currently require a finally block".into())
-        })?;
-        let [Stmt::Return(return_statement)] = statement.block.stmts.as_slice() else {
-            return Err(Error::Unsupported(
-                "try/finally currently requires a single return in the try block".into(),
-            ));
-        };
 
-        let protected_start = self.new_label();
-        let protected_end = self.new_label();
-        let handler = self.new_label();
-        self.mark_label(protected_start)?;
-        let result = if let Some(argument) = &return_statement.arg {
-            self.compile_expression(argument)?
-        } else {
-            let result = self.alloc_register()?;
-            self.emit("LoadConstUndefined", vec![reg(result)]);
-            result
-        };
-        self.mark_label(protected_end)?;
-        self.compile_block(finalizer)?;
-        self.emit("Ret", vec![reg(result)]);
-        self.release_register(result)?;
+        let try_handler = catch_target
+            .or(exceptional_finally)
+            .ok_or_else(|| Error::Bytecode("try statement has no handler or finalizer".into()))?;
+        self.begin_exception_region(try_handler)?;
+        self.compile_block(&statement.block)?;
+        self.end_exception_region()?;
+        self.emit_branch("JmpLong", normal_finally.unwrap_or(after), None);
 
-        self.mark_label(handler)?;
-        let exception = self.alloc_register()?;
-        self.emit("Catch", vec![reg(exception)]);
-        self.compile_block(finalizer)?;
-        self.emit("Throw", vec![reg(exception)]);
-        self.release_register(exception)?;
-        self.exception_handlers.push(PendingExceptionHandler {
-            start: protected_start,
-            end: protected_end,
-            target: handler,
+        if let (Some(target), Some(handler)) = (catch_target, &statement.handler) {
+            self.mark_label(target)?;
+            let exception = self.alloc_register()?;
+            self.emit("Catch", vec![reg(exception)]);
+            if let Some(target) = exceptional_finally {
+                self.begin_exception_region(target)?;
+            }
+            self.compile_catch_clause(handler, exception)?;
+            if exceptional_finally.is_some() {
+                self.end_exception_region()?;
+            }
+            self.release_register(exception)?;
+            self.emit_branch("JmpLong", normal_finally.unwrap_or(after), None);
+        }
+
+        if let Some(context) = finally_context {
+            let popped = self
+                .finally_stack
+                .pop()
+                .ok_or_else(|| Error::Bytecode("missing finally context".into()))?;
+            debug_assert_eq!(popped.exception_depth, context.exception_depth);
+
+            self.mark_label(normal_finally.expect("finally has a normal target"))?;
+            self.compile_finally_context(&context, self.finally_stack.len())?;
+            self.emit_branch("JmpLong", after, None);
+
+            self.mark_label(exceptional_finally.expect("finally has an exception target"))?;
+            let exception = self.alloc_register()?;
+            self.emit("Catch", vec![reg(exception)]);
+            self.compile_finally_context(&context, self.finally_stack.len())?;
+            self.emit("Throw", vec![reg(exception)]);
+            self.release_register(exception)?;
+        }
+
+        self.mark_label(after)
+    }
+
+    fn compile_catch_clause(
+        &mut self,
+        handler: &swc_core::ecma::ast::CatchClause,
+        exception: u8,
+    ) -> Result<(), Error> {
+        let Some(parameter) = &handler.param else {
+            return self.compile_block(&handler.body);
+        };
+        let mut bindings = Vec::new();
+        collect_pattern_bindings(parameter, BindingKind::Let, &mut bindings)?;
+        for (name, kind) in direct_lexical_bindings(&handler.body.stmts)? {
+            add_binding(&mut bindings, name, kind)?;
+        }
+        let (previous_scope, previous_environment, environment) =
+            self.enter_lexical_scope(bindings)?;
+        self.compile_pattern_initialization(parameter, exception)?;
+        for statement in &handler.body.stmts {
+            self.compile_statement(statement)?;
+        }
+        self.leave_lexical_scope(previous_scope, previous_environment, environment)
+    }
+
+    fn begin_exception_region(&mut self, target: usize) -> Result<(), Error> {
+        let start = self.new_label();
+        self.mark_label(start)?;
+        self.active_exception_regions.push(ActiveExceptionRegion {
+            start: Some(start),
+            target,
         });
         Ok(())
+    }
+
+    fn end_exception_region(&mut self) -> Result<(), Error> {
+        let region = self
+            .active_exception_regions
+            .pop()
+            .ok_or_else(|| Error::Bytecode("missing active exception region".into()))?;
+        if let Some(start) = region.start {
+            let end = self.new_label();
+            self.mark_label(end)?;
+            self.push_exception_segment(start, end, region.target)?;
+        }
+        Ok(())
+    }
+
+    fn pause_exception_regions(&mut self, depth: usize) -> Result<Vec<usize>, Error> {
+        if depth > self.active_exception_regions.len() {
+            return Err(Error::Bytecode("invalid exception-region depth".into()));
+        }
+        let paused = (depth..self.active_exception_regions.len())
+            .filter(|index| self.active_exception_regions[*index].start.is_some())
+            .collect::<Vec<_>>();
+        if paused.is_empty() {
+            return Ok(paused);
+        }
+        let end = self.new_label();
+        self.mark_label(end)?;
+        for index in paused.iter().rev().copied() {
+            let region = &mut self.active_exception_regions[index];
+            let start = region.start.take().expect("selected active region");
+            let target = region.target;
+            self.push_exception_segment(start, end, target)?;
+        }
+        Ok(paused)
+    }
+
+    fn resume_exception_regions(&mut self, paused: &[usize]) -> Result<(), Error> {
+        if paused.is_empty() {
+            return Ok(());
+        }
+        let start = self.new_label();
+        self.mark_label(start)?;
+        for index in paused {
+            self.active_exception_regions[*index].start = Some(start);
+        }
+        Ok(())
+    }
+
+    fn push_exception_segment(
+        &mut self,
+        start: usize,
+        end: usize,
+        target: usize,
+    ) -> Result<(), Error> {
+        let start_position = self
+            .labels
+            .get(start)
+            .and_then(|position| *position)
+            .ok_or_else(|| Error::Bytecode("exception segment has no start".into()))?;
+        let end_position = self
+            .labels
+            .get(end)
+            .and_then(|position| *position)
+            .ok_or_else(|| Error::Bytecode("exception segment has no end".into()))?;
+        if start_position < end_position {
+            self.exception_handlers.push(PendingExceptionHandler {
+                start,
+                end,
+                target,
+            });
+        }
+        Ok(())
+    }
+
+    fn compile_finalizers_to_depth(&mut self, depth: usize) -> Result<(), Error> {
+        if depth > self.finally_stack.len() {
+            return Err(Error::Bytecode("invalid finally depth".into()));
+        }
+        let contexts = self.finally_stack.clone();
+        for index in (depth..contexts.len()).rev() {
+            self.compile_finally_context(&contexts[index], index)?;
+        }
+        self.finally_stack = contexts;
+        Ok(())
+    }
+
+    fn compile_finally_context(
+        &mut self,
+        context: &FinallyContext,
+        outer_finally_depth: usize,
+    ) -> Result<(), Error> {
+        let paused = self.pause_exception_regions(context.exception_depth)?;
+        let saved_scope = self.scope.clone();
+        let saved_environment = self.environment_register;
+        let saved_finally = self.finally_stack.clone();
+        self.scope = context.scope.clone();
+        self.environment_register = Some(context.environment_register);
+        self.finally_stack.truncate(outer_finally_depth);
+        let result = self.compile_block(&context.block);
+        self.scope = saved_scope;
+        self.environment_register = saved_environment;
+        self.finally_stack = saved_finally;
+        result?;
+        self.resume_exception_regions(&paused)
     }
 
     fn sorted_current_bindings(&self) -> Result<Vec<Binding>, Error> {
@@ -1318,7 +1566,7 @@ impl Compiler {
                     return self.compile_identifier(LEXICAL_THIS_BINDING);
                 }
                 let output = self.alloc_register()?;
-                self.emit("LoadThisNS", vec![reg(output)]);
+                self.emit_this_load(output);
                 Ok(output)
             }
             Expr::MetaProp(property) if property.kind == MetaPropKind::NewTarget => {
@@ -2900,6 +3148,20 @@ fn collect_statement_var_declarations(
             }
             collect_statement_var_declarations(&statement.body, names)?;
         }
+        Stmt::Switch(statement) => {
+            for case in &statement.cases {
+                collect_var_declarations(&case.cons, names)?;
+            }
+        }
+        Stmt::Try(statement) => {
+            collect_var_declarations(&statement.block.stmts, names)?;
+            if let Some(handler) = &statement.handler {
+                collect_var_declarations(&handler.body.stmts, names)?;
+            }
+            if let Some(finalizer) = &statement.finalizer {
+                collect_var_declarations(&finalizer.stmts, names)?;
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -2914,8 +3176,20 @@ fn collect_declaration_names(declaration: &VarDecl, names: &mut Vec<String>) -> 
     Ok(())
 }
 
-fn is_string_expression(statement: &Stmt) -> bool {
-    matches!(statement, Stmt::Expr(statement) if matches!(&*statement.expr, Expr::Lit(Lit::Str(_))))
+fn directive_prologue(statements: &[Stmt]) -> (usize, bool) {
+    let mut count = 0;
+    let mut strict = false;
+    for statement in statements {
+        let Stmt::Expr(statement) = statement else {
+            break;
+        };
+        let Expr::Lit(Lit::Str(value)) = &*statement.expr else {
+            break;
+        };
+        count += 1;
+        strict |= value.value.as_str() == Some("use strict");
+    }
+    (count, strict)
 }
 
 fn is_proto_setter_name(name: &PropName) -> bool {

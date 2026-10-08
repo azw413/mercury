@@ -105,8 +105,9 @@ not enabled.
 The native compiler currently handles scripts and regular function bodies made
 from `var`, `let`, and `const` declarations, function declarations, blocks,
 expression statements, debugger statements, returns, `if`/`else`, `while`,
-`do…while`, `for`, `switch`, and `throw`. Switch cases preserve fallthrough,
-and unlabeled breaks and continues retain the correct switch/loop nesting.
+`do…while`, `for`, `switch`, `throw`, and `try`/`catch`/`finally`. Switch cases
+preserve fallthrough, and unlabeled breaks and continues retain the correct
+switch/loop nesting.
 Function declarations are instantiated at function entry, including local
 recursion and calls before their textual declaration. Parameters and local
 bindings use parent-linked HBC environments. Defaults are evaluated from left to
@@ -123,6 +124,8 @@ headers prohibit construction, so `new` raises a `TypeError` and no `prototype`
 property is created. A nested regular function starts new receiver and arguments
 boundaries as usual. Ordinary functions expose an unmapped `arguments` object:
 writes to named parameters and indexed arguments remain independent.
+Directive prologues are retained, and `"use strict"` sets the HBC function flag,
+uses the uncoerced receiver, and is inherited by nested functions.
 
 Array binding patterns materialize their input through `Array.from` before
 binding elements, then use `slice` for a rest element. This supports arrays and
@@ -158,20 +161,21 @@ Branches use compiler-owned symbolic labels that are resolved to HBC byte
 displacements after instruction selection. This keeps source lowering independent
 of encoded instruction sizes and supports forward and backward jumps.
 
-The canonical `try { return expression; } finally { cleanup; }` form emitted by
-the decompiler writes a real HBC exception table and runs cleanup after either a
-normal result or a thrown exception. Named function expressions retain their HBC
-function names, which is sufficient for recovered functions; a named
-expression's source-level self-binding is not implemented yet.
+General `try`/`catch`/`finally` writes real HBC exception tables. Cleanup runs on
+normal completion, returns, throws, and loop exits, nested handlers preserve
+their precedence, and an abrupt completion inside `finally` replaces the pending
+completion. This is sufficient to compile the decompiler's exception dispatcher,
+iterator cleanup, and generator/async runtime adapters. Named function
+expressions retain their HBC function names, which is sufficient for recovered
+functions; a named expression's source-level self-binding is not implemented yet.
 
 Destructuring assignments, block-level function declarations, async and
-generator functions, classes, modules, directive prologues, exponentiation
-assignment, labeled control flow, general `try`/`catch`/`finally`, `for…in`,
-`for…of`, call and literal spreads, object methods/accessors, and object-literal
-`__proto__` setters return `Unsupported`. Constructors remain limited by the HBC
-small-frame size. Expanding these source constructs is the remaining
-forward-compiler work; decompiler opcode coverage does not imply matching
-source-language coverage in this direction.
+generator functions, classes, modules, exponentiation assignment, labeled
+control flow, `for…in`, `for…of`, call and literal spreads, object
+methods/accessors, and object-literal `__proto__` setters return `Unsupported`.
+Constructors remain limited by the HBC small-frame size. Expanding these source
+constructs is the remaining forward-compiler work; decompiler opcode coverage
+does not imply matching source-language coverage in this direction.
 
 ## Current decompilation contract
 
@@ -271,8 +275,10 @@ fixture, and generated JS syntax without an installed Hermes toolchain.
 The ignored native tests need only `HERMES_BIN`. They execute native compiler
 output and exercise the self-hosted HBC-to-SWC-to-HBC path over the control-flow,
 `hex.hbc`, and 983-function `box2d.hbc` fixtures after an SWC identifier-renaming
-visitor. The older decompiler runtime suite still uses `HERMESC_BIN` to compile
-its generated JavaScript for a separate behavioral comparison.
+visitor. Tests that originate new exception, generator, async, iterator, and
+strict-mode fixtures use `HERMESC_BIN` once to produce the input HBC, then rebuild
+the recovered AST with `HbcCompiler`. The older decompiler runtime suite also
+keeps its external-compiler comparison.
 
 For executable checks:
 

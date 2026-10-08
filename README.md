@@ -142,6 +142,12 @@ WTF-8 representation and JavaScript escape emission.
 Direct eval preserves HBC 96's global-only scope, strict-caller behavior,
 non-string passthrough, and completion values.
 
+The native rebuild path now emits nested exception tables and preserves strict
+function flags and receivers. Decompiled exception dispatchers, iterator
+cleanup, and the generator/async runtime adapters therefore rebuild without
+`hermesc`, including returns and loop exits through `finally` and cleanup that
+throws or replaces a pending return.
+
 Native source compilation now includes arithmetic, global and property access,
 fixed-arity calls, short-circuit expressions, conditionals, and structured
 `if`/loop control flow. Compiler-owned labels are resolved to bytecode

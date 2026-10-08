@@ -7,7 +7,7 @@ use mercury_swc::{
     ast::Number,
     decompile,
     visit::{VisitMut, VisitMutWith},
-    HermesCompiler, SourceKind, SourceLanguage, SwcModule,
+    HbcCompiler, HermesCompiler, SourceKind, SourceLanguage, SwcModule,
 };
 use std::{fs, path::PathBuf, process::Command};
 fn compiler() -> HermesCompiler {
@@ -338,6 +338,43 @@ fn exception_handlers_recover_catches_calls_and_finally() {
     let recovered = decompile(&original).unwrap_or_else(|err| panic!("{source}: {err}"));
     let rebuilt = compiler.compile(&recovered).unwrap();
     assert_eq!(execute(&rebuilt), expected);
+    let native = HbcCompiler::new(96).compile(&recovered).unwrap();
+    assert_eq!(execute(&native), expected);
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn native_rebuild_handles_generator_async_and_iterator_exception_runtimes() {
+    for (name, source, expected) in [
+        (
+            "generator-suspension.js",
+            include_str!("fixtures/generator_suspension.js"),
+            "first-1 4 false\nsecond-1 10 false\nfirst-2 7 false\nfinally 7\nfirst-3 8 true\nfirst-4 undefined true\nfinally 10\nsecond-return 44 true\nsecond-after undefined true\niterator true\nthrow-1 ready false\nthrow-2 caught:boom false\nthrow-3 finished true\ndelegate-1 1 false\ndelegate-2 delegated-catch:x false\ninner-finally\ndelegate-3 outer:7 true\ndelegate-4 undefined true\nreturn-1 1 false\ninner-finally\nreturn-2 9 true\nreturn-3 undefined true\nbefore-start-return 5 true\nbefore-start-catch before-start-throw\n",
+        ),
+        (
+            "async-suspension.js",
+            include_str!("fixtures/async_suspension.js"),
+            "rejected caught:no\nreceiver 14\nresolved 7\n",
+        ),
+        (
+            "iterator.js",
+            "var total = 0; for (var value of [1, 2, 3]) total += value; print(total);",
+            "6\n",
+        ),
+        (
+            "strict.js",
+            "\"use strict\"; function receiver() { return this === undefined; } print(receiver());",
+            "true\n",
+        ),
+    ] {
+        let module =
+            SwcModule::parse(name, source, SourceLanguage::JavaScript, SourceKind::Script).unwrap();
+        let original = compiler().compile(&module).unwrap();
+        assert_eq!(execute(&original), expected, "original: {name}");
+        let recovered = decompile(&original).unwrap();
+        let rebuilt = HbcCompiler::new(96).compile(&recovered).unwrap();
+        assert_eq!(execute(&rebuilt), expected, "native rebuild: {name}");
+    }
 }
 
 #[test]
@@ -476,6 +513,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
                 frame_size: 14,
                 environment_size: 0,
                 prohibit_invoke: 2,
+                strict_mode: false,
                 exception_handlers: vec![],
                 instructions: vec![
                     instruction("Debugger", vec![]),
@@ -503,6 +541,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
                 frame_size: 1,
                 environment_size: 0,
                 prohibit_invoke: 2,
+                strict_mode: false,
                 exception_handlers: vec![],
                 instructions: vec![
                     instruction("GetEnvironment", vec![U8(0), U8(0)]),
@@ -529,6 +568,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
                     frame_size: 10,
                     environment_size: 0,
                     prohibit_invoke: 2,
+                    strict_mode: false,
                     exception_handlers: vec![],
                     instructions: vec![
                         instruction("LoadConstUndefined", vec![U8(3)]),
@@ -543,6 +583,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
                     frame_size: 1,
                     environment_size: 0,
                     prohibit_invoke: 2,
+                    strict_mode: false,
                     exception_handlers: vec![],
                     instructions: vec![
                         instruction("LoadParam", vec![U8(0), U8(1)]),
@@ -564,6 +605,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
             frame_size: 2,
             environment_size: 0,
             prohibit_invoke: 2,
+            strict_mode: false,
             exception_handlers: vec![],
             instructions: vec![
                 instruction("LoadConstEmpty", vec![U8(0)]),
@@ -597,6 +639,7 @@ fn typed_arithmetic_and_memory_opcodes_preserve_i32_and_view_semantics() {
             frame_size: 40,
             environment_size: 0,
             prohibit_invoke: 2,
+            strict_mode: false,
             exception_handlers: vec![],
             instructions: vec![
                 instruction("LoadConstInt", vec![U8(0), I32(2_147_483_647)]),
@@ -732,6 +775,7 @@ fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
             frame_size: 2,
             environment_size: 0,
             prohibit_invoke: 2,
+            strict_mode: false,
             exception_handlers: vec![],
             instructions: vec![
                 instruction("GetGlobalObject", vec![U8(0)]),
@@ -757,6 +801,7 @@ fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
             frame_size: 1,
             environment_size: 0,
             prohibit_invoke: 2,
+            strict_mode: false,
             exception_handlers: vec![],
             instructions: vec![
                 instruction("ThrowIfHasRestrictedGlobalProperty", vec![U32(0)]),
@@ -784,6 +829,7 @@ fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
             frame_size: 1,
             environment_size: 0,
             prohibit_invoke: 2,
+            strict_mode: false,
             exception_handlers: vec![],
             instructions: vec![instruction("Unreachable", vec![])],
         }],
