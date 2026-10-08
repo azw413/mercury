@@ -70,7 +70,7 @@ struct Compiler {
     frame_moves: Vec<PendingFrameMove>,
     exception_handlers: Vec<PendingExceptionHandler>,
     active_exception_regions: Vec<ActiveExceptionRegion>,
-    finally_stack: Vec<FinallyContext>,
+    cleanup_stack: Vec<CleanupContext>,
     break_targets: Vec<ControlTarget>,
     continue_targets: Vec<ControlTarget>,
     pending_functions: VecDeque<PendingFunction>,
@@ -184,10 +184,22 @@ struct FinallyContext {
     environment_register: u8,
 }
 
+#[derive(Clone)]
+struct IteratorCleanupContext {
+    iterator: u8,
+    exception_depth: usize,
+}
+
+#[derive(Clone)]
+enum CleanupContext {
+    Finally(FinallyContext),
+    Iterator(IteratorCleanupContext),
+}
+
 #[derive(Clone, Copy)]
 struct ControlTarget {
     label: usize,
-    finally_depth: usize,
+    cleanup_depth: usize,
 }
 
 impl Compiler {
@@ -207,7 +219,7 @@ impl Compiler {
             frame_moves: Vec::new(),
             exception_handlers: Vec::new(),
             active_exception_regions: Vec::new(),
-            finally_stack: Vec::new(),
+            cleanup_stack: Vec::new(),
             break_targets: Vec::new(),
             continue_targets: Vec::new(),
             pending_functions: VecDeque::new(),
@@ -329,7 +341,7 @@ impl Compiler {
         self.frame_moves.clear();
         self.exception_handlers.clear();
         self.active_exception_regions.clear();
-        self.finally_stack.clear();
+        self.cleanup_stack.clear();
         self.break_targets.clear();
         self.continue_targets.clear();
         self.is_global = is_global;
@@ -728,7 +740,7 @@ impl Compiler {
         environment_size: u32,
         spec: &BytecodeSpec,
     ) -> Result<MinimalFunction, Error> {
-        if !self.active_exception_regions.is_empty() || !self.finally_stack.is_empty() {
+        if !self.active_exception_regions.is_empty() || !self.cleanup_stack.is_empty() {
             return Err(Error::Bytecode(
                 "native compiler finished with an active exception context".into(),
             ));
@@ -793,7 +805,7 @@ impl Compiler {
                     self.emit("LoadConstUndefined", vec![reg(value)]);
                     value
                 };
-                self.compile_finalizers_to_depth(0)?;
+                self.compile_cleanups_to_depth(0)?;
                 self.emit("Ret", vec![reg(value)]);
                 self.release_register(value)
             }
@@ -802,6 +814,7 @@ impl Compiler {
             Stmt::DoWhile(statement) => self.compile_do_while(statement),
             Stmt::For(statement) => self.compile_for(statement),
             Stmt::ForIn(statement) => self.compile_for_in(statement),
+            Stmt::ForOf(statement) => self.compile_for_of(statement),
             Stmt::Switch(statement) => self.compile_switch(statement),
             Stmt::Try(statement) => self.compile_try(statement),
             Stmt::Throw(statement) => {
@@ -820,7 +833,7 @@ impl Compiler {
                     .last()
                     .copied()
                     .ok_or_else(|| Error::Unsupported("break outside a loop or switch".into()))?;
-                self.compile_finalizers_to_depth(target.finally_depth)?;
+                self.compile_cleanups_to_depth(target.cleanup_depth)?;
                 self.emit_branch("JmpLong", target.label, None);
                 Ok(())
             }
@@ -835,7 +848,7 @@ impl Compiler {
                     .last()
                     .copied()
                     .ok_or_else(|| Error::Unsupported("continue outside a loop".into()))?;
-                self.compile_finalizers_to_depth(target.finally_depth)?;
+                self.compile_cleanups_to_depth(target.cleanup_depth)?;
                 self.emit_branch("JmpLong", target.label, None);
                 Ok(())
             }
@@ -929,14 +942,14 @@ impl Compiler {
         let test = self.compile_expression(&statement.test)?;
         self.emit_branch("JmpFalseLong", end, Some(test));
         self.release_register(test)?;
-        let finally_depth = self.finally_stack.len();
+        let cleanup_depth = self.cleanup_stack.len();
         self.break_targets.push(ControlTarget {
             label: end,
-            finally_depth,
+            cleanup_depth,
         });
         self.continue_targets.push(ControlTarget {
             label: condition,
-            finally_depth,
+            cleanup_depth,
         });
         self.compile_statement(&statement.body)?;
         self.continue_targets.pop();
@@ -953,14 +966,14 @@ impl Compiler {
         let condition = self.new_label();
         let end = self.new_label();
         self.mark_label(body)?;
-        let finally_depth = self.finally_stack.len();
+        let cleanup_depth = self.cleanup_stack.len();
         self.break_targets.push(ControlTarget {
             label: end,
-            finally_depth,
+            cleanup_depth,
         });
         self.continue_targets.push(ControlTarget {
             label: condition,
-            finally_depth,
+            cleanup_depth,
         });
         self.compile_statement(&statement.body)?;
         self.continue_targets.pop();
@@ -1024,14 +1037,14 @@ impl Compiler {
             self.emit_branch("JmpFalseLong", end, Some(value));
             self.release_register(value)?;
         }
-        let finally_depth = self.finally_stack.len();
+        let cleanup_depth = self.cleanup_stack.len();
         self.break_targets.push(ControlTarget {
             label: end,
-            finally_depth,
+            cleanup_depth,
         });
         self.continue_targets.push(ControlTarget {
             label: update,
-            finally_depth,
+            cleanup_depth,
         });
         self.compile_statement(&statement.body)?;
         self.continue_targets.pop();
@@ -1102,16 +1115,16 @@ impl Compiler {
             vec![reg(property), reg(list), reg(object), reg(index), reg(size)],
         );
         self.emit_branch("JmpUndefinedLong", end, Some(property));
-        self.compile_for_in_head(&statement.left, property)?;
+        self.compile_for_iteration_head(&statement.left, property)?;
 
-        let finally_depth = self.finally_stack.len();
+        let cleanup_depth = self.cleanup_stack.len();
         self.break_targets.push(ControlTarget {
             label: end,
-            finally_depth,
+            cleanup_depth,
         });
         self.continue_targets.push(ControlTarget {
             label: advance,
-            finally_depth,
+            cleanup_depth,
         });
         self.compile_statement(&statement.body)?;
         self.continue_targets.pop();
@@ -1142,16 +1155,133 @@ impl Compiler {
         self.release_register(object)
     }
 
-    fn compile_for_in_head(&mut self, head: &ForHead, value: u8) -> Result<(), Error> {
+    fn compile_for_iteration_head(&mut self, head: &ForHead, value: u8) -> Result<(), Error> {
         match head {
             ForHead::VarDecl(declaration) => {
                 self.compile_pattern_initialization(&declaration.decls[0].name, value)
             }
             ForHead::Pat(pattern) => self.compile_assignment_pattern(pattern, value),
             ForHead::UsingDecl(_) => Err(Error::Unsupported(
-                "using declarations in for-in are not supported by native compilation yet".into(),
+                "using declarations in iteration loops are not supported by native compilation yet"
+                    .into(),
             )),
         }
+    }
+
+    fn compile_for_of(
+        &mut self,
+        statement: &swc_core::ecma::ast::ForOfStmt,
+    ) -> Result<(), Error> {
+        if statement.is_await {
+            return Err(Error::Unsupported(
+                "for-await-of statements are not supported by native compilation yet".into(),
+            ));
+        }
+        let lexical_bindings = match &statement.left {
+            ForHead::VarDecl(declaration) if declaration.kind != VarDeclKind::Var => {
+                Some(declaration_bindings(declaration)?)
+            }
+            _ => None,
+        };
+        if let ForHead::VarDecl(declaration) = &statement.left
+            && (declaration.decls.len() != 1 || declaration.decls[0].init.is_some())
+        {
+            return Err(Error::Unsupported(
+                "for-of declarations require one uninitialized binding".into(),
+            ));
+        }
+
+        let source = self.compile_expression(&statement.right)?;
+        let lexical_scope = if let Some(bindings) = lexical_bindings {
+            let (previous_scope, parent_environment, iteration_environment) =
+                self.enter_lexical_scope(bindings)?;
+            let iteration_bindings = self.sorted_current_bindings()?;
+            Some((
+                previous_scope,
+                parent_environment,
+                iteration_environment,
+                iteration_bindings,
+            ))
+        } else {
+            None
+        };
+
+        let iterator = self.alloc_register()?;
+        let value = self.alloc_register()?;
+        self.emit("IteratorBegin", vec![reg(iterator), reg(source)]);
+
+        let next = self.new_label();
+        let advance = self.new_label();
+        let close_on_exception = self.new_label();
+        let end = self.new_label();
+        self.mark_label(next)?;
+        self.emit(
+            "IteratorNext",
+            vec![reg(value), reg(iterator), reg(source)],
+        );
+        self.emit_branch("JmpUndefinedLong", end, Some(iterator));
+
+        let exception_depth = self.active_exception_regions.len();
+        self.begin_exception_region(close_on_exception)?;
+        let outer_cleanup_depth = self.cleanup_stack.len();
+        self.cleanup_stack
+            .push(CleanupContext::Iterator(IteratorCleanupContext {
+                iterator,
+                exception_depth,
+            }));
+        self.compile_for_iteration_head(&statement.left, value)?;
+
+        self.break_targets.push(ControlTarget {
+            label: end,
+            cleanup_depth: outer_cleanup_depth,
+        });
+        self.continue_targets.push(ControlTarget {
+            label: advance,
+            cleanup_depth: self.cleanup_stack.len(),
+        });
+        self.compile_statement(&statement.body)?;
+        self.continue_targets.pop();
+        self.break_targets.pop();
+        let cleanup = self
+            .cleanup_stack
+            .pop()
+            .ok_or_else(|| Error::Bytecode("missing iterator cleanup context".into()))?;
+        if !matches!(cleanup, CleanupContext::Iterator(_)) {
+            return Err(Error::Bytecode("invalid iterator cleanup context".into()));
+        }
+        self.end_exception_region()?;
+
+        self.mark_label(advance)?;
+        if let Some((_, parent_environment, iteration_environment, bindings)) = &lexical_scope {
+            self.reset_iteration_environment(
+                *parent_environment,
+                *iteration_environment,
+                bindings,
+            )?;
+        }
+        self.emit_branch("JmpLong", next, None);
+
+        self.mark_label(close_on_exception)?;
+        let exception = self.alloc_register()?;
+        self.emit("Catch", vec![reg(exception)]);
+        self.emit(
+            "IteratorClose",
+            vec![reg(iterator), DecodedOperand::U8(1)],
+        );
+        self.emit("Throw", vec![reg(exception)]);
+        self.release_register(exception)?;
+
+        self.mark_label(end)?;
+        self.release_register(value)?;
+        self.release_register(iterator)?;
+        if let Some((previous_scope, parent_environment, iteration_environment, _)) = lexical_scope {
+            self.leave_lexical_scope(
+                previous_scope,
+                parent_environment,
+                iteration_environment,
+            )?;
+        }
+        self.release_register(source)
     }
 
     fn compile_assignment_pattern(&mut self, pattern: &Pat, value: u8) -> Result<(), Error> {
@@ -1159,7 +1289,7 @@ impl Compiler {
             Pat::Ident(identifier) => self.emit_identifier_store(identifier.id.sym.as_ref(), value),
             Pat::Expr(expression) => self.compile_assignment_target_value(expression, value),
             _ => Err(Error::Unsupported(
-                "destructuring for-in assignment targets are not supported by native compilation yet"
+                "destructuring iteration assignment targets are not supported by native compilation yet"
                     .into(),
             )),
         }
@@ -1181,7 +1311,7 @@ impl Compiler {
                     }
                     MemberProp::PrivateName(_) => {
                         return Err(Error::Unsupported(
-                            "private for-in targets are not supported by native compilation yet"
+                            "private iteration targets are not supported by native compilation yet"
                                 .into(),
                         ));
                     }
@@ -1192,7 +1322,8 @@ impl Compiler {
                 self.compile_assignment_target_value(&parenthesized.expr, value)
             }
             _ => Err(Error::Unsupported(
-                "this for-in assignment target is not supported by native compilation yet".into(),
+                "this iteration assignment target is not supported by native compilation yet"
+                    .into(),
             )),
         }
     }
@@ -1228,7 +1359,7 @@ impl Compiler {
 
         self.break_targets.push(ControlTarget {
             label: end,
-            finally_depth: self.finally_stack.len(),
+            cleanup_depth: self.cleanup_stack.len(),
         });
         for (case, label) in statement.cases.iter().zip(labels) {
             self.mark_label(label)?;
@@ -1259,7 +1390,8 @@ impl Compiler {
             })
             .transpose()?;
         if let Some(context) = &finally_context {
-            self.finally_stack.push(context.clone());
+            self.cleanup_stack
+                .push(CleanupContext::Finally(context.clone()));
         }
 
         let try_handler = catch_target
@@ -1287,19 +1419,22 @@ impl Compiler {
 
         if let Some(context) = finally_context {
             let popped = self
-                .finally_stack
+                .cleanup_stack
                 .pop()
                 .ok_or_else(|| Error::Bytecode("missing finally context".into()))?;
+            let CleanupContext::Finally(popped) = popped else {
+                return Err(Error::Bytecode("invalid finally cleanup context".into()));
+            };
             debug_assert_eq!(popped.exception_depth, context.exception_depth);
 
             self.mark_label(normal_finally.expect("finally has a normal target"))?;
-            self.compile_finally_context(&context, self.finally_stack.len())?;
+            self.compile_finally_context(&context, self.cleanup_stack.len())?;
             self.emit_branch("JmpLong", after, None);
 
             self.mark_label(exceptional_finally.expect("finally has an exception target"))?;
             let exception = self.alloc_register()?;
             self.emit("Catch", vec![reg(exception)]);
-            self.compile_finally_context(&context, self.finally_stack.len())?;
+            self.compile_finally_context(&context, self.cleanup_stack.len())?;
             self.emit("Throw", vec![reg(exception)]);
             self.release_register(exception)?;
         }
@@ -1411,34 +1546,54 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_finalizers_to_depth(&mut self, depth: usize) -> Result<(), Error> {
-        if depth > self.finally_stack.len() {
-            return Err(Error::Bytecode("invalid finally depth".into()));
+    fn compile_cleanups_to_depth(&mut self, depth: usize) -> Result<(), Error> {
+        if depth > self.cleanup_stack.len() {
+            return Err(Error::Bytecode("invalid cleanup depth".into()));
         }
-        let contexts = self.finally_stack.clone();
+        let contexts = self.cleanup_stack.clone();
         for index in (depth..contexts.len()).rev() {
-            self.compile_finally_context(&contexts[index], index)?;
+            self.compile_cleanup_context(&contexts[index], index)?;
         }
-        self.finally_stack = contexts;
+        self.cleanup_stack = contexts;
         Ok(())
+    }
+
+    fn compile_cleanup_context(
+        &mut self,
+        context: &CleanupContext,
+        outer_cleanup_depth: usize,
+    ) -> Result<(), Error> {
+        match context {
+            CleanupContext::Finally(context) => {
+                self.compile_finally_context(context, outer_cleanup_depth)
+            }
+            CleanupContext::Iterator(context) => {
+                let paused = self.pause_exception_regions(context.exception_depth)?;
+                self.emit(
+                    "IteratorClose",
+                    vec![reg(context.iterator), DecodedOperand::U8(0)],
+                );
+                self.resume_exception_regions(&paused)
+            }
+        }
     }
 
     fn compile_finally_context(
         &mut self,
         context: &FinallyContext,
-        outer_finally_depth: usize,
+        outer_cleanup_depth: usize,
     ) -> Result<(), Error> {
         let paused = self.pause_exception_regions(context.exception_depth)?;
         let saved_scope = self.scope.clone();
         let saved_environment = self.environment_register;
-        let saved_finally = self.finally_stack.clone();
+        let saved_cleanups = self.cleanup_stack.clone();
         self.scope = context.scope.clone();
         self.environment_register = Some(context.environment_register);
-        self.finally_stack.truncate(outer_finally_depth);
+        self.cleanup_stack.truncate(outer_cleanup_depth);
         let result = self.compile_block(&context.block);
         self.scope = saved_scope;
         self.environment_register = saved_environment;
-        self.finally_stack = saved_finally;
+        self.cleanup_stack = saved_cleanups;
         result?;
         self.resume_exception_regions(&paused)
     }
@@ -3340,6 +3495,14 @@ fn collect_statement_var_declarations(
             collect_statement_var_declarations(&statement.body, names)?;
         }
         Stmt::ForIn(statement) => {
+            if let ForHead::VarDecl(declaration) = &statement.left
+                && declaration.kind == VarDeclKind::Var
+            {
+                collect_declaration_names(declaration, names)?;
+            }
+            collect_statement_var_declarations(&statement.body, names)?;
+        }
+        Stmt::ForOf(statement) => {
             if let ForHead::VarDecl(declaration) = &statement.left
                 && declaration.kind == VarDeclKind::Var
             {

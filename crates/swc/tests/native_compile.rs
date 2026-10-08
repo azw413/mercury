@@ -100,7 +100,7 @@ fn compiles_property_reads_writes_and_receiver_calls() {
 fn rejects_unsupported_syntax_at_the_native_boundary() {
     let module = SwcModule::parse(
         "input.js",
-        "for (var value of values) print(value);",
+        "print(...values);",
         SourceLanguage::JavaScript,
         SourceKind::Script,
     )
@@ -108,12 +108,12 @@ fn rejects_unsupported_syntax_at_the_native_boundary() {
     let error = HbcCompiler::new(96).compile(&module).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "unsupported: for-of statements are not supported by native compilation yet"
+        "unsupported: spread call arguments are not supported by native compilation yet"
     );
 }
 
 #[test]
-fn compiles_for_in_exponentiation_and_wtf8_strings() {
+fn compiles_iteration_exponentiation_and_wtf8_strings() {
     let bytes = compile(
         r#"
         var key;
@@ -121,6 +121,7 @@ fn compiles_for_in_exponentiation_and_wtf8_strings() {
         for (key in target) target.last = key;
         for (let lexical in target) (() => lexical)();
         for (target.key in target) break;
+        for (const item of target) { if (item) break; }
         var value = 2 ** 3;
         value **= 2;
         target.value **= value;
@@ -140,7 +141,14 @@ fn compiles_for_in_exponentiation_and_wtf8_strings() {
 
     assert!(names.contains(&"GetPNameList"));
     assert!(names.contains(&"GetNextPName"));
+    assert!(names.contains(&"IteratorBegin"));
+    assert!(names.contains(&"IteratorNext"));
+    assert!(names.contains(&"IteratorClose"));
     assert!(names.contains(&"CallBuiltin"));
+    assert!(raw
+        .functions
+        .iter()
+        .any(|function| !function.exception_handlers.is_empty()));
     assert!(container
         .small_string_table_entries
         .iter()
@@ -919,6 +927,81 @@ fn native_for_in_exponentiation_and_wtf8_strings_execute() {
         "8 bp 8\n",
         "1 55296\n",
     );
+    let recovered = decompile(&bytes).unwrap();
+    assert_eq!(execute(bytes), expected);
+    let rebuilt = HbcCompiler::new(96).compile(&recovered).unwrap();
+    assert_eq!(execute(rebuilt), expected);
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_for_of_closes_iterators_and_preserves_lexical_bindings() {
+    let source = format!(
+        "{}\n{}",
+        include_str!("fixtures/iteration.js"),
+        r#"
+        var returnLog = [];
+        var returning = {};
+        returning[Symbol.iterator] = function () {
+            var finished = false;
+            return {
+                next: function () {
+                    if (finished) return { done: true };
+                    finished = true;
+                    return { value: 7, done: false };
+                },
+                return: function () {
+                    returnLog.push("return");
+                    return {};
+                }
+            };
+        };
+        function returnFromLoop() {
+            for (const item of returning) {
+                try { return item; }
+                finally { returnLog.push("finally"); }
+            }
+        }
+        var captures = [];
+        for (let item of [5, 6]) captures.push(() => item);
+        var bindingLog = [];
+        var bindingSource = {};
+        bindingSource[Symbol.iterator] = function () {
+            return {
+                next: function () { return { value: null, done: false }; },
+                return: function () { bindingLog.push("return"); return {}; }
+            };
+        };
+        try { for (const { value } of bindingSource) {} }
+        catch (error) { print("binding-close", error instanceof TypeError, bindingLog.join(",")); }
+        var nextLog = [];
+        var throwingNext = {};
+        throwingNext[Symbol.iterator] = function () {
+            return {
+                next: function () { throw "next"; },
+                return: function () { nextLog.push("return"); return {}; }
+            };
+        };
+        try { for (var ignored of throwingNext) {} }
+        catch (error) { print("next-failure", error, nextLog.length); }
+        print("return-close", returnFromLoop(), returnLog.join(","));
+        print("for-of-bindings", captures[0](), captures[1]());
+        "#,
+    );
+    let expected = concat!(
+        "for-in first,shadowed,inherited\n",
+        "for-in-values 0,1 0\n",
+        "array-iterator 1,undefined,3,4\n",
+        "iterator-close next,value:1,return\n",
+        "invalid-next true\n",
+        "break-close close\n",
+        "throw-close body\n",
+        "binding-close true return\n",
+        "next-failure next 0\n",
+        "return-close 7 finally,return\n",
+        "for-of-bindings 5 6\n",
+    );
+    let bytes = compile(&source, SourceLanguage::JavaScript);
     let recovered = decompile(&bytes).unwrap();
     assert_eq!(execute(bytes), expected);
     let rebuilt = HbcCompiler::new(96).compile(&recovered).unwrap();
