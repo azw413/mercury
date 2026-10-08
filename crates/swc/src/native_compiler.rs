@@ -24,6 +24,8 @@ const LEXICAL_ARGUMENTS_BINDING: &str = "\0mercury_lexical_arguments";
 const THROW_TYPE_ERROR_BUILTIN: u8 = 42;
 const COPY_DATA_PROPERTIES_BUILTIN: u8 = 44;
 const COPY_REST_ARGS_BUILTIN: u8 = 45;
+const ARRAY_SPREAD_BUILTIN: u8 = 46;
+const APPLY_BUILTIN: u8 = 47;
 const EXPONENTIATION_BUILTIN: u8 = 49;
 
 /// Native SWC-AST to Hermes-bytecode compiler.
@@ -1994,6 +1996,40 @@ impl Compiler {
     }
 
     fn compile_array(&mut self, array: &swc_core::ecma::ast::ArrayLit) -> Result<u8, Error> {
+        if array
+            .elems
+            .iter()
+            .flatten()
+            .any(|element| element.spread.is_some())
+        {
+            let output = self.alloc_register()?;
+            self.emit("NewArray", vec![reg(output), DecodedOperand::U16(0)]);
+            let next_index = self.alloc_register()?;
+            self.emit("LoadConstZero", vec![reg(next_index)]);
+            for element in &array.elems {
+                if let Some(element) = element {
+                    let value = self.compile_expression(&element.expr)?;
+                    if element.spread.is_some() {
+                        let updated = self.emit_builtin_call(
+                            ARRAY_SPREAD_BUILTIN,
+                            &[output, value, next_index],
+                        )?;
+                        self.emit("Mov", vec![reg(next_index), reg(updated)]);
+                        self.release_register(updated)?;
+                    } else {
+                        self.emit_define_own(output, value, next_index);
+                        self.emit("Inc", vec![reg(next_index), reg(next_index)]);
+                    }
+                    self.release_register(value)?;
+                } else {
+                    self.emit("Inc", vec![reg(next_index), reg(next_index)]);
+                }
+            }
+            self.emit_put_by_id(output, next_index, "length")?;
+            self.release_register(next_index)?;
+            return Ok(output);
+        }
+
         let length = u16::try_from(array.elems.len()).map_err(|_| {
             Error::Unsupported("array literals with more than 65535 slots are not supported".into())
         })?;
@@ -2003,11 +2039,6 @@ impl Compiler {
             let Some(element) = element else {
                 continue;
             };
-            if element.spread.is_some() {
-                return Err(Error::Unsupported(
-                    "array spread is not supported by native compilation yet".into(),
-                ));
-            }
             let value = self.compile_expression(&element.expr)?;
             if let Ok(index) = u8::try_from(index) {
                 self.emit(
@@ -2030,9 +2061,15 @@ impl Compiler {
         self.emit("NewObject", vec![reg(output)]);
         for property in &object.props {
             let PropOrSpread::Prop(property) = property else {
-                return Err(Error::Unsupported(
-                    "object spread is not supported by native compilation yet".into(),
-                ));
+                let PropOrSpread::Spread(spread) = property else {
+                    unreachable!();
+                };
+                let source = self.compile_expression(&spread.expr)?;
+                let copied =
+                    self.emit_builtin_call(COPY_DATA_PROPERTIES_BUILTIN, &[output, source])?;
+                self.release_register(copied)?;
+                self.release_register(source)?;
+                continue;
             };
             match &**property {
                 Prop::Shorthand(identifier) => {
@@ -2859,17 +2896,6 @@ impl Compiler {
     }
 
     fn compile_call(&mut self, call: &swc_core::ecma::ast::CallExpr) -> Result<u8, Error> {
-        if call.args.iter().any(|argument| argument.spread.is_some()) {
-            return Err(Error::Unsupported(
-                "spread call arguments are not supported by native compilation yet".into(),
-            ));
-        }
-        let argument_count = u32::try_from(call.args.len() + 1)
-            .map_err(|_| Error::Unsupported("too many call arguments".into()))?;
-        self.max_call_arguments = self.max_call_arguments.max(
-            u16::try_from(argument_count)
-                .map_err(|_| Error::Unsupported("too many call arguments".into()))?,
-        );
         let Callee::Expr(callee) = &call.callee else {
             return Err(Error::Unsupported(
                 "super and import calls are not supported by native compilation yet".into(),
@@ -2906,6 +2932,28 @@ impl Compiler {
             self.emit("LoadConstUndefined", vec![reg(this_value)]);
             (function, function, this_value)
         };
+
+        if call.args.iter().any(|argument| argument.spread.is_some()) {
+            let arguments = self.compile_spread_arguments(&call.args)?;
+            let output =
+                self.emit_builtin_call(APPLY_BUILTIN, &[function, arguments, this_value])?;
+            self.emit("Mov", vec![reg(result), reg(output)]);
+            self.release_register(output)?;
+            self.release_register(arguments)?;
+            if function != result {
+                self.release_register(function)?;
+            } else {
+                self.release_register(this_value)?;
+            }
+            return Ok(result);
+        }
+
+        let argument_count = u32::try_from(call.args.len() + 1)
+            .map_err(|_| Error::Unsupported("too many call arguments".into()))?;
+        self.max_call_arguments = self.max_call_arguments.max(
+            u16::try_from(argument_count)
+                .map_err(|_| Error::Unsupported("too many call arguments".into()))?,
+        );
 
         let mut arguments = Vec::with_capacity(call.args.len());
         for argument in &call.args {
@@ -2968,9 +3016,13 @@ impl Compiler {
     fn compile_new(&mut self, expression: &swc_core::ecma::ast::NewExpr) -> Result<u8, Error> {
         let arguments = expression.args.as_deref().unwrap_or_default();
         if arguments.iter().any(|argument| argument.spread.is_some()) {
-            return Err(Error::Unsupported(
-                "spread constructor arguments are not supported by native compilation yet".into(),
-            ));
+            let constructor = self.compile_expression(&expression.callee)?;
+            let arguments = self.compile_spread_arguments(arguments)?;
+            let output = self.emit_builtin_call(APPLY_BUILTIN, &[constructor, arguments])?;
+            self.emit("Mov", vec![reg(constructor), reg(output)]);
+            self.release_register(output)?;
+            self.release_register(arguments)?;
+            return Ok(constructor);
         }
         let argument_count = u8::try_from(arguments.len() + 1).map_err(|_| {
             Error::Unsupported("constructors with more than 254 arguments are not supported".into())
@@ -3016,6 +3068,31 @@ impl Compiler {
         }
         self.release_register(receiver)?;
         Ok(constructor)
+    }
+
+    fn compile_spread_arguments(
+        &mut self,
+        arguments: &[swc_core::ecma::ast::ExprOrSpread],
+    ) -> Result<u8, Error> {
+        let output = self.alloc_register()?;
+        self.emit("NewArray", vec![reg(output), DecodedOperand::U16(0)]);
+        let next_index = self.alloc_register()?;
+        self.emit("LoadConstZero", vec![reg(next_index)]);
+        for argument in arguments {
+            let value = self.compile_expression(&argument.expr)?;
+            if argument.spread.is_some() {
+                let updated =
+                    self.emit_builtin_call(ARRAY_SPREAD_BUILTIN, &[output, value, next_index])?;
+                self.emit("Mov", vec![reg(next_index), reg(updated)]);
+                self.release_register(updated)?;
+            } else {
+                self.emit_define_own(output, value, next_index);
+                self.emit("Inc", vec![reg(next_index), reg(next_index)]);
+            }
+            self.release_register(value)?;
+        }
+        self.release_register(next_index)?;
+        Ok(output)
     }
 
     fn emit_get_by_id(

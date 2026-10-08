@@ -162,8 +162,11 @@ HBC 96 exponentiation builtin. Method calls preserve their receiver. Sparse arra
 literals and object literals with data properties support computed keys and
 duplicate keys. String values and property keys retain exact UTF-16 code units,
 including lone surrogates. `new` uses HBC's `CreateThis`, `Construct`, and
-`SelectObject` sequence. TypeScript annotations are stripped directly on a copy
-of the SWC tree before lowering.
+`SelectObject` sequence. Array and object literal spreads, spread calls, and
+spread constructors lower through HBC 96's private iterable/copy/apply builtins;
+callee evaluation, method receivers, sparse slots, and iterator order are
+retained. TypeScript annotations are stripped directly on a copy of the SWC tree
+before lowering.
 
 Branches use compiler-owned symbolic labels that are resolved to HBC byte
 displacements after instruction selection. This keeps source lowering independent
@@ -179,8 +182,8 @@ functions; a named expression's source-level self-binding is not implemented yet
 
 Destructuring assignments, block-level function declarations, async and
 generator functions, classes, modules, labeled control flow, `for await…of`,
-call and literal spreads, object methods/accessors, and object-literal
-`__proto__` setters return `Unsupported`.
+object methods/accessors, and object-literal `__proto__` setters return
+`Unsupported`.
 Constructors remain limited by the HBC small-frame size. Expanding these source
 constructs is the remaining forward-compiler work; decompiler opcode coverage
 does not imply matching source-language coverage in this direction.
@@ -203,12 +206,13 @@ named or computed property deletion preserve BigInt and strict-mode behavior.
 Native argument-object reads retain Hermes' unmapped parameter semantics, and
 object-literal accessors retain their descriptors and observable function names.
 For-in property snapshots, iterator begin/next/close, object spread/rest, and
-exponentiation preserve mutation, completion, descriptor, symbol, and Proxy
-behavior. Finite and non-finite doubles are recovered from direct constants and
-literal buffers. HBC UTF-16 strings use SWC's WTF-8 atoms, preserving paired and
-unpaired surrogates in values and property keys while printing valid JavaScript
-escapes. Direct eval retains Hermes 96's global-only scope, strict-caller mode,
-non-string passthrough, and completion values through a captured eval intrinsic.
+array/call/constructor spread preserve mutation, completion, descriptor, symbol,
+Proxy, receiver, and construction behavior. Finite and non-finite doubles are
+recovered from direct constants and literal buffers. HBC UTF-16 strings use
+SWC's WTF-8 atoms, preserving paired and unpaired surrogates in values and
+property keys while printing valid JavaScript escapes. Direct eval retains
+Hermes 96's global-only scope, strict-caller mode, non-string passthrough, and
+completion values through a captured eval intrinsic.
 Dense integer switch tables are decoded from their trailing function data and
 lowered into the dispatcher. Function names and strictness are retained. Unknown
 opcodes fail with function index and instruction offset; malformed branch targets,

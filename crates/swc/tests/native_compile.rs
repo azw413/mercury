@@ -1,6 +1,7 @@
 use std::{fs, process::Command};
 
 use mercury_binary::{decode_raw_module, parse_hbc_container_with_spec};
+use mercury_ir::RawOperand;
 use mercury_spec_builtin::load_spec;
 use mercury_swc::{
     HbcCompiler, SourceKind, SourceLanguage, SwcModule,
@@ -100,7 +101,7 @@ fn compiles_property_reads_writes_and_receiver_calls() {
 fn rejects_unsupported_syntax_at_the_native_boundary() {
     let module = SwcModule::parse(
         "input.js",
-        "print(...values);",
+        "var value = { method() {} };",
         SourceLanguage::JavaScript,
         SourceKind::Script,
     )
@@ -108,8 +109,34 @@ fn rejects_unsupported_syntax_at_the_native_boundary() {
     let error = HbcCompiler::new(96).compile(&module).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "unsupported: spread call arguments are not supported by native compilation yet"
+        "unsupported: object methods and accessors require native function compilation"
     );
+}
+
+#[test]
+fn compiles_literal_call_and_constructor_spreads() {
+    let bytes = compile(
+        "var xs = [1, 2]; var array = [0, ...xs, 3]; var object = {a: 1, ...{b: 2}}; function C(a, b) { this.sum = a + b; } var value = object.sum(0, ...xs); var made = new C(...xs);",
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let builtins = raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .filter(|instruction| instruction.name == "CallBuiltin")
+        .filter_map(|instruction| match instruction.operands.get(1) {
+            Some(RawOperand::U8(value)) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(builtins.contains(&44), "object spread builtin missing");
+    assert!(builtins.contains(&46), "array spread builtin missing");
+    assert!(builtins.contains(&47), "spread apply builtin missing");
+    decompile(&bytes).unwrap();
 }
 
 #[test]
@@ -558,6 +585,24 @@ fn native_updates_literals_and_constructors_execute() {
             "2 2 3\n",
         )
     );
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_spreads_execute_and_self_host() {
+    let source = include_str!("fixtures/spread.js");
+    let expected = concat!(
+        "array 8 false 0||1|2|3|a|b|\n",
+        "object 1 6 5\n",
+        "call 16\n",
+        "new 6 true\n",
+        "events array0,array1,array2,get,callee,call0,call1,new0,new1\n",
+    );
+    let original = compile(source, SourceLanguage::JavaScript);
+    assert_eq!(execute(original.clone()), expected);
+    let recovered = decompile(&original).unwrap();
+    let rebuilt = HbcCompiler::new(96).compile(&recovered).unwrap();
+    assert_eq!(execute(rebuilt), expected);
 }
 
 #[test]

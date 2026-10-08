@@ -136,7 +136,10 @@ that renames Mercury's generated bindings before rebuilding.
 Native argument-object reads and object-literal getter/setter definitions are
 also recovered with their observable parameter, descriptor, and name semantics.
 Property enumeration, value iteration, iterator closing, object spread/rest,
-exponentiation, and non-finite numeric constants are now covered as well.
+array, call, and constructor spread, exponentiation, and non-finite numeric
+constants are now covered as well. The native compiler uses Hermes' iterable
+and apply builtins for spread evaluation, preserving receiver and constructor
+behavior without depending on `hermesc`.
 UTF-16 string values and property keys preserve lone surrogates through SWC's
 WTF-8 representation and JavaScript escape emission.
 Direct eval preserves HBC 96's global-only scope, strict-caller behavior,

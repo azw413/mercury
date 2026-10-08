@@ -74,7 +74,11 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         .any(|op| is_define_own(&op.name));
     let copy_data_properties_builtin = if modern_private_builtins { 49 } else { 44 };
     let needs_copy_data_runtime = has_builtin(&raw, copy_data_properties_builtin);
+    let array_spread_builtin = if modern_private_builtins { 51 } else { 46 };
+    let apply_builtin = if modern_private_builtins { 52 } else { 47 };
+    let needs_array_spread_runtime = has_builtin(&raw, array_spread_builtin);
     needs_define |= needs_copy_data_runtime;
+    needs_define |= needs_array_spread_runtime;
     let needs_regexp = has_opcode(&raw, "CreateRegExp");
     let needs_bigint = raw.functions.iter().any(|function| {
         function.instructions.iter().any(|op| {
@@ -135,7 +139,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 matches!(
                     op.name.as_str(),
                     "Construct" | "ConstructLong" | "CreateThis" | "SelectObject" | "GetNewTarget"
-                )
+                ) || call_builtin_signature(op, apply_builtin, Some(3))
             })
     });
     let mut globals = Vec::new();
@@ -197,6 +201,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     }
     if needs_copy_data_runtime {
         factories.extend(copy_data_properties_runtime());
+    }
+    if needs_array_spread_runtime {
+        factories.extend(array_spread_runtime());
     }
     if needs_function_name_runtime {
         factories.extend(function_name_runtime());
@@ -417,6 +424,13 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 ),
             ),
             ("_weak_set", b::member(b::this(), b::string("WeakSet"))),
+            (
+                "_reflect_construct",
+                b::member(
+                    b::member(b::this(), b::string("Reflect")),
+                    b::string("construct"),
+                ),
+            ),
         ] {
             wrapper_params.push(name.into());
             wrapper_args.push(value);
@@ -426,6 +440,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         || needs_construction
         || needs_iterator_runtime
         || needs_copy_data_runtime
+        || needs_array_spread_runtime
         || needs_private_builtin_runtime
     {
         wrapper_params.push("_type_error".into());
@@ -1215,6 +1230,8 @@ impl Lower<'_> {
                 let ensure_object = if self.modern_private_builtins { 45 } else { 40 };
                 let copy_data_properties = ensure_object + 4;
                 let copy_rest_args = ensure_object + 5;
+                let array_spread = ensure_object + 6;
+                let apply = ensure_object + 7;
                 let exponentiation = if self.modern_private_builtins { 54 } else { 49 };
                 match builtin {
                     value if value == ensure_object => b::call(b::id("_ensure_object"), args),
@@ -1241,6 +1258,22 @@ impl Lower<'_> {
                     ),
                     value if value == copy_rest_args => {
                         return Err(unsupported(f, op, "invalid rest-argument copy"));
+                    }
+                    value if value == array_spread && args.len() == 3 => {
+                        b::call(b::id("_array_spread"), args)
+                    }
+                    value if value == array_spread => {
+                        return Err(unsupported(f, op, "invalid array-spread arguments"));
+                    }
+                    value if value == apply && args.len() == 3 => b::call(
+                        b::id("_apply"),
+                        vec![args[0].clone(), args[2].clone(), args[1].clone()],
+                    ),
+                    value if value == apply && args.len() == 2 => {
+                        b::call(b::id("_construct_spread"), args)
+                    }
+                    value if value == apply => {
+                        return Err(unsupported(f, op, "invalid spread-call arguments"));
                     }
                     value if value == exponentiation && args.len() == 2 => {
                         b::binary(BinaryOp::Exp, args[0].clone(), args[1].clone())
@@ -1880,6 +1913,25 @@ function _copy_data_properties(_target, _source, _excluded) {
 "#;
     embedded_runtime("mercury-copy-data-properties-runtime.js", SOURCE)
 }
+fn array_spread_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _array_spread(_target, _source, _index) {
+    for (var _value of _source) {
+        if (!_define(_target, _index, {
+            value: _value,
+            writable: true,
+            enumerable: true,
+            configurable: true
+        })) {
+            throw new _type_error("cannot define spread element");
+        }
+        _index++;
+    }
+    return _index;
+}
+"#;
+    embedded_runtime("mercury-array-spread-runtime.js", SOURCE)
+}
 fn private_builtin_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
 function _ensure_object(_value, _message) {
@@ -1936,6 +1988,18 @@ function _construct_value(_function, _this_value, _arguments_value, _external_co
         }
     }
     return _external_construct();
+}
+function _construct_spread(_function, _arguments_value) {
+    if (_recovered_functions["has"](_function)) {
+        var _this_value = _create_this(_function["prototype"]);
+        return _select_object(_this_value, _construct_value(
+            _function,
+            _this_value,
+            _arguments_value,
+            function () { return _reflect_construct(_function, _arguments_value); }
+        ));
+    }
+    return _reflect_construct(_function, _arguments_value);
 }
 function _constructor_prototype(_function) {
     if (_recovered_functions["has"](_function)) {

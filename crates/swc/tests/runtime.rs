@@ -915,6 +915,22 @@ fn object_spread_and_rest_preserve_keys_descriptors_and_proxy_order() {
 
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn literal_call_and_constructor_spreads_preserve_iteration_and_order() {
+    assert_runtime_roundtrip(
+        "spread.js",
+        include_str!("fixtures/spread.js"),
+        concat!(
+            "array 8 false 0||1|2|3|a|b|\n",
+            "object 1 6 5\n",
+            "call 16\n",
+            "new 6 true\n",
+            "events array0,array1,array2,get,callee,call0,call1,new0,new1\n",
+        ),
+    );
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn utf16_strings_preserve_paired_and_unpaired_surrogates() {
     let expected = "units 1 d800 1 dfff 2 d83d de00 3 d800 41 dfff\nbuffered dfff 2 3 dfff 2 3 d800\nproperty true true true false\n";
     let module = SwcModule::parse(
