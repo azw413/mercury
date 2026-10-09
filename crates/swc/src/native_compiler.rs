@@ -254,7 +254,7 @@ impl Compiler {
                 BindingKind::Var,
             )?;
         }
-        self.begin_function(
+        let global_environment_size = self.begin_function(
             0,
             lexical_bindings,
             None,
@@ -262,7 +262,6 @@ impl Compiler {
             NativeFunctionKind::Regular,
             strict,
         )?;
-        self.initialize_scope_bindings()?;
         if captures_this {
             self.initialize_lexical_this()?;
         }
@@ -297,7 +296,6 @@ impl Compiler {
         }
 
         self.emit_implicit_return()?;
-        let global_environment_size = self.current_scope_bindings()?.len() as u32;
         let global =
             self.finish_function("global".into(), 1, global_environment_size, &spec.bytecode)?;
         let mut functions = vec![global];
@@ -333,7 +331,7 @@ impl Compiler {
         is_global: bool,
         kind: NativeFunctionKind,
         strict: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<u32, Error> {
         self.instructions.clear();
         self.next_register = 0;
         self.frame_size = 0;
@@ -352,17 +350,24 @@ impl Compiler {
         self.current_function_kind = kind;
         self.current_function_strict = strict;
         self.base_registers = 0;
+        let mut chunks = bindings.chunks(255);
+        let first_bindings = chunks.next().unwrap_or_default().to_vec();
+        let environment_size = first_bindings.len() as u32;
         let environment = self.alloc_register()?;
         self.environment_register = Some(environment);
-        self.base_registers = self.next_register;
         self.emit("CreateEnvironment", vec![reg(environment)]);
         self.scope = Some(Rc::new(FunctionScope {
-            bindings: build_binding_map(bindings)?,
+            bindings: build_binding_map(first_bindings)?,
             parent: parent_scope,
             function_id,
             environment_register: environment,
         }));
-        Ok(())
+        self.initialize_scope_bindings()?;
+        for chunk in chunks {
+            let _ = self.enter_lexical_scope(chunk.to_vec())?;
+        }
+        self.base_registers = self.next_register;
+        Ok(environment_size)
     }
 
     fn initialize_lexical_this(&mut self) -> Result<(), Error> {
@@ -632,8 +637,7 @@ impl Compiler {
                 add_binding(&mut parameter_bindings, name, kind)?;
             }
         }
-        let environment_size = parameter_bindings.len() as u32;
-        self.begin_function(
+        let environment_size = self.begin_function(
             pending.id,
             parameter_bindings,
             pending.parent_scope,
@@ -641,7 +645,6 @@ impl Compiler {
             pending.kind,
             pending.strict,
         )?;
-        self.initialize_scope_bindings()?;
         if has_implicit_arguments {
             self.initialize_implicit_arguments()?;
         }
@@ -722,7 +725,12 @@ impl Compiler {
             })
             .collect::<Vec<_>>();
 
-        let _ = self.enter_lexical_scope(bindings)?;
+        // Environment slot operands are eight bits wide. Keep one logical
+        // function-body scope as a chain of physical environments when a
+        // recovered function contains more bindings than one can hold.
+        for chunk in bindings.chunks(255) {
+            let _ = self.enter_lexical_scope(chunk.to_vec())?;
+        }
         for (name, source) in copies {
             let value = self.alloc_register()?;
             self.emit(
@@ -3293,9 +3301,11 @@ impl Compiler {
     }
 
     fn alloc_cache(&mut self) -> Result<u8, Error> {
-        let cache = u8::try_from(self.next_cache).map_err(|_| {
-            Error::Unsupported("script needs more than 256 property cache entries".into())
-        })?;
+        const PROPERTY_CACHING_DISABLED: u8 = u8::MAX;
+        if self.next_cache >= u16::from(PROPERTY_CACHING_DISABLED) {
+            return Ok(PROPERTY_CACHING_DISABLED);
+        }
+        let cache = self.next_cache as u8;
         self.next_cache += 1;
         Ok(cache)
     }

@@ -98,6 +98,51 @@ fn compiles_property_reads_writes_and_receiver_calls() {
 }
 
 #[test]
+fn disables_property_caching_after_all_slots_are_used() {
+    let mut source = String::from("var object = {};\n");
+    for index in 0..300 {
+        source.push_str(&format!("object.p{index} = {index};\n"));
+    }
+    let bytes = compile(&source, SourceLanguage::JavaScript);
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let cache_indices = raw.functions[0]
+        .instructions
+        .iter()
+        .filter(|instruction| instruction.name == "PutById")
+        .filter_map(|instruction| instruction.operands.get(2))
+        .filter_map(|operand| match operand {
+            RawOperand::U8(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(container.function_headers[0].highest_write_cache_index, 254);
+    assert!(cache_indices.contains(&254));
+    assert!(cache_indices.contains(&255));
+}
+
+#[test]
+fn splits_large_binding_sets_across_environments() {
+    let mut source = String::new();
+    for index in 0..300 {
+        source.push_str(&format!("let value{index} = {index};\n"));
+    }
+    source.push_str("print(value0 + value299);\n");
+    let bytes = compile(&source, SourceLanguage::JavaScript);
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+
+    assert_eq!(raw.functions[0].environment_size, 255);
+    assert!(raw.functions[0]
+        .instructions
+        .iter()
+        .any(|instruction| instruction.name == "CreateInnerEnvironment"));
+}
+
+#[test]
 fn rejects_unsupported_syntax_at_the_native_boundary() {
     let module = SwcModule::parse(
         "input.js",

@@ -49,7 +49,10 @@ fn required_tool(name: &str) -> PathBuf {
 fn corpus_files() -> Vec<PathBuf> {
     let roots = match env::var_os("MERCURY_JS_CORPUS") {
         Some(paths) => env::split_paths(&paths).collect::<Vec<_>>(),
-        None => vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")],
+        None => {
+            let tests = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
+            vec![tests.join("fixtures"), tests.join("corpus")]
+        }
     };
     let filter = env::var("MERCURY_JS_CORPUS_FILTER").ok();
     let limit = env::var("MERCURY_JS_CORPUS_LIMIT")

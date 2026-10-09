@@ -2159,6 +2159,8 @@ fn double(value: f64) -> Box<Expr> {
         b::binary(BinaryOp::Div, b::number(1.0), b::number(0.0))
     } else if value == f64::NEG_INFINITY {
         b::binary(BinaryOp::Div, b::number(-1.0), b::number(0.0))
+    } else if value == 0.0 && value.is_sign_negative() {
+        b::unary(UnaryOp::Minus, b::number(0.0))
     } else {
         b::number(value)
     }

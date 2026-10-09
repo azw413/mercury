@@ -148,11 +148,14 @@ WTF-8 representation and JavaScript escape emission.
 Direct eval preserves HBC 96's global-only scope, strict-caller behavior,
 non-string passthrough, and completion values.
 
-An opt-in corpus harness now compiles every committed JavaScript fixture with
-`hermesc` at unoptimized and optimized settings, executes the reference HBC,
-roundtrips it through SWC and the native HBC compiler, and compares the complete
-process result. It also accepts external recursive corpus paths for broader
-compatibility runs.
+An opt-in corpus harness now runs 12 focused fixtures and 49 generated programs
+with `hermesc` at unoptimized and optimized settings. The generated set ranges
+from compact language-semantics cases to large functions, property tables,
+switches, and straight-line workloads, with classic calculation kernels such as
+sieve, matrix multiplication, binary trees, spectral norm, Mandelbrot, and
+n-body. Each reference HBC is executed, roundtripped through SWC and the native
+HBC compiler, and compared by process result. The harness also accepts external
+recursive corpus paths for broader compatibility runs.
 
 The native rebuild path now emits nested exception tables and preserves strict
 function flags and receivers. Decompiled exception dispatchers, iterator

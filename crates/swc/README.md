@@ -302,15 +302,29 @@ HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
 ```
 
 `tests/corpus_roundtrip.rs` discovers every `.js` file under the committed
-`tests/fixtures` tree. Each file is compiled by `hermesc` in both `-O0` and `-O`
-modes, executed as reference HBC, decompiled to SWC, rebuilt with the native
-`HbcCompiler`, and executed again. The test compares exit status, stdout bytes,
-and stderr after normalizing temporary filenames, and reports every failing
-fixture rather than stopping at the first one:
+`tests/fixtures` and `tests/corpus` trees. The current suite contains 12 focused
+fixtures and 49 deterministic generated programs, giving 122 cases across
+`-O0` and `-O`. It covers arithmetic and calculation kernels, control flow,
+closures, objects, classes, collections, iterators, generators, async code,
+exceptions, coercions, Unicode, regular expressions, typed arrays, JSON, Date,
+BigInt, and several source-size stress families.
+
+Each file is compiled by `hermesc`, executed as reference HBC, decompiled to
+SWC, rebuilt with the native `HbcCompiler`, and executed again. The test compares
+exit status, stdout bytes, and stderr after normalizing temporary filenames, and
+reports every failing fixture rather than stopping at the first one:
 
 ```sh
 HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
   cargo test -p mercury-swc --test corpus_roundtrip -- --ignored
+```
+
+The generated programs are original project fixtures. Regenerate or verify them
+from the workspace root with:
+
+```sh
+python3 crates/swc/tests/generate_corpus.py
+python3 crates/swc/tests/generate_corpus.py --check
 ```
 
 Set `MERCURY_JS_CORPUS` to one or more platform-separated files or directories

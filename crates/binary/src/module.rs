@@ -1,7 +1,7 @@
 use crate::encode::{HbcEncodeError, encode_instructions};
 use crate::functions::{
     ExceptionHandlerEntry, FunctionHeader, FunctionHeaderFlags, write_exception_handler_table,
-    write_small_function_header,
+    write_large_function_header, write_small_function_header,
 };
 use crate::header::{
     BytecodeOptions, FILE_HEADER_SIZE, HERMES_MAGIC, HbcVersionedFileHeader, write_file_header,
@@ -297,37 +297,20 @@ pub fn build_minimal_module(
     let function_bodies_end =
         function_bodies_start + encoded_bodies.iter().map(Vec::len).sum::<usize>();
     let function_infos_start = align_up(function_bodies_end, INFO_ALIGNMENT);
-    let mut function_info_offsets = Vec::with_capacity(module.functions.len());
-    let mut function_info_bytes = Vec::new();
-    for function in &module.functions {
-        if function.exception_handlers.is_empty() {
-            function_info_offsets.push(0);
-            continue;
-        }
-        let absolute_offset = function_infos_start + function_info_bytes.len();
-        let aligned_offset = align_up(absolute_offset, INFO_ALIGNMENT);
-        function_info_bytes.resize(
-            function_info_bytes.len() + (aligned_offset - absolute_offset),
-            0,
-        );
-        function_info_offsets.push(aligned_offset as u32);
-        function_info_bytes
-            .extend_from_slice(&write_exception_handler_table(&function.exception_handlers));
-    }
-
-    let function_headers = build_function_headers(
+    let mut function_headers = build_function_headers(
         module,
         &function_name_ids,
         &encoded_bodies,
         function_bodies_start,
-        &function_info_offsets,
-    )?;
+    );
+    let function_info_bytes =
+        build_function_infos(module, &mut function_headers, function_infos_start);
 
     let mut bytes = Vec::new();
     bytes.resize(FILE_HEADER_SIZE, 0);
 
     for header in &function_headers {
-        bytes.extend_from_slice(&write_small_function_header(header));
+        bytes.extend_from_slice(&write_function_header_entry(header));
     }
 
     pad_to(&mut bytes, string_kinds_start);
@@ -412,17 +395,15 @@ fn build_function_headers(
     function_name_ids: &[u32],
     encoded_bodies: &[Vec<u8>],
     function_bodies_start: usize,
-    function_info_offsets: &[u32],
-) -> Result<Vec<FunctionHeader>, HbcBuildError> {
+) -> Vec<FunctionHeader> {
     let mut headers = Vec::with_capacity(module.functions.len());
     let mut body_offset = function_bodies_start as u32;
 
-    for (((function, function_name), body), info_offset) in module
+    for ((function, function_name), body) in module
         .functions
         .iter()
         .zip(function_name_ids.iter().copied())
         .zip(encoded_bodies.iter())
-        .zip(function_info_offsets.iter().copied())
     {
         let read_cache = highest_cache_index(body, &function.instructions, true);
         let write_cache = highest_cache_index(body, &function.instructions, false);
@@ -431,7 +412,7 @@ fn build_function_headers(
             param_count: function.param_count,
             bytecode_size_in_bytes: body.len() as u32,
             function_name,
-            info_offset,
+            info_offset: 0,
             frame_size: function.frame_size,
             environment_size: function.environment_size,
             highest_read_cache_index: read_cache,
@@ -447,21 +428,68 @@ fn build_function_headers(
             overflowed_from_small_header: false,
         };
 
-        ensure_small_header_fits(&header).ok_or_else(|| HbcBuildError::FunctionHeaderOverflow {
-            function: function.name.clone(),
-        })?;
-
         headers.push(header);
         body_offset = body_offset.saturating_add(body.len() as u32);
     }
 
-    Ok(headers)
+    headers
+}
+
+fn build_function_infos(
+    module: &MinimalModule,
+    headers: &mut [FunctionHeader],
+    function_infos_start: usize,
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for (function, header) in module.functions.iter().zip(headers) {
+        let needs_large_header = ensure_small_header_fits(header).is_none();
+        if function.exception_handlers.is_empty() && !needs_large_header {
+            continue;
+        }
+
+        let absolute_offset = function_infos_start + bytes.len();
+        let aligned_offset = align_up(absolute_offset, INFO_ALIGNMENT);
+        bytes.resize(bytes.len() + (aligned_offset - absolute_offset), 0);
+        header.info_offset = aligned_offset as u32;
+
+        if needs_large_header || ensure_small_header_fits(header).is_none() {
+            header.overflowed_from_small_header = true;
+            bytes.extend_from_slice(&write_large_function_header(header));
+            debug_assert_eq!(bytes.len() % INFO_ALIGNMENT, 0);
+        }
+        if !function.exception_handlers.is_empty() {
+            bytes.extend_from_slice(&write_exception_handler_table(&function.exception_handlers));
+        }
+    }
+    bytes
+}
+
+fn write_function_header_entry(header: &FunctionHeader) -> [u8; SMALL_FUNCTION_HEADER_SIZE] {
+    if !header.overflowed_from_small_header {
+        return write_small_function_header(header);
+    }
+
+    let large_header_offset = header.info_offset;
+    let mut stub = header.clone();
+    stub.offset = large_header_offset & 0xffff;
+    stub.param_count = 0;
+    stub.bytecode_size_in_bytes = 0;
+    stub.function_name = 0;
+    stub.info_offset = large_header_offset >> 16;
+    stub.frame_size = 0;
+    stub.environment_size = 0;
+    stub.highest_read_cache_index = 0;
+    stub.highest_write_cache_index = 0;
+    stub.flags.overflowed = true;
+    write_small_function_header(&stub)
 }
 
 fn highest_cache_index(_body: &[u8], instructions: &[DecodedInstruction], read: bool) -> u8 {
     instructions
         .iter()
         .filter_map(|instruction| cache_index_for_instruction(instruction, read))
+        // Hermes reserves 255 to mean that this access has no cache slot.
+        .filter(|index| *index != u8::MAX)
         .max()
         .unwrap_or(0)
 }
@@ -896,6 +924,45 @@ mod tests {
         assert_eq!(raw.functions[0].exception_handlers[0].start, 0);
         assert_eq!(raw.functions[0].exception_handlers[0].end, 4);
         assert_eq!(raw.functions[0].exception_handlers[0].target, 4);
+    }
+
+    #[test]
+    fn builds_and_reparses_overflowed_function_headers() {
+        let spec = load_spec(96).expect("embedded hbc96 spec");
+        let module = MinimalModule {
+            version: 96,
+            global_code_index: 0,
+            strings: vec![],
+            string_kinds: vec![],
+            literal_value_buffer: vec![],
+            object_key_buffer: vec![],
+            object_value_buffer: vec![],
+            functions: vec![MinimalFunction {
+                name: "global".into(),
+                param_count: 128,
+                frame_size: 1,
+                environment_size: 0,
+                prohibit_invoke: 2,
+                strict_mode: false,
+                exception_handlers: vec![],
+                instructions: vec![DecodedInstruction {
+                    offset: 0,
+                    opcode: 86,
+                    name: "Ret".into(),
+                    operands: vec![DecodedOperand::U8(0)],
+                    size: 2,
+                }],
+            }],
+        };
+
+        let bytes = build_minimal_module(&module, &spec.bytecode).expect("builds");
+        let container = parse_hbc_container_with_spec(&bytes, &spec.container).expect("reparses");
+        let raw = decode_raw_module(&container, &bytes, &spec.bytecode).expect("decodes");
+
+        assert!(container.function_headers[0].overflowed_from_small_header);
+        assert!(container.function_infos[0].large_header_range.is_some());
+        assert_eq!(container.function_headers[0].param_count, 128);
+        assert_eq!(raw.functions[0].param_count, 128);
     }
 
     #[test]
