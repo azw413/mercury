@@ -9,10 +9,10 @@ use mercury_binary::{
 };
 use mercury_spec::BytecodeSpec;
 use swc_core::ecma::ast::{
-    ArrowExpr, AssignOp, AssignTarget, BinaryOp, BlockStmt, BlockStmtOrExpr, Callee, Decl, Expr,
-    ForHead, Function, Lit, MemberExpr, MemberProp, MetaPropKind, ObjectPatProp, Pat, Program,
-    Prop, PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt, UnaryOp, UpdateOp, VarDecl,
-    VarDeclKind, VarDeclOrExpr,
+    ArrowExpr, ArrowFunctionBody, AssignOp, AssignTarget, BinaryOp, BlockStmt, Callee, Decl, Expr,
+    ForHead, Function, FunctionBody, Lit, MemberExpr, MemberProp, MetaPropKind, ObjectPatProp, Pat,
+    Program, Prop, PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt, UnaryOp, UpdateOp,
+    VarDecl, VarDeclKind, VarDeclOrExpr,
 };
 use swc_core::ecma::visit::{Visit, VisitWith};
 
@@ -100,7 +100,7 @@ struct PendingFunction {
 
 #[derive(Clone)]
 enum PendingFunctionBody {
-    Block(BlockStmt),
+    Block(FunctionBody),
     Expression(Box<Expr>),
 }
 
@@ -464,16 +464,19 @@ impl Compiler {
     fn register_accessor(
         &mut self,
         name: String,
-        params: Vec<Pat>,
-        body: &Option<BlockStmt>,
+        function: &Function,
     ) -> Result<u32, Error> {
-        let body = body.clone().ok_or_else(|| {
+        let body = function.body.clone().ok_or_else(|| {
             Error::Unsupported("object accessors without bodies are not supported".into())
         })?;
         let strict = self.current_function_strict || directive_prologue(&body.stmts).1;
         self.register_pending_function(
             name,
-            params,
+            function
+                .params
+                .iter()
+                .map(|parameter| parameter.pat.clone())
+                .collect(),
             PendingFunctionBody::Block(body),
             NativeFunctionKind::Regular,
             strict,
@@ -488,8 +491,8 @@ impl Compiler {
             ));
         }
         let body = match &*arrow.body {
-            BlockStmtOrExpr::BlockStmt(body) => PendingFunctionBody::Block(body.clone()),
-            BlockStmtOrExpr::Expr(expression) => {
+            ArrowFunctionBody::FunctionBody(body) => PendingFunctionBody::Block(body.clone()),
+            ArrowFunctionBody::Expr(expression) => {
                 PendingFunctionBody::Expression(expression.clone())
             }
         };
@@ -2136,7 +2139,7 @@ impl Compiler {
                 Prop::Getter(getter) => {
                     let key = self.compile_property_name(&getter.key)?;
                     let name = property_function_name(&getter.key, "get ");
-                    let function_id = self.register_accessor(name, Vec::new(), &getter.body)?;
+                    let function_id = self.register_accessor(name, &getter.function)?;
                     let value = self.emit_create_closure(function_id)?;
                     self.emit_define_accessor(output, key, Some(value), None)?;
                     self.release_register(value)?;
@@ -2145,11 +2148,7 @@ impl Compiler {
                 Prop::Setter(setter) => {
                     let key = self.compile_property_name(&setter.key)?;
                     let name = property_function_name(&setter.key, "set ");
-                    let function_id = self.register_accessor(
-                        name,
-                        vec![(*setter.param).clone()],
-                        &setter.body,
-                    )?;
+                    let function_id = self.register_accessor(name, &setter.function)?;
                     let value = self.emit_create_closure(function_id)?;
                     self.emit_define_accessor(output, key, None, Some(value))?;
                     self.release_register(value)?;

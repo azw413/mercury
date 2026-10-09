@@ -32,7 +32,7 @@ subset directly to HBC 96, and decompiles HBC 96 into executable SWC nodes.
   parse that text back into an AST; generator support adds a fixed embedded
   runtime as SWC statements around those directly constructed nodes.
 
-SWC 75 is selected as a compatible family through `swc_core`; Cargo.lock records
+SWC 82 is selected as a compatible family through `swc_core`; Cargo.lock records
 its resolved dependencies. SWC Rust interfaces are version-sensitive, so callers
 should use the re-exported types or the same dependency family.
 

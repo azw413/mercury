@@ -153,6 +153,7 @@ pub fn function(name: Option<&str>, params: Vec<String>, body: Vec<Stmt>) -> Box
     Box::new(Expr::Fn(FnExpr {
         ident: name.map(ident),
         function: Box::new(Function {
+            this_param: None,
             params: params
                 .iter()
                 .map(|name| Param {
@@ -164,7 +165,10 @@ pub fn function(name: Option<&str>, params: Vec<String>, body: Vec<Stmt>) -> Box
             decorators: vec![],
             span: DUMMY_SP,
             ctxt: SyntaxContext::empty(),
-            body: Some(block(body)),
+            body: Some(FunctionBody {
+                span: DUMMY_SP,
+                stmts: body,
+            }),
             is_generator: false,
             is_async: false,
             type_params: None,

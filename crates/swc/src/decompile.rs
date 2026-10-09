@@ -5,7 +5,7 @@ use num_bigint::BigInt;
 use std::collections::HashSet;
 use swc_core::{
     atoms::Wtf8Atom,
-    common::{DUMMY_SP, FileName, SourceMap, sync::Lrc},
+    common::{DUMMY_SP, FileName, SourceMap, SyntaxContext, sync::Lrc},
     ecma::{
         ast::*,
         parser::{Parser, StringInput, Syntax, lexer::Lexer},
@@ -676,6 +676,7 @@ impl Lower<'_> {
                     });
                     stmts.push(Stmt::Switch(SwitchStmt {
                         span: DUMMY_SP,
+                        body_ctxt: SyntaxContext::empty(),
                         discriminant: register(f, op, 0)?,
                         cases: switch_cases,
                     }));
@@ -734,6 +735,7 @@ impl Lower<'_> {
         }
         let dispatch = Stmt::Switch(SwitchStmt {
             span: DUMMY_SP,
+            body_ctxt: SyntaxContext::empty(),
             discriminant: b::id("_pc"),
             cases,
         });
