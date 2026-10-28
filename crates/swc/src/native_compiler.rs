@@ -3300,13 +3300,13 @@ impl Compiler {
     }
 
     fn alloc_cache(&mut self) -> Result<u8, Error> {
-        const PROPERTY_CACHING_DISABLED: u8 = u8::MAX;
-        if self.next_cache >= u16::from(PROPERTY_CACHING_DISABLED) {
+        // HBC 96 (Hermes 0.12): 0 means "no cache"; slots are 1..=255.
+        const PROPERTY_CACHING_DISABLED: u8 = 0;
+        if self.next_cache >= u16::from(u8::MAX) {
             return Ok(PROPERTY_CACHING_DISABLED);
         }
-        let cache = self.next_cache as u8;
         self.next_cache += 1;
-        Ok(cache)
+        Ok(self.next_cache as u8)
     }
 
     fn emit(&mut self, name: &str, operands: Vec<DecodedOperand>) {

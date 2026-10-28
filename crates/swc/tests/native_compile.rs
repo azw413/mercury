@@ -118,9 +118,12 @@ fn disables_property_caching_after_all_slots_are_used() {
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(container.function_headers[0].highest_write_cache_index, 254);
-    assert!(cache_indices.contains(&254));
+    // HBC 96 slots are 1..=255 and 0 disables caching (Hermes 0.12); 255 is a
+    // real slot there, so the header must count it.
+    assert_eq!(container.function_headers[0].highest_write_cache_index, 255);
     assert!(cache_indices.contains(&255));
+    assert!(cache_indices.contains(&0));
+    assert_ne!(cache_indices[0], 0);
 }
 
 #[test]

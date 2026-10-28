@@ -488,8 +488,6 @@ fn highest_cache_index(_body: &[u8], instructions: &[DecodedInstruction], read: 
     instructions
         .iter()
         .filter_map(|instruction| cache_index_for_instruction(instruction, read))
-        // Hermes reserves 255 to mean that this access has no cache slot.
-        .filter(|index| *index != u8::MAX)
         .max()
         .unwrap_or(0)
 }
