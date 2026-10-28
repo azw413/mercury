@@ -7,9 +7,9 @@ use crate::header::{
     BytecodeOptions, FILE_HEADER_SIZE, HERMES_MAGIC, HbcVersionedFileHeader, write_file_header,
 };
 use crate::tables::{
-    OverflowStringTableEntry, SmallStringTableEntry, StringKind, StringKindEntry,
-    write_overflow_string_table_entries, write_small_string_table_entries,
-    write_string_kind_entries,
+    OverflowStringTableEntry, PairTableEntry, SmallStringTableEntry, StringKind, StringKindEntry,
+    write_overflow_string_table_entries, write_pair_table_entries,
+    write_small_string_table_entries, write_string_kind_entries,
 };
 use crate::{DecodedInstruction, DecodedOperand};
 use mercury_spec::BytecodeSpec;
@@ -34,6 +34,8 @@ pub struct MinimalModule {
     pub literal_value_buffer: Vec<u8>,
     pub object_key_buffer: Vec<u8>,
     pub object_value_buffer: Vec<u8>,
+    /// Compiled regex bytecode, indexed by `CreateRegExp`'s regexp operand.
+    pub reg_exps: Vec<Vec<u8>>,
     pub functions: Vec<MinimalFunction>,
 }
 
@@ -289,8 +291,27 @@ pub fn build_minimal_module(
         BYTECODE_ALIGNMENT,
     );
     let object_value_buffer_bytes = module.object_value_buffer.clone();
-    let function_bodies_start = align_up(
+    // The (empty) BigInt table and storage come next, then the regexps.
+    let reg_exp_table_start = align_up(
         object_value_buffer_start + object_value_buffer_bytes.len(),
+        BYTECODE_ALIGNMENT,
+    );
+    let mut reg_exp_entries = Vec::with_capacity(module.reg_exps.len());
+    let mut reg_exp_storage_bytes = Vec::new();
+    for bytecode in &module.reg_exps {
+        reg_exp_entries.push(PairTableEntry {
+            first: reg_exp_storage_bytes.len() as u32,
+            second: bytecode.len() as u32,
+        });
+        reg_exp_storage_bytes.extend_from_slice(bytecode);
+    }
+    let reg_exp_table_bytes = write_pair_table_entries(&reg_exp_entries);
+    let reg_exp_storage_start = align_up(
+        reg_exp_table_start + reg_exp_table_bytes.len(),
+        BYTECODE_ALIGNMENT,
+    );
+    let function_bodies_start = align_up(
+        reg_exp_storage_start + reg_exp_storage_bytes.len(),
         BYTECODE_ALIGNMENT,
     );
 
@@ -329,6 +350,10 @@ pub fn build_minimal_module(
     bytes.extend_from_slice(&object_key_buffer_bytes);
     pad_to(&mut bytes, object_value_buffer_start);
     bytes.extend_from_slice(&object_value_buffer_bytes);
+    pad_to(&mut bytes, reg_exp_table_start);
+    bytes.extend_from_slice(&reg_exp_table_bytes);
+    pad_to(&mut bytes, reg_exp_storage_start);
+    bytes.extend_from_slice(&reg_exp_storage_bytes);
     pad_to(&mut bytes, function_bodies_start);
 
     for body in &encoded_bodies {
@@ -359,8 +384,8 @@ pub fn build_minimal_module(
         string_storage_size: string_storage_bytes.len() as u32,
         big_int_count: 0,
         big_int_storage_size: 0,
-        reg_exp_count: 0,
-        reg_exp_storage_size: 0,
+        reg_exp_count: reg_exp_entries.len() as u32,
+        reg_exp_storage_size: reg_exp_storage_bytes.len() as u32,
         literal_value_buffer_size: literal_value_buffer_bytes.len() as u32,
         obj_key_buffer_size: object_key_buffer_bytes.len() as u32,
         obj_value_buffer_size: object_value_buffer_bytes.len() as u32,
@@ -755,6 +780,7 @@ mod tests {
             literal_value_buffer: vec![0xaa],
             object_key_buffer: vec![0xbb, 0xcc],
             object_value_buffer: vec![0xdd, 0xee, 0xff, 1],
+            reg_exps: Vec::new(),
             functions: vec![
                 MinimalFunction {
                     name: "global".into(),
@@ -867,6 +893,7 @@ mod tests {
             literal_value_buffer: vec![],
             object_key_buffer: vec![],
             object_value_buffer: vec![],
+            reg_exps: Vec::new(),
             functions: vec![MinimalFunction {
                 name: "global".into(),
                 param_count: 1,
@@ -935,6 +962,7 @@ mod tests {
             literal_value_buffer: vec![],
             object_key_buffer: vec![],
             object_value_buffer: vec![],
+            reg_exps: Vec::new(),
             functions: vec![MinimalFunction {
                 name: "global".into(),
                 param_count: 128,
@@ -974,6 +1002,7 @@ mod tests {
             literal_value_buffer: vec![],
             object_key_buffer: vec![],
             object_value_buffer: vec![],
+            reg_exps: Vec::new(),
             functions: vec![MinimalFunction {
                 name: "global".into(),
                 param_count: 1,

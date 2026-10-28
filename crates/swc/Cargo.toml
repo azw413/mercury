@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 mercury-binary = { path = "../binary" }
 mercury-ir = { path = "../ir" }
+mercury-regex = { path = "../regex" }
 mercury-spec = { path = "../spec" }
 mercury-spec-builtin = { path = "../spec-builtin" }
 num-bigint = "0.4"

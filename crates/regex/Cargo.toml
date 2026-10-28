@@ -1,0 +1,16 @@
+[package]
+name = "mercury-regex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+mercury-binary = { path = "../binary" }
+mercury-spec-builtin = { path = "../spec-builtin" }
+serde_json.workspace = true
+tempfile = "3"

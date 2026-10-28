@@ -91,6 +91,7 @@ fn build_test_module(strings: Vec<String>, functions: Vec<MinimalFunction>) -> V
             literal_value_buffer: vec![],
             object_key_buffer: vec![],
             object_value_buffer: vec![],
+            reg_exps: Vec::new(),
             functions,
         },
         &spec.bytecode,
@@ -124,6 +125,16 @@ fn source_bytecode_ast_edit_bytecode_executes() {
     }
     ast.with_ast(|p| p.visit_mut_with(&mut Edit));
     assert_eq!(execute(&compiler.compile(&ast).unwrap()), "28\n");
+}
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn regex_literals_with_named_groups_roundtrip() {
+    // hermesc passes named groups to the regexp through initRegexNamedGroups.
+    assert_runtime_roundtrip(
+        "named-groups.js",
+        r#"var m = /(?<y>\d{4})-(?<m>\d\d)/.exec("2024-05"); print(m.groups.y, m.groups.m, /a+/g.exec("baa")[0]);"#,
+        "2024 05 aa\n",
+    );
 }
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]

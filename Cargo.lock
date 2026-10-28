@@ -613,6 +613,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mercury-regex"
+version = "0.1.0"
+dependencies = [
+ "mercury-binary",
+ "mercury-spec-builtin",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "mercury-spec"
 version = "0.1.0"
 dependencies = [
@@ -643,6 +654,7 @@ version = "0.1.0"
 dependencies = [
  "mercury-binary",
  "mercury-ir",
+ "mercury-regex",
  "mercury-spec",
  "mercury-spec-builtin",
  "num-bigint",

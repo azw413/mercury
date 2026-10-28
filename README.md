@@ -114,7 +114,9 @@ Not implemented yet:
 
 The [`mercury-swc`](crates/swc/README.md) module parses JS/TS into actual SWC AST
 structs, prints/transforms them, compiles a growing source subset natively to HBC
-96 without `hermesc`, and decompiles HBC 96 into executable SWC trees. The first
+96 without `hermesc`, and decompiles HBC 96 into executable SWC trees. Regex
+literals are compiled by [`mercury-regex`](crates/regex/README.md), a port of
+Hermes's regex compiler checked byte for byte against hermesc. The first
 decompiler uses register temporaries and a
 basic-block dispatcher. It reconstructs mutable captured environments, including
 siblings and multiple lexical levels, and preserves empty, sparse, buffered, and

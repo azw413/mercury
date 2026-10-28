@@ -1248,6 +1248,7 @@ impl Lower<'_> {
                 let array_spread = ensure_object + 6;
                 let apply = ensure_object + 7;
                 let exponentiation = if self.modern_private_builtins { 54 } else { 49 };
+                let init_regex_named_groups = exponentiation + 1;
                 match builtin {
                     value if value == ensure_object - 3 && args.len() == 2 => {
                         b::call(b::id("_silent_set_prototype_of"), args)
@@ -1302,6 +1303,10 @@ impl Lower<'_> {
                     value if value == exponentiation => {
                         return Err(unsupported(f, op, "invalid exponentiation arguments"));
                     }
+                    // Hands a regex literal its group names. Decompiled
+                    // CreateRegExp goes through the RegExp constructor, which
+                    // finds them itself.
+                    value if value == init_regex_named_groups && args.len() == 2 => b::undefined(),
                     _ => {
                         return Err(unsupported(
                             f,

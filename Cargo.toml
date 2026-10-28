@@ -5,6 +5,7 @@ members = [
     "crates/cli",
     "crates/disasm",
     "crates/ir",
+    "crates/regex",
     "crates/spec",
     "crates/spec-builtin",
     "crates/spec-extract",

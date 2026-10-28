@@ -127,6 +127,69 @@ fn disables_property_caching_after_all_slots_are_used() {
 }
 
 #[test]
+fn compiles_regex_literals_into_the_regexp_table() {
+    let bytes = compile(
+        r"var a = /ab+c/gi; var b = /ab+c/gi; var c = /(?<year>\d{4})-(?<month>\d\d)/u;",
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let instructions = &raw.functions[0].instructions;
+    let operand = |instruction: &mercury_ir::RawInstruction, index: usize| match instruction
+        .operands[index]
+    {
+        RawOperand::U8(value) => u32::from(value),
+        RawOperand::U32(value) => value,
+        ref other => panic!("unexpected operand {other:?}"),
+    };
+
+    // Identical literals share one entry, as with hermesc.
+    let expected = [
+        mercury_regex::compile_str("ab+c", "gi").unwrap().bytecode,
+        mercury_regex::compile_str(r"(?<year>\d{4})-(?<month>\d\d)", "u").unwrap().bytecode,
+    ];
+    let stored = container
+        .reg_exp_entries
+        .iter()
+        .map(|entry| {
+            let start = entry.first as usize;
+            container.reg_exp_storage[start..start + entry.second as usize].to_vec()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(stored, expected);
+    let ids = instructions
+        .iter()
+        .filter(|instruction| instruction.name == "CreateRegExp")
+        .map(|instruction| operand(instruction, 3))
+        .collect::<Vec<_>>();
+    assert_eq!(ids, [0, 0, 1]);
+
+    // Group names aren't in regex bytecode; initRegexNamedGroups supplies them.
+    let named_group_calls = instructions
+        .iter()
+        .filter(|instruction| instruction.name == "CallBuiltin" && operand(instruction, 1) == 50)
+        .count();
+    assert_eq!(named_group_calls, 1);
+}
+
+#[test]
+fn rejects_invalid_regex_literals() {
+    let module = SwcModule::parse(
+        "input.js",
+        "var value = /a{2,1}/;",
+        SourceLanguage::JavaScript,
+        SourceKind::Script,
+    )
+    .unwrap();
+    let error = HbcCompiler::new(96).compile(&module).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "source parse failed: invalid regular expression /a{2,1}/: Quantifier range out of order"
+    );
+}
+
+#[test]
 fn splits_large_binding_sets_across_environments() {
     let mut source = String::new();
     for index in 0..300 {
@@ -562,6 +625,30 @@ fn native_hbc_executes_without_hermes_compiler() {
         SourceLanguage::JavaScript,
     );
     assert_eq!(execute(bytes), "42\n42\n7\nundefined\n");
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_regex_literals_execute() {
+    let source = r#"
+        var date = /(?<y>\d{4})-(?<m>\d\d)-(?<d>\d\d)/u.exec("on 2024-05-17 at");
+        print(date.groups.y, date.groups.m, date.groups.d, date.index);
+        print("Hello World".replace(/o/g, "0"), "a1b22c333".split(/\d+/).join(","));
+        print("  trim me ".replace(/^\s+|\s+$/g, "") + "|", /ab+c/i.test("xABBBCx"));
+        print("camelCaseString".replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase());
+        print(/\p{Lu}\p{Ll}+/u.exec("hello Wörld")[0], /(?<=\$)\d+(\.\d\d)?/.exec("$42.50")[0]);
+        print(/(?<!\$)\b\d+\b/.exec("$42 and 17")[0], /\u{1F600}+/u.exec("x😀😀y")[0].length);
+        print(/K/i.test("K"), /K/iu.test("K"), /.ſ/iu.test("as"));
+        print(/(\w)\1/.exec("abccd")[0], /a{2,3}?/.exec("aaaa")[0], /[\d-z]+/.exec("3-z!")[0]);
+        function fresh() { return /y/g; }
+        print(fresh() === fresh(), /(a)|b/.exec("b")[1], /\cJ/.test("\n"));
+    "#;
+    let expected = execute_source(source);
+    assert_eq!(
+        expected,
+        "2024 05 17 3\nHell0 W0rld a,b,c,\ntrim me| true\ncamel_case_string\nWörld 42.50\n17 4\nfalse true true\ncc aa 3-z\nfalse undefined true\n"
+    );
+    assert_eq!(execute(compile(source, SourceLanguage::JavaScript)), expected);
 }
 
 #[test]

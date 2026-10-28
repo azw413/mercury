@@ -168,7 +168,11 @@ callee evaluation, method receivers, sparse slots, and iterator order are
 retained. Object literals also compile concise methods, paired or computed
 getters/setters, and the special non-computed `__proto__` setter. Accessor
 descriptors, function names, property order, and null/object/primitive prototype
-selection follow HBC 96 behavior. TypeScript annotations are stripped directly
+selection follow HBC 96 behavior. Regular-expression literals compile to
+`CreateRegExp` over regex bytecode from [`mercury-regex`](../regex), which matches
+hermesc byte for byte; identical literals share a regexp-table entry, named groups
+reach the RegExp through the `initRegexNamedGroups` builtin, and invalid patterns
+fail compilation with Hermes's message. TypeScript annotations are stripped directly
 on a copy of the SWC tree before lowering.
 
 Branches use compiler-owned symbolic labels that are resolved to HBC byte
@@ -265,7 +269,8 @@ object properties become computed SWC object properties so a `__proto__` key kee
 ordinary own-property semantics. Global lookups assume ordinary globals;
 proxy/global interception and mutated intrinsics are outside this first contract.
 Regular expressions and BigInts use captured standard `RegExp` and `BigInt`
-constructors; BigInt table bytes are decoded as signed little-endian values before
+constructors (the constructor finds named groups itself, so hermesc's following
+`initRegexNamedGroups` call becomes `undefined`); BigInt table bytes are decoded as signed little-endian values before
 JavaScript generation. Constructor recovery also captures `Object.create`,
 `Object.prototype`, `WeakSet`, and `TypeError`. Each external construction uses a
 generated direct `new` thunk with its complete argument list, so proxy construct

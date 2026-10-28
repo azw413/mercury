@@ -28,6 +28,7 @@ const COPY_REST_ARGS_BUILTIN: u8 = 45;
 const ARRAY_SPREAD_BUILTIN: u8 = 46;
 const APPLY_BUILTIN: u8 = 47;
 const EXPONENTIATION_BUILTIN: u8 = 49;
+const INIT_REGEX_NAMED_GROUPS_BUILTIN: u8 = 50;
 
 /// Native SWC-AST to Hermes-bytecode compiler.
 ///
@@ -64,6 +65,8 @@ struct Compiler {
     strings: Vec<HbcString>,
     string_kinds: Vec<StringKind>,
     string_ids: HashMap<HbcString, u32>,
+    reg_exps: Vec<mercury_regex::CompiledRegex>,
+    reg_exp_ids: HashMap<(String, String), u32>,
     next_register: u16,
     frame_size: u16,
     max_call_arguments: u16,
@@ -213,6 +216,8 @@ impl Compiler {
             strings: Vec::new(),
             string_kinds: Vec::new(),
             string_ids: HashMap::new(),
+            reg_exps: Vec::new(),
+            reg_exp_ids: HashMap::new(),
             next_register: 0,
             frame_size: 0,
             max_call_arguments: 0,
@@ -317,6 +322,7 @@ impl Compiler {
             literal_value_buffer: Vec::new(),
             object_key_buffer: Vec::new(),
             object_value_buffer: Vec::new(),
+            reg_exps: self.reg_exps.into_iter().map(|regex| regex.bytecode).collect(),
             functions,
         };
         build_minimal_module(&module, &spec.bytecode)
@@ -2304,6 +2310,19 @@ impl Compiler {
                 let id = self.intern(value, StringKind::String)?;
                 self.emit_load_string(output, id);
             }
+            Lit::Regex(regex) => {
+                let operands = match self.reg_exp_operands(&regex.exp, &regex.flags) {
+                    Ok(operands) => operands,
+                    Err(error) => {
+                        self.release_register(output)?;
+                        return Err(error);
+                    }
+                };
+                let mut instruction = operands.map(DecodedOperand::U32).to_vec();
+                instruction.insert(0, reg(output));
+                self.emit("CreateRegExp", instruction);
+                self.emit_regex_group_names(output, operands[2])?;
+            }
             _ => {
                 self.release_register(output)?;
                 return Err(Error::Unsupported(
@@ -3256,6 +3275,55 @@ impl Compiler {
                 vec![reg(output), DecodedOperand::U32(id)],
             );
         }
+    }
+
+    /// Compile a regex literal into the module's regexp table, sharing one
+    /// entry between identical literals as hermesc does, and return the
+    /// pattern string, flags string and regexp ids for `CreateRegExp`.
+    fn reg_exp_operands(&mut self, pattern: &str, flags: &str) -> Result<[u32; 3], Error> {
+        let key = (pattern.to_owned(), flags.to_owned());
+        let id = match self.reg_exp_ids.get(&key) {
+            Some(id) => *id,
+            None => {
+                let compiled = mercury_regex::compile_str(pattern, flags).map_err(|error| {
+                    Error::Parse(format!("invalid regular expression /{pattern}/{flags}: {error}"))
+                })?;
+                let id = u32::try_from(self.reg_exps.len())
+                    .map_err(|_| Error::Unsupported("too many regular expressions".into()))?;
+                self.reg_exps.push(compiled);
+                self.reg_exp_ids.insert(key, id);
+                id
+            }
+        };
+        let pattern = self.intern(pattern.into(), StringKind::String)?;
+        let flags = self.intern(flags.into(), StringKind::String)?;
+        Ok([pattern, flags, id])
+    }
+
+    /// Named groups aren't in regex bytecode: like hermesc, pass the new
+    /// RegExp a `{name: groupNumber}` object through `initRegexNamedGroups`.
+    fn emit_regex_group_names(&mut self, regex: u8, id: u32) -> Result<(), Error> {
+        let names = self.reg_exps[id as usize].group_names.clone();
+        if names.is_empty() {
+            return Ok(());
+        }
+        let groups = self.alloc_register()?;
+        self.emit("NewObject", vec![reg(groups)]);
+        for (name, number) in names {
+            let name = match String::from_utf16(&name) {
+                Ok(name) => HbcString::from(name),
+                Err(_) => HbcString::Utf16(name),
+            };
+            let key = self.compile_hbc_string_value(name)?;
+            let value = self.alloc_register()?;
+            self.emit_number(value, f64::from(number));
+            self.emit_define_own(groups, value, key);
+            self.release_register(value)?;
+            self.release_register(key)?;
+        }
+        let result = self.emit_builtin_call(INIT_REGEX_NAMED_GROUPS_BUILTIN, &[regex, groups])?;
+        self.release_register(result)?;
+        self.release_register(groups)
     }
 
     fn intern_identifier(&mut self, value: &str) -> Result<u32, Error> {
