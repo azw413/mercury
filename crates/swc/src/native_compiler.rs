@@ -2919,6 +2919,7 @@ impl Compiler {
         match argument {
             Expr::Ident(identifier) => {
                 let current = self.compile_identifier(identifier.sym.as_ref())?;
+                self.emit_postfix_old_value(current, prefix);
                 let updated = self.alloc_register()?;
                 self.emit(opcode, vec![reg(updated), reg(current)]);
                 self.emit_identifier_store(identifier.sym.as_ref(), updated)?;
@@ -2936,6 +2937,15 @@ impl Compiler {
         }
     }
 
+    /// A postfix update evaluates to the old value converted to a number (or
+    /// BigInt), so `null++` is 0. As in hermesc, the conversion happens once,
+    /// before the increment.
+    fn emit_postfix_old_value(&mut self, current: u8, prefix: bool) {
+        if !prefix {
+            self.emit("ToNumeric", vec![reg(current), reg(current)]);
+        }
+    }
+
     fn compile_member_update(
         &mut self,
         member: &MemberExpr,
@@ -2947,6 +2957,7 @@ impl Compiler {
             MemberProp::Ident(property) => {
                 let current = self.alloc_register()?;
                 self.emit_get_by_id(current, object, property.sym.as_ref(), false)?;
+                self.emit_postfix_old_value(current, prefix);
                 let updated = self.alloc_register()?;
                 self.emit(opcode, vec![reg(updated), reg(current)]);
                 self.emit_put_by_id(object, updated, property.sym.as_ref())?;
@@ -2961,6 +2972,7 @@ impl Compiler {
                 let key = self.compile_expression(&property.expr)?;
                 let current = self.alloc_register()?;
                 self.emit("GetByVal", vec![reg(current), reg(object), reg(key)]);
+                self.emit_postfix_old_value(current, prefix);
                 let updated = self.alloc_register()?;
                 self.emit(opcode, vec![reg(updated), reg(current)]);
                 self.emit("PutByVal", vec![reg(object), reg(key), reg(updated)]);

@@ -176,6 +176,24 @@ pub fn function(name: Option<&str>, params: Vec<String>, body: Vec<Stmt>) -> Box
         }),
     }))
 }
+pub fn arrow(params: Vec<String>, body: Vec<Stmt>) -> Box<Expr> {
+    Box::new(Expr::Arrow(ArrowExpr {
+        span: DUMMY_SP,
+        ctxt: SyntaxContext::empty(),
+        params: params
+            .iter()
+            .map(|name| Pat::Ident(ident(name).into()))
+            .collect(),
+        body: Box::new(ArrowFunctionBody::FunctionBody(FunctionBody {
+            span: DUMMY_SP,
+            stmts: body,
+        })),
+        is_async: false,
+        is_generator: false,
+        type_params: None,
+        return_type: None,
+    }))
+}
 pub fn array(values: Vec<Box<Expr>>) -> Box<Expr> {
     Box::new(Expr::Array(ArrayLit {
         span: DUMMY_SP,

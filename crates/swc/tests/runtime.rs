@@ -171,6 +171,70 @@ fn globals_with_strict_reserved_and_unicode_names_roundtrip() {
 }
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn postfix_updates_convert_the_old_value() {
+    assert_native_roundtrip(
+        "postfix.js",
+        r#"var x = null; var y = x++; var o = { valueOf: function() { return 1; } }; var z = o--;
+var m = {}; var w = m.foo++; var k = "1"; var v = k--;
+print(y, x, z, o, w, m.foo, typeof v, v, k);"#,
+        "0 1 1 0 NaN NaN number 1 0\n",
+    );
+}
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn generator_and_arrow_functions_keep_their_prototypes() {
+    assert_native_roundtrip(
+        "function-prototypes.js",
+        r#"function f() {} function* g() { yield 1; }
+var GeneratorFunction = Object.getPrototypeOf(g);
+var it = g();
+print(it instanceof g, Object.getPrototypeOf(it) === g.prototype, Object.getOwnPropertyNames(g.prototype).length);
+print(Object.getPrototypeOf(GeneratorFunction) === Object.getPrototypeOf(f), Object.getPrototypeOf(g.prototype) === GeneratorFunction.prototype);
+g.prototype = null;
+print(Object.getPrototypeOf(g()) === GeneratorFunction.prototype, g().next().value, it.next.call(g(), 0).value);
+var arrow = (a, b) => a + b;
+print("prototype" in arrow, arrow(2, 3), arrow.name, Object.getPrototypeOf(arrow) === Function.prototype);
+var defaulted = (x = 1) => x;
+print(defaulted(), defaulted(2), defaulted.length);
+try { new arrow(); } catch (e) { print(e instanceof TypeError); }
+try { new g(); } catch (e) { print(e instanceof TypeError); }"#,
+        "true true 0\ntrue true\ntrue 1 1\nfalse 5 arrow true\n1 2 0\ntrue\ntrue\n",
+    );
+}
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn runtime_helpers_ignore_object_prototype_accessors() {
+    // A getter and setter for "0" on Object.prototype must not reach the
+    // decompiler's own arrays: here they would recurse or drop values.
+    assert_native_roundtrip(
+        "prototype-accessors.js",
+        r#"var data = "data";
+Object.defineProperty(Object.prototype, "0", {
+    get: function() { return data; }, set: function(value) { data = value; }, configurable: true
+});
+function C() { this.v = 1; }
+var keys = ""; for (var key in { a: 1, b: 2 }) keys += key;
+var args = (function() { return arguments; })(1);
+print(new C().v, keys, args[0], data);"#,
+        "1 ab 1 data\n",
+    );
+}
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn object_rest_skips_excluded_keys_before_reading_descriptors() {
+    assert_native_roundtrip(
+        "object-rest.js",
+        r#"var seen = [];
+var proxy = new Proxy({ a: 1, b: 2 }, {
+    getOwnPropertyDescriptor: function(target, key) { seen.push(key); return Object.getOwnPropertyDescriptor(target, key); }
+});
+var { a, ...rest } = proxy;
+print(a, rest.b, seen.join());"#,
+        "1 2 b\n",
+    );
+}
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn typescript_and_captured_closures_compile_and_execute() {
     let compiler = compiler();
     let ts = SwcModule::parse(

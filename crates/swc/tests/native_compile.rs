@@ -197,6 +197,24 @@ fn compiles_tagged_templates_through_get_template_object() {
 }
 
 #[test]
+fn postfix_updates_convert_the_old_value_once() {
+    // As in hermesc: ToNumeric before the increment, for postfix forms only.
+    let bytes = compile(
+        "var x, o = {}; x++; o.a--; o['b']++; ++x; --o.a;",
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let conversions = raw.functions[0]
+        .instructions
+        .iter()
+        .filter(|instruction| instruction.name == "ToNumeric")
+        .count();
+    assert_eq!(conversions, 3);
+}
+
+#[test]
 fn decompiles_globals_named_with_strict_reserved_words_and_unicode() {
     let bytes = compile(
         r"var yield = 1; var await = 2; var public = 3; var ࡰ = 4;",

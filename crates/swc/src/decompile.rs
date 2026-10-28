@@ -62,11 +62,18 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 call_builtin_signature(op, 45, Some(3)) || call_builtin_signature(op, 50, Some(2))
             })
     });
-    let lower = Lower {
-        container: &container,
-        raw: &raw,
-        modern_private_builtins,
+    let closure_targets = |names: [&str; 2]| -> HashSet<usize> {
+        raw.functions
+            .iter()
+            .flat_map(|function| &function.instructions)
+            .filter(|op| names.contains(&op.name.as_str()))
+            .filter_map(|op| uint(op, 2).ok())
+            .map(|target| target as usize)
+            .collect()
     };
+    let generator_closures =
+        closure_targets(["CreateGeneratorClosure", "CreateGeneratorClosureLongIndex"]);
+    let async_closures = closure_targets(["CreateAsyncClosure", "CreateAsyncClosureLongIndex"]);
     let mut needs_define = raw
         .functions
         .iter()
@@ -118,6 +125,28 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         .collect::<Vec<_>>();
     let needs_arguments = argument_functions.iter().any(|value| *value);
     let needs_suspension = resumable_functions.iter().any(|value| *value);
+    needs_define |= needs_suspension;
+    // Hermes gives arrow functions no `prototype`, which a recovered `function`
+    // would have. A construct-prohibited function becomes an arrow when its
+    // body can't tell the difference: it never reads its own `this`,
+    // `arguments` or `new.target`. Generators and async functions are also
+    // construct-prohibited, but stay functions.
+    let arrow_functions =
+        raw.functions
+            .iter()
+            .map(|function| {
+                let index = function.function_index;
+                function.flags.prohibit_invoke == 1
+                    && index != h.global_code_index as usize
+                    && !generator_closures.contains(&index)
+                    && !async_closures.contains(&index)
+                    && !resumable_functions[index]
+                    && !argument_functions[index]
+                    && !function.instructions.iter().any(|op| {
+                        reads_own_receiver(op) || reads_undeclared_parameter(function, op)
+                    })
+            })
+            .collect::<Vec<_>>();
     let needs_numeric_runtime = ["Inc", "Dec", "ToNumeric"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
@@ -130,6 +159,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let needs_property_enumeration = ["GetPNameList", "GetNextPName"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
+    needs_define |= needs_property_enumeration;
     let needs_iterator_runtime = ["IteratorBegin", "IteratorNext", "IteratorClose"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
@@ -147,6 +177,13 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 ) || call_builtin_signature(op, apply_builtin, Some(3))
             })
     });
+    let lower = Lower {
+        container: &container,
+        raw: &raw,
+        modern_private_builtins,
+        arrow_functions: &arrow_functions,
+        generator_closures: &generator_closures,
+    };
     let mut globals = Vec::new();
     let mut seen_globals = HashSet::new();
     let names = container
@@ -154,7 +191,10 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         .iter()
         .map(|header| lower.string(header.function_name))
         .collect::<Result<Vec<_>, _>>()?;
-    let needs_function_name_runtime = names.iter().any(needs_runtime_function_name);
+    let needs_function_name_runtime = names
+        .iter()
+        .zip(&arrow_functions)
+        .any(|(name, arrow)| named_at_runtime(name, *arrow));
     needs_define |= needs_function_name_runtime;
     let mut prefix = "_mercury".to_owned();
     while names
@@ -272,22 +312,28 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         // names, so these labels must not become function-expression bindings.
         let generated_name = internal_function_name(&name) || needs_runtime_function_name(&name);
         let params = (1..f.param_count).map(|i| format!("_a{i}")).collect();
-        let mut function = b::function(
-            if name.is_empty() || generated_name {
-                None
-            } else {
-                name.as_str()
-            },
-            params,
-            lower.function(
-                f,
-                resumable_functions[f.function_index],
-                needs_construction,
-                argument_functions[f.function_index],
-                needs_unreachable,
-            )?,
-        );
-        if needs_runtime_function_name(&name) {
+        let body = lower.function(
+            f,
+            resumable_functions[f.function_index],
+            needs_construction,
+            argument_functions[f.function_index],
+            needs_unreachable,
+        )?;
+        let arrow = arrow_functions[f.function_index];
+        let mut function = if arrow {
+            b::arrow(params, body)
+        } else {
+            b::function(
+                if name.is_empty() || generated_name {
+                    None
+                } else {
+                    name.as_str()
+                },
+                params,
+                body,
+            )
+        };
+        if named_at_runtime(&name, arrow) {
             function = b::call(
                 b::id("_name_function"),
                 vec![function, b::wtf8_string(name.clone())],
@@ -296,9 +342,22 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         if needs_construction {
             function = b::call(b::id("_mark_function"), vec![function]);
         }
+        // A generator object's prototype comes from the generator function
+        // that was called, which its body reaches as `_callee`.
+        let factory = if generator_closures.contains(&f.function_index) {
+            vec![
+                b::var(
+                    "_callee",
+                    Some(b::call(b::id("_generator_function"), vec![function])),
+                ),
+                b::ret(b::id("_callee")),
+            ]
+        } else {
+            vec![b::ret(function)]
+        };
         factories.push(b::assign(
             b::member(b::id("_make"), b::number(f.function_index as f64)),
-            b::function(None, vec!["_env".into()], vec![b::ret(function)]),
+            b::function(None, vec!["_env".into()], factory),
         ));
     }
     // Global var declarations stay at script scope, retaining global binding
@@ -360,7 +419,11 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         wrapper_args.push(b::member(b::this(), b::string("Error")));
     }
     if needs_suspension {
-        for (name, global) in [("_promise", "Promise"), ("_symbol", "Symbol")] {
+        for (name, global) in [
+            ("_promise", "Promise"),
+            ("_symbol", "Symbol"),
+            ("_weak_map", "WeakMap"),
+        ] {
             wrapper_params.push(name.into());
             wrapper_args.push(b::member(b::this(), b::string(global)));
         }
@@ -380,6 +443,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         || needs_coerce_this
         || needs_restricted_global
         || needs_prototype_runtime
+        || needs_suspension
     {
         wrapper_params.push("_object".into());
         wrapper_args.push(b::member(b::this(), b::string("Object")));
@@ -509,6 +573,8 @@ struct Lower<'a> {
     container: &'a HbcContainer,
     raw: &'a RawModule,
     modern_private_builtins: bool,
+    arrow_functions: &'a [bool],
+    generator_closures: &'a HashSet<usize>,
 }
 impl Lower<'_> {
     fn string(&self, id: u32) -> Result<Wtf8Atom, Error> {
@@ -561,13 +627,15 @@ impl Lower<'_> {
             body.push(b::expr(b::string("use strict")));
         }
         if construction_runtime {
+            // An arrow has no `new.target` of its own.
+            let entered = b::call(b::id("_enter_function"), vec![]);
             body.push(b::var(
                 "_function_new_target",
-                Some(b::binary(
-                    BinaryOp::LogicalOr,
-                    b::new_target(),
-                    b::call(b::id("_enter_function"), vec![]),
-                )),
+                Some(if self.arrow_functions[f.function_index] {
+                    entered
+                } else {
+                    b::binary(BinaryOp::LogicalOr, b::new_target(), entered)
+                }),
             ));
             let prohibited = match f.flags.prohibit_invoke {
                 0 => Some(b::binary(
@@ -912,6 +980,8 @@ impl Lower<'_> {
                 let index = uint(op, 1)?;
                 if index == 0 {
                     if resumable { b::id("_this") } else { b::this() }
+                } else if self.arrow_functions[f.function_index] {
+                    b::id(&format!("_a{index}"))
                 } else {
                     b::member(
                         if uses_arguments {
@@ -1426,21 +1496,22 @@ impl Lower<'_> {
                 if target as usize >= self.raw.functions.len() {
                     return Err(Error::Bytecode("invalid generator target".into()));
                 }
-                b::call(
-                    b::id("_generator"),
-                    vec![
-                        b::call(
-                            b::member(b::id("_make"), b::number(f64::from(target))),
-                            vec![r(1)?],
-                        ),
-                        if resumable { b::id("_this") } else { b::this() },
-                        if resumable {
-                            b::id("_args")
-                        } else {
-                            b::id("arguments")
-                        },
-                    ],
-                )
+                let mut arguments = vec![
+                    b::call(
+                        b::member(b::id("_make"), b::number(f64::from(target))),
+                        vec![r(1)?],
+                    ),
+                    if resumable { b::id("_this") } else { b::this() },
+                    if resumable {
+                        b::id("_args")
+                    } else {
+                        b::id("arguments")
+                    },
+                ];
+                if self.generator_closures.contains(&f.function_index) {
+                    arguments.push(b::id("_callee"));
+                }
+                b::call(b::id("_generator"), arguments)
             }
             "CreateThis" => b::call(b::id("_create_this"), vec![r(1)?]),
             "SelectObject" => b::call(b::id("_select_object"), vec![r(1)?, r(2)?]),
@@ -1774,6 +1845,39 @@ fn call_builtin_signature(op: &RawInstruction, builtin: u32, argument_count: Opt
     operand_value(op.operands.get(1)) == Some(builtin)
         && argument_count.is_none_or(|count| operand_value(op.operands.get(2)) == Some(count))
 }
+/// Whether lowering `op` reads the function's own `this`, `arguments` or
+/// `new.target`, so the function can't be recovered as an arrow.
+fn reads_own_receiver(op: &RawInstruction) -> bool {
+    match op.name.as_str() {
+        "LoadThisNS"
+        | "CoerceThisNS"
+        | "GetNewTarget"
+        | "CreateGenerator"
+        | "CreateGeneratorLongIndex"
+        | "GetBuiltinClosure"
+        | "DirectEval"
+        | "ReifyArguments"
+        | "GetArgumentsPropByVal"
+        | "GetArgumentsLength"
+        | "StartGenerator" => true,
+        "LoadParam" | "LoadParamLong" => uint(op, 1).is_ok_and(|index| index == 0),
+        _ => false,
+    }
+}
+/// Whether `op` reads a parameter past the function's declared count. Hermes
+/// leaves defaulted parameters out of the count, which is the function's
+/// `length`, and an arrow could only reach them through a rest parameter,
+/// which would change that `length`.
+fn reads_undeclared_parameter(function: &RawFunction, op: &RawInstruction) -> bool {
+    matches!(op.name.as_str(), "LoadParam" | "LoadParamLong")
+        && uint(op, 1).is_ok_and(|index| index >= function.param_count)
+}
+/// Whether a recovered function gets its name at run time: names that aren't
+/// identifiers, and arrows, which can't carry a name in source.
+fn named_at_runtime(name: &Wtf8Atom, arrow: bool) -> bool {
+    needs_runtime_function_name(name)
+        || (arrow && !name.is_empty() && !internal_function_name(name))
+}
 fn has_function_opcode(function: &RawFunction, name: &str) -> bool {
     function.instructions.iter().any(|op| op.name == name)
 }
@@ -1881,7 +1985,13 @@ function _for_in_begin(_value) {
     var _boxed = _object(_value);
     var _names = [];
     for (var _name in _boxed) {
-        _names[_names["length"]] = _name;
+        // Defined, not assigned, so setters on Object.prototype don't see it.
+        _define(_names, _names["length"], {
+            value: _name,
+            writable: true,
+            enumerable: true,
+            configurable: true
+        });
     }
     return [_names, _boxed];
 }
@@ -1955,9 +2065,12 @@ function _copy_data_properties(_target, _source, _excluded) {
     var _keys = _apply(_own_keys, void 0, [_from]);
     for (var _index = 0; _index < _keys["length"]; _index++) {
         var _key = _keys[_index];
+        // Excluded keys are skipped before their descriptors are read.
+        if (_excluded !== void 0 && _apply(_has_own, _excluded, [_key])) {
+            continue;
+        }
         var _descriptor = _apply(_get_own_descriptor, _object, [_from, _key]);
-        if (_descriptor !== void 0 && _descriptor["enumerable"] &&
-            (_excluded === void 0 || !_apply(_has_own, _excluded, [_key]))) {
+        if (_descriptor !== void 0 && _descriptor["enumerable"]) {
             var _value = _from[_key];
             if (!_define(_target, _key, {
                 value: _value,
@@ -2068,15 +2181,18 @@ function _name_function(_function, _name) {
 fn construction_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
 var _recovered_functions = new _weak_set();
-var _new_target_stack = [];
+// A linked list of object literals rather than an array: array pushes and
+// reads go through Object.prototype, where an index accessor that is itself a
+// recovered function would re-enter this code.
+var _new_target_stack = null;
 var _external_constructor = {};
 function _mark_function(_function) {
     _recovered_functions["add"](_function);
     return _function;
 }
 function _enter_function() {
-    var _entry = _new_target_stack[_new_target_stack["length"] - 1];
-    if (_entry !== void 0 && _entry["pending"]) {
+    var _entry = _new_target_stack;
+    if (_entry !== null && _entry["pending"]) {
         _entry["pending"] = false;
         return _entry["target"];
     }
@@ -2084,11 +2200,12 @@ function _enter_function() {
 }
 function _construct_value(_function, _this_value, _arguments_value, _external_construct) {
     if (_recovered_functions["has"](_function)) {
-        _new_target_stack["push"]({ target: _function, pending: true });
+        var _entry = { target: _function, pending: true, next: _new_target_stack };
+        _new_target_stack = _entry;
         try {
             return _apply(_function, _this_value, _arguments_value);
         } finally {
-            _new_target_stack["pop"]();
+            _new_target_stack = _entry["next"];
         }
     }
     return _external_construct();
@@ -2130,12 +2247,74 @@ function _select_object(_this_value, _return_value) {
 }
 fn suspension_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
-function _generator(_init, _this_value, _arguments_value) {
+// Stand-ins for %GeneratorFunction.prototype% and %GeneratorPrototype%, laid
+// out as in the spec. Generator objects keep their resume function here.
+var _generator_states = new _weak_map();
+var _generator_create = _object["create"];
+var _generator_get_prototype_of = _object["getPrototypeOf"];
+var _generator_function_prototype = _generator_create(_generator_get_prototype_of(_apply));
+var _generator_prototype = _generator_create(
+    _generator_get_prototype_of(_generator_get_prototype_of([][_symbol["iterator"]]())));
+_define(_generator_function_prototype, "prototype", {
+    value: _generator_prototype,
+    configurable: true
+});
+_define(_generator_function_prototype, _symbol["toStringTag"], {
+    value: "GeneratorFunction",
+    configurable: true
+});
+_define(_generator_prototype, "constructor", {
+    value: _generator_function_prototype,
+    configurable: true
+});
+_define(_generator_prototype, _symbol["toStringTag"], {
+    value: "Generator",
+    configurable: true
+});
+function _generator_method(_action_value) {
+    return function(_value) {
+        var _resume = _generator_states["get"](this);
+        if (_resume === void 0) {
+            throw new _type_error("Generator method called on an incompatible receiver");
+        }
+        return _resume(_action_value, _value);
+    };
+}
+_define(_generator_prototype, "next", {
+    value: _generator_method("next"),
+    writable: true,
+    configurable: true
+});
+_define(_generator_prototype, "return", {
+    value: _generator_method("return"),
+    writable: true,
+    configurable: true
+});
+_define(_generator_prototype, "throw", {
+    value: _generator_method("throw"),
+    writable: true,
+    configurable: true
+});
+function _generator_function(_function) {
+    _object["setPrototypeOf"](_function, _generator_function_prototype);
+    _define(_function, "prototype", {
+        value: _generator_create(_generator_prototype),
+        writable: true,
+        enumerable: false,
+        configurable: false
+    });
+    return _function;
+}
+function _generator(_init, _this_value, _arguments_value, _callee) {
+    var _prototype = _callee === void 0 ? _generator_prototype : _callee["prototype"];
+    if (_prototype === null || (typeof _prototype !== "object" && typeof _prototype !== "function")) {
+        _prototype = _generator_prototype;
+    }
     var _step = _apply(_init, _this_value, _arguments_value);
     var _done = false;
     var _started = false;
     var _running = false;
-    var _iterator = {};
+    var _iterator = _generator_create(_prototype);
     function _resume_generator(_action_value, _sent_value) {
         if (_running) throw new _type_error("Generator is already running");
         if (_done) {
@@ -2158,10 +2337,7 @@ function _generator(_init, _this_value, _arguments_value) {
             _running = false;
         }
     }
-    _iterator["next"] = function(_value) { return _resume_generator("next", _value); };
-    _iterator["throw"] = function(_value) { return _resume_generator("throw", _value); };
-    _iterator["return"] = function(_value) { return _resume_generator("return", _value); };
-    _iterator[_symbol["iterator"]] = function() { return this; };
+    _generator_states["set"](_iterator, _resume_generator);
     return _iterator;
 }
 function _spawn_async(_generator_function, _this_value, _arguments_value) {
