@@ -124,6 +124,8 @@ dynamically populated arrays. It also recovers buffer-backed object literals and
 later own-property definitions, including computed keys and custom prototypes.
 Dense integer switch tables and exception-handler control flow are also recovered.
 Regular-expression and BigInt constants are rebuilt from their container tables.
+Tagged templates' strings arrays are rebuilt by a small runtime helper that
+caches them per template, as Hermes does.
 Generator and async frames preserve suspended registers, captured environments,
 receiver/arguments state, `next`/`throw`/`return`, `yield*`, and fulfilled or
 rejected awaits through a small generated runtime adapter. Constructor recovery

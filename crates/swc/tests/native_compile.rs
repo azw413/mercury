@@ -174,6 +174,45 @@ fn compiles_regex_literals_into_the_regexp_table() {
 }
 
 #[test]
+fn compiles_tagged_templates_through_get_template_object() {
+    let bytes = compile(
+        r"function tag(s) { return s; } tag`a${1}b`; tag`a${2}b`; tag`\x`; `plain ${tag}`;",
+        SourceLanguage::JavaScript,
+    );
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let template_objects = raw.functions[0]
+        .instructions
+        .iter()
+        .filter(|instruction| {
+            instruction.name == "CallBuiltin" && instruction.operands[1] == RawOperand::U8(39)
+        })
+        .count();
+    assert_eq!(template_objects, 3);
+
+    // The decompiler rebuilds the template objects with a runtime helper.
+    let recovered = decompile(&bytes).unwrap().javascript();
+    assert!(recovered.contains("template_object("), "{recovered}");
+}
+
+#[test]
+fn decompiles_globals_named_with_strict_reserved_words_and_unicode() {
+    let bytes = compile(
+        r"var yield = 1; var await = 2; var public = 3; var ࡰ = 4;",
+        SourceLanguage::JavaScript,
+    );
+    let recovered = decompile(&bytes).unwrap().javascript();
+    for name in ["yield", "await", "public", "\u{870}"] {
+        let declaration = format!("var {name};");
+        assert!(
+            recovered.contains(&declaration),
+            "{declaration} in {recovered}"
+        );
+    }
+}
+
+#[test]
 fn rejects_invalid_regex_literals() {
     let module = SwcModule::parse(
         "input.js",
@@ -647,6 +686,31 @@ fn native_regex_literals_execute() {
     assert_eq!(
         expected,
         "2024 05 17 3\nHell0 W0rld a,b,c,\ntrim me| true\ncamel_case_string\nWörld 42.50\n17 4\nfalse true true\ncc aa 3-z\nfalse undefined true\n"
+    );
+    assert_eq!(execute(compile(source, SourceLanguage::JavaScript)), expected);
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_templates_execute() {
+    let source = r#"
+        var value = { toString: function() { return "S"; }, valueOf: function() { return "V"; } };
+        print(`[${value}]`, `${1}${2}`, `only`, `a${"b"}c`);
+        function tag(strings) { return strings; }
+        function site() { return tag`p\n${0}q`; }
+        var first = site();
+        print(first === site(), first.length, first[0] === "p\n", first.raw[0], first.raw.length);
+        print(Object.isFrozen(first), Object.isFrozen(first.raw), Object.keys(first).join());
+        print(Object.getOwnPropertyDescriptor(first, "raw").enumerable);
+        var invalid = tag`a${1}\x`;
+        print(invalid[1], invalid.raw[1]);
+        var receiver = { name: "r", method: function(strings, a, b) { return this.name + strings.join("|") + a + b; } };
+        print(receiver.method`x${1}y${2}z`, receiver["method"]`${3}${4}`);
+    "#;
+    let expected = execute_source(source);
+    assert_eq!(
+        expected,
+        "[S] 12 only abc\ntrue 2 true p\\n 2\ntrue true 0,1\nfalse\nundefined \\x\nrx|y|z12 r||34\n"
     );
     assert_eq!(execute(compile(source, SourceLanguage::JavaScript)), expected);
 }

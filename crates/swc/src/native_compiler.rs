@@ -8,11 +8,12 @@ use mercury_binary::{
     MinimalModule, StringKind, build_minimal_module, encode_instruction,
 };
 use mercury_spec::BytecodeSpec;
+use swc_core::atoms::Wtf8Atom;
 use swc_core::ecma::ast::{
     ArrowExpr, ArrowFunctionBody, AssignOp, AssignTarget, BinaryOp, BlockStmt, Callee, Decl, Expr,
     ForHead, Function, FunctionBody, Lit, MemberExpr, MemberProp, MetaPropKind, ObjectPatProp, Pat,
-    Program, Prop, PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt, UnaryOp, UpdateOp,
-    VarDecl, VarDeclKind, VarDeclOrExpr,
+    Program, Prop, PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt, TaggedTpl, Tpl,
+    TplElement, UnaryOp, UpdateOp, VarDecl, VarDeclKind, VarDeclOrExpr,
 };
 use swc_core::ecma::visit::{Visit, VisitWith};
 
@@ -22,6 +23,7 @@ const LEXICAL_THIS_BINDING: &str = "\0mercury_lexical_this";
 const LEXICAL_ARGUMENTS_BINDING: &str = "\0mercury_lexical_arguments";
 // Hermes 0.12's HBC 96 runtime uses the legacy private-builtin layout.
 const SILENT_SET_PROTOTYPE_OF_BUILTIN: u8 = 37;
+const GET_TEMPLATE_OBJECT_BUILTIN: u8 = 39;
 const THROW_TYPE_ERROR_BUILTIN: u8 = 42;
 const COPY_DATA_PROPERTIES_BUILTIN: u8 = 44;
 const COPY_REST_ARGS_BUILTIN: u8 = 45;
@@ -67,6 +69,7 @@ struct Compiler {
     string_ids: HashMap<HbcString, u32>,
     reg_exps: Vec<mercury_regex::CompiledRegex>,
     reg_exp_ids: HashMap<(String, String), u32>,
+    template_object_ids: HashMap<Vec<String>, u32>,
     next_register: u16,
     frame_size: u16,
     max_call_arguments: u16,
@@ -218,6 +221,7 @@ impl Compiler {
             string_ids: HashMap::new(),
             reg_exps: Vec::new(),
             reg_exp_ids: HashMap::new(),
+            template_object_ids: HashMap::new(),
             next_register: 0,
             frame_size: 0,
             max_call_arguments: 0,
@@ -2014,6 +2018,8 @@ impl Compiler {
             }
             Expr::Update(update) => self.compile_update(update.op, update.prefix, &update.arg),
             Expr::Call(call) => self.compile_call(call),
+            Expr::Tpl(template) => self.compile_template(template),
+            Expr::TaggedTpl(tagged) => self.compile_tagged_template(tagged),
             Expr::New(expression) => self.compile_new(expression),
             Expr::Fn(function) => {
                 let name = function
@@ -2194,6 +2200,13 @@ impl Compiler {
 
     fn compile_string_value(&mut self, value: &str) -> Result<u8, Error> {
         self.compile_hbc_string_value(value.into())
+    }
+
+    fn compile_wtf8_string_value(&mut self, value: &Wtf8Atom) -> Result<u8, Error> {
+        self.compile_hbc_string_value(match value.as_str() {
+            Some(value) => HbcString::from(value),
+            None => HbcString::Utf16(value.to_ill_formed_utf16().collect()),
+        })
     }
 
     fn compile_hbc_string_value(&mut self, value: HbcString) -> Result<u8, Error> {
@@ -3051,17 +3064,33 @@ impl Compiler {
             return Ok(result);
         }
 
-        let argument_count = u32::try_from(call.args.len() + 1)
+        let mut arguments = Vec::with_capacity(call.args.len());
+        for argument in &call.args {
+            arguments.push(self.compile_expression(&argument.expr)?);
+        }
+        let output = self.emit_call(function, this_value, &arguments)?;
+        self.emit("Mov", vec![reg(result), reg(output)]);
+        self.release_register(output)?;
+        while let Some(argument) = arguments.pop() {
+            self.release_register(argument)?;
+        }
+        if function != result {
+            self.release_register(function)?;
+        } else {
+            self.release_register(this_value)?;
+        }
+        Ok(result)
+    }
+
+    /// Call `function` with `this_value` and `arguments`, returning the result
+    /// in a newly allocated register.
+    fn emit_call(&mut self, function: u8, this_value: u8, arguments: &[u8]) -> Result<u8, Error> {
+        let argument_count = u32::try_from(arguments.len() + 1)
             .map_err(|_| Error::Unsupported("too many call arguments".into()))?;
         self.max_call_arguments = self.max_call_arguments.max(
             u16::try_from(argument_count)
                 .map_err(|_| Error::Unsupported("too many call arguments".into()))?,
         );
-
-        let mut arguments = Vec::with_capacity(call.args.len());
-        for argument in &call.args {
-            arguments.push(self.compile_expression(&argument.expr)?);
-        }
         let output = self.alloc_register()?;
         if arguments.len() <= 3 {
             let mut operands = vec![reg(output), reg(function), reg(this_value)];
@@ -3103,15 +3132,150 @@ impl Compiler {
                 );
             }
         }
+        Ok(output)
+    }
+
+    /// Compile a template literal as hermesc does: `HermesInternal.concat`
+    /// called on the first string with the substitutions and the remaining
+    /// non-empty strings, so each substitution is converted with ToString.
+    fn compile_template(&mut self, template: &Tpl) -> Result<u8, Error> {
+        let cooked = |element: &TplElement| {
+            element.cooked.clone().ok_or_else(|| {
+                Error::Parse("invalid escape sequence in an untagged template literal".into())
+            })
+        };
+        let (first, rest) = template
+            .quasis
+            .split_first()
+            .ok_or_else(|| Error::Parse("template literal without strings".into()))?;
+        let result = self.compile_wtf8_string_value(&cooked(first)?)?;
+        if template.exprs.is_empty() {
+            return Ok(result);
+        }
+        let mut arguments = Vec::with_capacity(template.exprs.len() * 2);
+        for (substitution, element) in template.exprs.iter().zip(rest) {
+            arguments.push(self.compile_expression(substitution)?);
+            let string = cooked(element)?;
+            if !string.is_empty() {
+                arguments.push(self.compile_wtf8_string_value(&string)?);
+            }
+        }
+        let concat = self.alloc_register()?;
+        self.emit("GetGlobalObject", vec![reg(concat)]);
+        self.emit_get_by_id(concat, concat, "HermesInternal", true)?;
+        self.emit_get_by_id(concat, concat, "concat", false)?;
+        let output = self.emit_call(concat, result, &arguments)?;
         self.emit("Mov", vec![reg(result), reg(output)]);
         self.release_register(output)?;
+        self.release_register(concat)?;
         while let Some(argument) = arguments.pop() {
             self.release_register(argument)?;
         }
-        if function != result {
+        Ok(result)
+    }
+
+    /// Compile a tagged template as hermesc does. The getTemplateObject
+    /// builtin builds the frozen strings array, cached by an id that hermesc
+    /// shares between templates with the same raw strings. It runs before the
+    /// substitutions and the tag, as in hermesc.
+    fn compile_tagged_template(&mut self, tagged: &TaggedTpl) -> Result<u8, Error> {
+        let template = &tagged.tpl;
+        // The raw value keeps the source's line terminators; the template
+        // raw value normalises CR and CRLF to LF.
+        let raws = template
+            .quasis
+            .iter()
+            .map(|element| element.raw.replace("\r\n", "\n").replace('\r', "\n"))
+            .collect::<Vec<_>>();
+        let next_id = u32::try_from(self.template_object_ids.len())
+            .map_err(|_| Error::Unsupported("too many tagged templates".into()))?;
+        let id = *self
+            .template_object_ids
+            .entry(raws.clone())
+            .or_insert(next_id);
+        let dup = template.quasis.iter().zip(&raws).all(|(element, raw)| {
+            element.cooked.as_ref().and_then(|cooked| cooked.as_str()) == Some(raw.as_str())
+        });
+
+        let result = self.alloc_register()?;
+        let mut strings = Vec::with_capacity(raws.len() * 2 + 2);
+        let id_register = self.alloc_register()?;
+        self.emit_number(id_register, f64::from(id));
+        strings.push(id_register);
+        let dup_register = self.alloc_register()?;
+        self.emit(
+            if dup {
+                "LoadConstTrue"
+            } else {
+                "LoadConstFalse"
+            },
+            vec![reg(dup_register)],
+        );
+        strings.push(dup_register);
+        for raw in &raws {
+            strings.push(self.compile_string_value(raw)?);
+        }
+        if !dup {
+            for element in &template.quasis {
+                strings.push(match &element.cooked {
+                    Some(cooked) => self.compile_wtf8_string_value(cooked)?,
+                    None => {
+                        let undefined = self.alloc_register()?;
+                        self.emit("LoadConstUndefined", vec![reg(undefined)]);
+                        undefined
+                    }
+                });
+            }
+        }
+        let object = self.emit_builtin_call(GET_TEMPLATE_OBJECT_BUILTIN, &strings)?;
+        self.emit("Mov", vec![reg(result), reg(object)]);
+        self.release_register(object)?;
+        while let Some(string) = strings.pop() {
+            self.release_register(string)?;
+        }
+
+        let mut arguments = vec![result];
+        for substitution in &template.exprs {
+            arguments.push(self.compile_expression(substitution)?);
+        }
+        let (function, this_value) = if let Expr::Member(member) = &*tagged.tag {
+            let this_value = self.compile_expression(&member.obj)?;
+            let function = self.alloc_register()?;
+            match &member.prop {
+                MemberProp::Ident(property) => {
+                    self.emit_get_by_id(function, this_value, property.sym.as_ref(), false)?;
+                }
+                MemberProp::Computed(property) => {
+                    let key = self.compile_expression(&property.expr)?;
+                    self.emit("GetByVal", vec![reg(function), reg(this_value), reg(key)]);
+                    self.release_register(key)?;
+                }
+                MemberProp::PrivateName(_) => {
+                    return Err(Error::Unsupported(
+                        "private method tags are not supported by native compilation yet".into(),
+                    ));
+                }
+            }
+            (function, this_value)
+        } else {
+            let function = self.compile_expression(&tagged.tag)?;
+            let this_value = self.alloc_register()?;
+            self.emit("LoadConstUndefined", vec![reg(this_value)]);
+            (function, this_value)
+        };
+        let output = self.emit_call(function, this_value, &arguments)?;
+        self.emit("Mov", vec![reg(result), reg(output)]);
+        self.release_register(output)?;
+        // The member form allocated `this` first.
+        if function > this_value {
             self.release_register(function)?;
+            self.release_register(this_value)?;
         } else {
             self.release_register(this_value)?;
+            self.release_register(function)?;
+        }
+        while arguments.len() > 1 {
+            self.release_register(arguments.pop().unwrap())?;
         }
         Ok(result)
     }
@@ -3881,7 +4045,6 @@ fn unsupported_expression(expression: &Expr) -> Error {
             Expr::Update(_) => "update",
             Expr::Yield(_) => "yield",
             Expr::Await(_) => "await",
-            Expr::Tpl(_) | Expr::TaggedTpl(_) => "template literal",
             _ => "this",
         }
     ))

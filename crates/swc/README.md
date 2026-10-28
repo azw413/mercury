@@ -172,7 +172,10 @@ selection follow HBC 96 behavior. Regular-expression literals compile to
 `CreateRegExp` over regex bytecode from [`mercury-regex`](../regex), which matches
 hermesc byte for byte; identical literals share a regexp-table entry, named groups
 reach the RegExp through the `initRegexNamedGroups` builtin, and invalid patterns
-fail compilation with Hermes's message. TypeScript annotations are stripped directly
+fail compilation with Hermes's message. Template literals compile as hermesc compiles
+them: an untagged template calls `HermesInternal.concat`, and a tagged one gets its
+strings array from the `getTemplateObject` builtin, cached by an id shared between
+templates with the same raw strings. TypeScript annotations are stripped directly
 on a copy of the SWC tree before lowering.
 
 Branches use compiler-owned symbolic labels that are resolved to HBC byte

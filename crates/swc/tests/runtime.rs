@@ -63,6 +63,18 @@ fn assert_runtime_roundtrip(name: &str, source: &str, expected: &str) {
     let rebuilt = compiler.compile(&recovered).unwrap();
     assert_eq!(execute(&rebuilt), expected, "decompiled source");
 }
+/// Like `assert_runtime_roundtrip`, and also rebuilds the decompiled source
+/// with the native compiler, as ProtectJS does.
+fn assert_native_roundtrip(name: &str, source: &str, expected: &str) {
+    assert_runtime_roundtrip(name, source, expected);
+    let module =
+        SwcModule::parse(name, source, SourceLanguage::JavaScript, SourceKind::Script).unwrap();
+    let original = compiler().compile(&module).unwrap();
+    let rebuilt = HbcCompiler::new(96)
+        .compile(&decompile(&original).unwrap())
+        .unwrap();
+    assert_eq!(execute(&rebuilt), expected, "natively rebuilt source");
+}
 fn instruction(name: &str, operands: Vec<DecodedOperand>) -> DecodedInstruction {
     let spec = load_spec(96).unwrap();
     let opcode = spec
@@ -134,6 +146,27 @@ fn regex_literals_with_named_groups_roundtrip() {
         "named-groups.js",
         r#"var m = /(?<y>\d{4})-(?<m>\d\d)/.exec("2024-05"); print(m.groups.y, m.groups.m, /a+/g.exec("baa")[0]);"#,
         "2024 05 aa\n",
+    );
+}
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn tagged_templates_roundtrip() {
+    // hermesc builds the strings arrays with the getTemplateObject builtin.
+    assert_native_roundtrip(
+        "tagged-templates.js",
+        r#"function tag(s) { return s; } function site() { return tag`p\n${0}q`; }
+var t = site(); var bad = tag`a${1}\x`;
+print(t === site(), t[0] === "p\n", t.raw[0], Object.isFrozen(t.raw), bad[1], bad.raw[1], `x${t.length}y`);"#,
+        "true true p\\n true undefined \\x x2y\n",
+    );
+}
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
+fn globals_with_strict_reserved_and_unicode_names_roundtrip() {
+    assert_native_roundtrip(
+        "global-names.js",
+        r"var yield = 1; var await = 2; var public = 3; var ࡰ = 4; print(yield + await + public + ࡰ, typeof this.yield);",
+        "10 number\n",
     );
 }
 #[test]

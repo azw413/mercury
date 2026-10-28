@@ -77,8 +77,11 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let array_spread_builtin = if modern_private_builtins { 51 } else { 46 };
     let apply_builtin = if modern_private_builtins { 52 } else { 47 };
     let needs_array_spread_runtime = has_builtin(&raw, array_spread_builtin);
+    let get_template_object_builtin = if modern_private_builtins { 44 } else { 39 };
+    let needs_template_runtime = has_builtin(&raw, get_template_object_builtin);
     needs_define |= needs_copy_data_runtime;
     needs_define |= needs_array_spread_runtime;
+    needs_define |= needs_template_runtime;
     let needs_regexp = has_opcode(&raw, "CreateRegExp");
     let needs_bigint = raw.functions.iter().any(|function| {
         function.instructions.iter().any(|op| {
@@ -210,6 +213,9 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     if needs_array_spread_runtime {
         factories.extend(array_spread_runtime());
     }
+    if needs_template_runtime {
+        factories.extend(template_object_runtime());
+    }
     if needs_function_name_runtime {
         factories.extend(function_name_runtime());
     }
@@ -241,7 +247,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                         "global name is not a supported identifier",
                     ));
                 };
-                if !valid_name(name) {
+                if !global_var_name(name) {
                     return Err(unsupported(
                         f,
                         op,
@@ -411,6 +417,21 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         wrapper_args.push(b::member(
             b::member(b::this(), b::string("Object")),
             b::string("getOwnPropertyDescriptor"),
+        ));
+    }
+    if needs_template_runtime {
+        wrapper_params.push("_freeze".into());
+        wrapper_args.push(b::member(
+            b::member(b::this(), b::string("Object")),
+            b::string("freeze"),
+        ));
+        wrapper_params.push("_template_objects".into());
+        wrapper_args.push(b::call(
+            b::member(
+                b::member(b::this(), b::string("Object")),
+                b::string("create"),
+            ),
+            vec![b::null()],
         ));
     }
     if needs_prototype_runtime {
@@ -1247,6 +1268,7 @@ impl Lower<'_> {
                 let copy_rest_args = ensure_object + 5;
                 let array_spread = ensure_object + 6;
                 let apply = ensure_object + 7;
+                let get_template_object = ensure_object - 1;
                 let exponentiation = if self.modern_private_builtins { 54 } else { 49 };
                 let init_regex_named_groups = exponentiation + 1;
                 match builtin {
@@ -1255,6 +1277,19 @@ impl Lower<'_> {
                     }
                     value if value == ensure_object - 3 => {
                         return Err(unsupported(f, op, "invalid prototype-set arguments"));
+                    }
+                    // Arguments: the template's id, whether the cooked strings
+                    // are the raw ones, the raw strings, then any cooked ones.
+                    value if value == get_template_object && args.len() >= 3 => b::call(
+                        b::id("_template_object"),
+                        vec![
+                            args[0].clone(),
+                            args[1].clone(),
+                            b::array(args[2..].to_vec()),
+                        ],
+                    ),
+                    value if value == get_template_object => {
+                        return Err(unsupported(f, op, "invalid template object arguments"));
                     }
                     value if value == ensure_object => b::call(b::id("_ensure_object"), args),
                     value if value == ensure_object + 1 => b::call(b::id("_get_method"), args),
@@ -1969,6 +2004,38 @@ function _array_spread(_target, _source, _index) {
 "#;
     embedded_runtime("mercury-array-spread-runtime.js", SOURCE)
 }
+// Hermes's getTemplateObject: a frozen array of cooked strings with a frozen
+// `raw` array, created once per template id. Elements are defined rather than
+// assigned so setters on Object.prototype don't see them.
+fn template_object_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _template_object(_id, _dup, _strings) {
+    var _cached = _template_objects[_id];
+    if (_cached !== void 0) {
+        return _cached;
+    }
+    var _count = _dup ? _strings["length"] : _strings["length"] / 2;
+    var _cooked_start = _dup ? 0 : _count;
+    var _raw = [];
+    var _cooked = [];
+    for (var _index = 0; _index < _count; _index++) {
+        _define(_raw, _index, {
+            value: _strings[_index],
+            enumerable: true
+        });
+        _define(_cooked, _index, {
+            value: _strings[_cooked_start + _index],
+            enumerable: true
+        });
+    }
+    _define(_cooked, "raw", {
+        value: _freeze(_raw)
+    });
+    return _template_objects[_id] = _freeze(_cooked);
+}
+"#;
+    embedded_runtime("mercury-template-object-runtime.js", SOURCE)
+}
 fn private_builtin_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
 function _ensure_object(_value, _message) {
@@ -2320,6 +2387,54 @@ fn valid_name(name: &str) -> bool {
                 | "protected"
                 | "public"
                 | "static"
+        )
+}
+/// Whether `name` can be declared with `var` at script scope. The script's top
+/// level is sloppy and code reaches globals as properties of `_g`, so unlike
+/// `valid_name` this accepts Unicode identifiers and the words reserved only in
+/// strict code, such as `yield`, `await`, `let` and `public`.
+fn global_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(Ident::is_valid_start)
+        && chars.all(Ident::is_valid_continue)
+        && !matches!(
+            name,
+            "break"
+                | "case"
+                | "catch"
+                | "class"
+                | "const"
+                | "continue"
+                | "debugger"
+                | "default"
+                | "delete"
+                | "do"
+                | "else"
+                | "enum"
+                | "export"
+                | "extends"
+                | "false"
+                | "finally"
+                | "for"
+                | "function"
+                | "if"
+                | "import"
+                | "in"
+                | "instanceof"
+                | "new"
+                | "null"
+                | "return"
+                | "super"
+                | "switch"
+                | "this"
+                | "throw"
+                | "true"
+                | "try"
+                | "typeof"
+                | "var"
+                | "void"
+                | "while"
+                | "with"
         )
 }
 fn binary_op(name: &str) -> Option<BinaryOp> {
