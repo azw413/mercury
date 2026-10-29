@@ -298,6 +298,79 @@ fn native_large_register_pressure_calls_execute() {
     assert_eq!(execute(bytes), "14853,3120\n");
 }
 
+/// `count` locals `v0..`, each `a[i % 50] + i`, inside `f(a)`.
+fn many_locals(count: usize) -> String {
+    (0..count)
+        .map(|index| format!("var v{index} = a[{}] + {index};\n", index % 50))
+        .collect()
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_functions_with_thousands_of_locals_execute() {
+    // 1,784 locals need eight chained environments; their registers must
+    // come out of the binding budget, not the temporaries' reserve.
+    for count in [1784, 2300] {
+        let mut source = format!("function f(a){{\n{}var s = 0;\n", many_locals(count));
+        for index in 0..count {
+            source.push_str(&format!("s = s + v{index};\n"));
+        }
+        source.push_str(
+            "return s;\n}\nvar a = []; for (var i = 0; i < 50; i++) a.push(i); print(f(a));\n",
+        );
+        let expected: usize = (0..count).map(|index| index % 50 + index).sum();
+
+        let bytes = compile(&source, SourceLanguage::JavaScript);
+
+        assert_eq!(execute(bytes), format!("{expected}\n"), "{count} locals");
+    }
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_nested_block_scopes_under_register_pressure_execute() {
+    let mut source = format!("function f(a){{\n{}var s = 0;\n", many_locals(300));
+    for depth in 0..10 {
+        source.push_str(&format!(
+            "{{ let b{depth} = s + {depth}; s = s + b{depth} + v{depth};\n"
+        ));
+    }
+    source.push_str(&"}".repeat(10));
+    source.push_str(
+        "\nreturn s;\n}\nvar a = []; for (var i = 0; i < 50; i++) a.push(i); print(f(a));\n",
+    );
+
+    let bytes = compile(&source, SourceLanguage::JavaScript);
+
+    assert_eq!(execute(bytes), "3039\n");
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_deep_call_nesting_under_register_pressure_execute() {
+    // Each nested call holds its callee and earlier arguments, which no
+    // syntactic reserve covers; the function falls back to environments.
+    let mut call = "a[0]".to_owned();
+    for depth in 0..12 {
+        call = format!("g(a[{}], a[{}], {call})", depth % 50, (depth + 1) % 50);
+    }
+    let sum = (0..300)
+        .step_by(7)
+        .map(|index| format!("v{index}"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let source = format!(
+        "function g(x, y, z) {{ return (x * 3 + y * 5 + z) % 1000003; }}\n\
+         function f(a){{\n{}var s = {call};\nreturn s + {sum};\n}}\n\
+         var a = []; for (var i = 0; i < 50; i++) a.push(i + 1); print(f(a));\n",
+        many_locals(300)
+    );
+
+    let bytes = compile(&source, SourceLanguage::JavaScript);
+
+    assert_eq!(execute(bytes), "8120\n");
+}
+
 #[test]
 fn rejects_unsupported_syntax_at_the_native_boundary() {
     let module = SwcModule::parse(

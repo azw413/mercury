@@ -24,6 +24,7 @@ const LEXICAL_THIS_BINDING: &str = "\0mercury_lexical_this";
 const LEXICAL_ARGUMENTS_BINDING: &str = "\0mercury_lexical_arguments";
 // Leave 64 registers for the environment and expression temporaries.
 const MAX_REGISTER_BINDINGS_PER_SCOPE: usize = 192;
+const REGISTER_PRESSURE: &str = "expression needs more than 256 live registers";
 // Hermes 0.12's HBC 96 runtime uses the legacy private-builtin layout.
 const SILENT_SET_PROTOTYPE_OF_BUILTIN: u8 = 37;
 const GET_TEMPLATE_OBJECT_BUILTIN: u8 = 39;
@@ -115,6 +116,9 @@ struct Compiler {
     current_function_resumable: bool,
     captured_names: HashSet<String>,
     redirect_definition_on_store: bool,
+    /// Set while recompiling a function that ran out of registers: every
+    /// binding then lives in an environment slot, as before register storage.
+    register_bindings_disabled: bool,
 }
 
 #[derive(Clone)]
@@ -185,13 +189,60 @@ enum BindingLocation {
     Global,
 }
 
+/// Registers a function's syntax needs beyond its bindings, measured before
+/// deciding how many bindings to keep in registers.
+struct SyntaxRegisterReserve {
+    call_arguments: usize,
+    /// Environment registers of nested lexical scopes and of the body scope
+    /// chain when parameters have their own scope.
+    scope_registers: usize,
+}
+
 #[derive(Default)]
 struct CallArityFinder {
     max_arguments: usize,
+    scope_depth: usize,
+    /// Deepest nesting of statements that may enter a lexical scope, each of
+    /// which holds an environment register while its body runs.
+    max_scope_depth: usize,
+}
+
+impl CallArityFinder {
+    fn nested_scope(&mut self, registers: usize, visit: impl FnOnce(&mut Self)) {
+        self.scope_depth += registers;
+        self.max_scope_depth = self.max_scope_depth.max(self.scope_depth);
+        visit(self);
+        self.scope_depth -= registers;
+    }
 }
 
 impl Visit for CallArityFinder {
     fn visit_function(&mut self, _function: &Function) {}
+
+    fn visit_block_stmt(&mut self, block: &BlockStmt) {
+        self.nested_scope(1, |finder| block.visit_children_with(finder));
+    }
+
+    fn visit_switch_stmt(&mut self, statement: &swc_core::ecma::ast::SwitchStmt) {
+        self.nested_scope(1, |finder| statement.visit_children_with(finder));
+    }
+
+    fn visit_catch_clause(&mut self, clause: &swc_core::ecma::ast::CatchClause) {
+        self.nested_scope(1, |finder| clause.visit_children_with(finder));
+    }
+
+    // A loop's per-iteration environment needs a second register.
+    fn visit_for_stmt(&mut self, statement: &swc_core::ecma::ast::ForStmt) {
+        self.nested_scope(2, |finder| statement.visit_children_with(finder));
+    }
+
+    fn visit_for_in_stmt(&mut self, statement: &swc_core::ecma::ast::ForInStmt) {
+        self.nested_scope(2, |finder| statement.visit_children_with(finder));
+    }
+
+    fn visit_for_of_stmt(&mut self, statement: &swc_core::ecma::ast::ForOfStmt) {
+        self.nested_scope(2, |finder| statement.visit_children_with(finder));
+    }
 
     fn visit_arrow_expr(&mut self, _arrow: &ArrowExpr) {}
 
@@ -413,6 +464,7 @@ impl Compiler {
             current_function_resumable: false,
             captured_names: HashSet::new(),
             redirect_definition_on_store: false,
+            register_bindings_disabled: false,
         }
     }
 
@@ -446,7 +498,10 @@ impl Compiler {
             true,
             NativeFunctionKind::Regular,
             strict,
-            call_arity.max_arguments,
+            SyntaxRegisterReserve {
+                call_arguments: call_arity.max_arguments,
+                scope_registers: call_arity.max_scope_depth,
+            },
         )?;
         if captures_this {
             self.initialize_lexical_this()?;
@@ -492,7 +547,8 @@ impl Compiler {
                     "native compiler assigned a non-contiguous function id".into(),
                 ));
             }
-            functions.push(self.compile_pending_function(pending, &spec.bytecode)?);
+            let function = self.compile_pending_function_with_fallback(pending, &spec.bytecode)?;
+            functions.push(function);
         }
 
         let module = MinimalModule {
@@ -522,7 +578,7 @@ impl Compiler {
         is_global: bool,
         kind: NativeFunctionKind,
         strict: bool,
-        syntax_max_call_arguments: usize,
+        reserve: SyntaxRegisterReserve,
     ) -> Result<u32, Error> {
         self.instructions.clear();
         self.next_register = 0;
@@ -544,9 +600,6 @@ impl Compiler {
         self.current_function_resumable = false;
         self.parent_environment_register = None;
         self.base_registers = 0;
-        let call_reserve = syntax_max_call_arguments.saturating_add(8);
-        self.register_binding_budget =
-            usize::from(u8::MAX).saturating_add(1).saturating_sub(call_reserve);
         let cache_parent_environment = parent_scope.as_ref().is_some_and(|scope| {
             std::iter::successors(Some(scope), |scope| scope.parent.as_ref()).any(|scope| {
                 scope
@@ -555,6 +608,19 @@ impl Compiler {
                     .any(|binding| binding.register.is_none())
             })
         });
+        // Registers that bindings must leave free: call operands and
+        // temporaries, the environment of every 255-binding chunk, the cached
+        // parent environment, and one per nested lexical scope.
+        let call_reserve = reserve.call_arguments.saturating_add(8);
+        let environment_reserve = bindings.len().div_ceil(255).max(1)
+            + usize::from(cache_parent_environment)
+            + reserve.scope_registers;
+        self.register_binding_budget = usize::from(u8::MAX)
+            .saturating_add(1)
+            .saturating_sub(call_reserve + environment_reserve);
+        if self.register_bindings_disabled {
+            self.register_binding_budget = 0;
+        }
         let mut chunks = bindings.chunks(255);
         let first_bindings = chunks.next().unwrap_or_default().to_vec();
         let register_bindings = self.register_storage_names(&first_bindings);
@@ -840,6 +906,39 @@ impl Compiler {
         Ok(output)
     }
 
+    /// Register-held bindings can leave too few registers for a function's
+    /// temporaries. When that happens, roll back what the attempt added to the
+    /// module and compile the function again with every binding in its
+    /// environment, which needs only a register per environment.
+    fn compile_pending_function_with_fallback(
+        &mut self,
+        pending: PendingFunction,
+        spec: &BytecodeSpec,
+    ) -> Result<MinimalFunction, Error> {
+        let strings = self.strings.len();
+        let reg_exps = self.reg_exps.len();
+        let template_objects = self.template_object_ids.clone();
+        let pending_functions = self.pending_functions.len();
+        let next_function_id = self.next_function_id;
+        match self.compile_pending_function(pending.clone(), spec) {
+            Err(Error::Unsupported(message)) if message == REGISTER_PRESSURE => {
+                self.strings.truncate(strings);
+                self.string_kinds.truncate(strings);
+                self.string_ids.retain(|_, id| (*id as usize) < strings);
+                self.reg_exps.truncate(reg_exps);
+                self.reg_exp_ids.retain(|_, id| (*id as usize) < reg_exps);
+                self.template_object_ids = template_objects;
+                self.pending_functions.truncate(pending_functions);
+                self.next_function_id = next_function_id;
+                self.register_bindings_disabled = true;
+                let result = self.compile_pending_function(pending, spec);
+                self.register_bindings_disabled = false;
+                result
+            }
+            result => result,
+        }
+    }
+
     fn compile_pending_function(
         &mut self,
         pending: PendingFunction,
@@ -944,7 +1043,10 @@ impl Compiler {
             false,
             pending.kind,
             pending.strict,
-            call_arity.max_arguments,
+            SyntaxRegisterReserve {
+                call_arguments: call_arity.max_arguments,
+                scope_registers: call_arity.max_scope_depth + body_bindings.len().div_ceil(255),
+            },
         )?;
         self.current_function_resumable = matches!(
             pending.params.as_slice(),
@@ -4104,9 +4206,7 @@ impl Compiler {
     fn alloc_register(&mut self) -> Result<u8, Error> {
         // Large function headers support the full eight-bit register range.
         if self.next_register > u16::from(u8::MAX) {
-            return Err(Error::Unsupported(
-                "expression needs more than 256 live registers".into(),
-            ));
+            return Err(Error::Unsupported(REGISTER_PRESSURE.into()));
         }
         let register = self.next_register as u8;
         self.next_register += 1;
