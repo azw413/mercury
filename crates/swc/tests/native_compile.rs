@@ -63,7 +63,6 @@ fn compiles_swc_ast_directly_into_hbc96() {
             "GetGlobalObject",
             "TryGetById",
             "Call2",
-            "Mov",
             "LoadConstUndefined",
             "Ret",
         ]
@@ -73,7 +72,22 @@ fn compiles_swc_ast_directly_into_hbc96() {
     assert!(recovered.contains("var answer;"));
     assert!(recovered.contains(" = 40;"));
     assert!(recovered.contains(" + _mercury_r2"));
-    assert!(recovered.contains("_mercury_apply"));
+    assert!(recovered.contains("globalThis"));
+}
+
+#[test]
+fn native_roundtrip_controls_size_growth() {
+    let original = include_bytes!("fixtures/control_flow.hbc");
+    let module = decompile(original).unwrap();
+    let rebuilt = HbcCompiler::new(96).compile(&module).unwrap();
+
+    assert!(
+        rebuilt.len() <= original.len() * 2,
+        "roundtrip grew from {} to {} bytes ({:.2}x)",
+        original.len(),
+        rebuilt.len(),
+        rebuilt.len() as f64 / original.len() as f64,
+    );
 }
 
 #[test]
@@ -92,7 +106,7 @@ fn compiles_property_reads_writes_and_receiver_calls() {
         .collect::<Vec<_>>();
 
     assert!(names.contains(&"PutById"));
-    assert!(names.contains(&"GetById"));
+    assert!(names.contains(&"GetByIdShort"));
     assert!(names.contains(&"Call2"));
     assert!(names.contains(&"Call3"));
 }
@@ -147,7 +161,9 @@ fn compiles_regex_literals_into_the_regexp_table() {
     // Identical literals share one entry, as with hermesc.
     let expected = [
         mercury_regex::compile_str("ab+c", "gi").unwrap().bytecode,
-        mercury_regex::compile_str(r"(?<year>\d{4})-(?<month>\d\d)", "u").unwrap().bytecode,
+        mercury_regex::compile_str(r"(?<year>\d{4})-(?<month>\d\d)", "u")
+            .unwrap()
+            .bytecode,
     ];
     let stored = container
         .reg_exp_entries
@@ -258,11 +274,14 @@ fn splits_large_binding_sets_across_environments() {
     let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
     let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
 
-    assert_eq!(raw.functions[0].environment_size, 255);
-    assert!(raw.functions[0]
-        .instructions
-        .iter()
-        .any(|instruction| instruction.name == "CreateInnerEnvironment"));
+    assert_eq!(raw.functions[0].environment_size, 63);
+    assert!(
+        raw.functions[0]
+            .instructions
+            .iter()
+            .any(|instruction| instruction.name == "CreateInnerEnvironment")
+    );
+    assert_eq!(execute(bytes), "299\n");
 }
 
 #[test]
@@ -340,14 +359,17 @@ fn compiles_iteration_exponentiation_and_wtf8_strings() {
     assert!(names.contains(&"IteratorNext"));
     assert!(names.contains(&"IteratorClose"));
     assert!(names.contains(&"CallBuiltin"));
-    assert!(raw
-        .functions
-        .iter()
-        .any(|function| !function.exception_handlers.is_empty()));
-    assert!(container
-        .small_string_table_entries
-        .iter()
-        .any(|entry| entry.is_utf16 && entry.length == 1));
+    assert!(
+        raw.functions
+            .iter()
+            .any(|function| !function.exception_handlers.is_empty())
+    );
+    assert!(
+        container
+            .small_string_table_entries
+            .iter()
+            .any(|entry| entry.is_utf16 && entry.length == 1)
+    );
     decompile(&bytes).unwrap();
 }
 
@@ -368,7 +390,7 @@ fn compiles_switch_fallthrough_breaks_and_outer_continues() {
         .collect::<Vec<_>>();
 
     assert!(names.contains(&"StrictEq"));
-    assert!(names.contains(&"JmpTrueLong"));
+    assert!(names.contains(&"JmpTrue"));
     assert!(decompile(&bytes).is_ok());
 }
 
@@ -437,16 +459,22 @@ fn compiles_strict_functions_and_general_exception_regions() {
     let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
 
     assert!(raw.functions[0].flags.strict_mode);
-    assert!(raw.functions.iter().all(|function| function.flags.strict_mode));
-    assert!(raw
-        .functions
-        .iter()
-        .any(|function| !function.exception_handlers.is_empty()));
-    assert!(raw
-        .functions
-        .iter()
-        .flat_map(|function| &function.instructions)
-        .any(|instruction| instruction.name == "Catch"));
+    assert!(
+        raw.functions
+            .iter()
+            .all(|function| function.flags.strict_mode)
+    );
+    assert!(
+        raw.functions
+            .iter()
+            .any(|function| !function.exception_handlers.is_empty())
+    );
+    assert!(
+        raw.functions
+            .iter()
+            .flat_map(|function| &function.instructions)
+            .any(|instruction| instruction.name == "Catch")
+    );
 }
 
 #[test]
@@ -464,8 +492,8 @@ fn resolves_symbolic_control_flow_into_hbc_branches() {
         .map(|instruction| instruction.name.as_str())
         .collect::<Vec<_>>();
 
-    assert!(names.contains(&"JmpFalseLong"));
-    assert!(names.contains(&"JmpLong"));
+    assert!(names.contains(&"JmpFalse"));
+    assert!(names.contains(&"Jmp"));
     assert!(names.contains(&"StrictEq"));
     assert!(decompile(&bytes).is_ok());
 }
@@ -523,6 +551,26 @@ fn compiles_function_graphs_and_environment_access() {
     assert!(names.contains(&"GetEnvironment"));
     assert!(names.contains(&"LoadFromEnvironment"));
     assert!(names.contains(&"StoreToEnvironment"));
+
+    let inner = &raw.functions[2].instructions;
+    assert_eq!(
+        inner
+            .iter()
+            .filter(|instruction| instruction.name == "GetEnvironment")
+            .count(),
+        1,
+        "the inner function should cache its parent environment"
+    );
+    assert!(
+        inner
+            .iter()
+            .filter(|instruction| instruction.name == "LoadFromEnvironment")
+            .count()
+            >= 2
+    );
+    assert!(raw.functions[1].instructions.windows(2).all(|pair| {
+        pair[0].name != "LoadConstUndefined" || pair[1].name != "StoreToEnvironment"
+    }));
     assert!(decompile(&bytes).is_ok());
 }
 
@@ -577,7 +625,7 @@ fn compiles_rich_parameters_bindings_and_arguments() {
 
     assert!(names.contains(&"ReifyArguments"));
     assert!(names.contains(&"CallBuiltin"));
-    assert!(names.contains(&"JmpUndefinedLong"));
+    assert!(names.contains(&"JmpUndefined"));
     assert!(names.contains(&"GetByVal"));
     assert!(names.contains(&"PutOwnByVal"));
     assert!(names.contains(&"CreateClosure"));
@@ -600,7 +648,7 @@ fn compiles_lexical_scopes_and_tdz_checks() {
         .map(|instruction| instruction.name.as_str())
         .collect::<Vec<_>>();
 
-    assert_eq!(raw.functions[0].environment_size, 1);
+    assert_eq!(raw.functions[0].environment_size, 0);
     assert!(names.contains(&"ThrowIfHasRestrictedGlobalProperty"));
     assert!(names.contains(&"CreateInnerEnvironment"));
     assert!(names.contains(&"LoadConstEmpty"));
@@ -671,7 +719,7 @@ fn typeof_an_unbound_global_does_not_use_a_throwing_lookup() {
         .position(|instruction| instruction.name == "TypeOf")
         .unwrap();
 
-    assert_eq!(instructions[typeof_index - 1].name, "GetById");
+    assert_eq!(instructions[typeof_index - 1].name, "GetByIdShort");
 }
 
 #[test]
@@ -705,7 +753,10 @@ fn native_regex_literals_execute() {
         expected,
         "2024 05 17 3\nHell0 W0rld a,b,c,\ntrim me| true\ncamel_case_string\nWörld 42.50\n17 4\nfalse true true\ncc aa 3-z\nfalse undefined true\n"
     );
-    assert_eq!(execute(compile(source, SourceLanguage::JavaScript)), expected);
+    assert_eq!(
+        execute(compile(source, SourceLanguage::JavaScript)),
+        expected
+    );
 }
 
 #[test]
@@ -730,7 +781,10 @@ fn native_templates_execute() {
         expected,
         "[S] 12 only abc\ntrue 2 true p\\n 2\ntrue true 0,1\nfalse\nundefined \\x\nrx|y|z12 r||34\n"
     );
-    assert_eq!(execute(compile(source, SourceLanguage::JavaScript)), expected);
+    assert_eq!(
+        execute(compile(source, SourceLanguage::JavaScript)),
+        expected
+    );
 }
 
 #[test]

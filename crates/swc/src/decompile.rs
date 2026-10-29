@@ -204,12 +204,11 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     {
         prefix.push('_');
     }
-    // One indexed table avoids placing a binding per bytecode function in this
-    // scope. Large bundles can contain hundreds of thousands of functions, and
-    // SWC hygiene's collision analysis scales poorly with that many siblings.
-    let mut factories = vec![b::var("_make", Some(b::array(vec![])))];
+    let mut wrapper_body = Vec::new();
+    let mut function_templates = Vec::new();
+    let mut factory_bodies = Vec::new();
     if needs_unreachable {
-        factories.push(b::var(
+        wrapper_body.push(b::var(
             "_unreachable",
             Some(b::new(
                 b::id("_error"),
@@ -218,52 +217,52 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         ));
     }
     if needs_empty {
-        factories.push(b::var("_empty", Some(b::empty_object())));
+        wrapper_body.push(b::var("_empty", Some(b::empty_object())));
     }
     if needs_numeric_runtime {
-        factories.extend(numeric_runtime());
+        wrapper_body.extend(numeric_runtime());
     }
     if needs_typed_runtime {
-        factories.extend(typed_runtime());
+        wrapper_body.extend(typed_runtime());
     }
     if needs_restricted_global {
-        factories.extend(restricted_global_runtime());
+        wrapper_body.extend(restricted_global_runtime());
     }
     if needs_coerce_this {
-        factories.extend(coerce_this_runtime());
+        wrapper_body.extend(coerce_this_runtime());
     }
     if needs_direct_eval {
-        factories.extend(direct_eval_runtime());
+        wrapper_body.extend(direct_eval_runtime());
     }
     if needs_property_enumeration {
-        factories.extend(property_enumeration_runtime());
+        wrapper_body.extend(property_enumeration_runtime());
     }
     if needs_iterator_runtime {
-        factories.extend(iterator_runtime());
+        wrapper_body.extend(iterator_runtime());
     }
     if needs_private_builtin_runtime && !needs_suspension {
-        factories.extend(private_builtin_runtime());
+        wrapper_body.extend(private_builtin_runtime());
     }
     if needs_copy_data_runtime {
-        factories.extend(copy_data_properties_runtime());
+        wrapper_body.extend(copy_data_properties_runtime());
     }
     if needs_prototype_runtime {
-        factories.extend(prototype_runtime());
+        wrapper_body.extend(prototype_runtime());
     }
     if needs_array_spread_runtime {
-        factories.extend(array_spread_runtime());
+        wrapper_body.extend(array_spread_runtime());
     }
     if needs_template_runtime {
-        factories.extend(template_object_runtime());
+        wrapper_body.extend(template_object_runtime());
     }
     if needs_function_name_runtime {
-        factories.extend(function_name_runtime());
+        wrapper_body.extend(function_name_runtime());
     }
     if needs_construction {
-        factories.extend(construction_runtime());
+        wrapper_body.extend(construction_runtime());
     }
     if needs_suspension {
-        factories.extend(suspension_runtime());
+        wrapper_body.extend(suspension_runtime());
     }
     for f in &raw.functions {
         if f.frame_size > 65_536 {
@@ -348,31 +347,88 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             vec![
                 b::var(
                     "_callee",
-                    Some(b::call(b::id("_generator_function"), vec![function])),
+                    Some(b::call(
+                        b::id("_generator_function"),
+                        vec![function.clone()],
+                    )),
                 ),
                 b::ret(b::id("_callee")),
             ]
         } else {
-            vec![b::ret(function)]
+            vec![b::ret(function.clone())]
         };
-        factories.push(b::assign(
-            b::member(b::id("_make"), b::number(f.function_index as f64)),
+        function_templates.push(function);
+        factory_bodies.push(factory);
+    }
+
+    // Most closures can be emitted directly at their creation site, capturing
+    // the current environment without a separate factory invocation. Keep a
+    // factory table for generators, resumable bodies, and recursive cycles.
+    let dependencies = raw
+        .functions
+        .iter()
+        .map(|function| {
+            function
+                .instructions
+                .iter()
+                .filter(|op| {
+                    matches!(
+                        op.name.as_str(),
+                        "CreateClosure"
+                            | "CreateClosureLongIndex"
+                            | "CreateGenerator"
+                            | "CreateGeneratorLongIndex"
+                            | "CreateGeneratorClosure"
+                            | "CreateGeneratorClosureLongIndex"
+                            | "CreateAsyncClosure"
+                            | "CreateAsyncClosureLongIndex"
+                    )
+                })
+                .map(|op| uint(op, 2).map(|target| target as usize))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut inlineable = raw
+        .functions
+        .iter()
+        .map(|function| {
+            !generator_closures.contains(&function.function_index)
+                && !async_closures.contains(&function.function_index)
+                && !resumable_functions[function.function_index]
+                && dependencies[function.function_index].is_empty()
+                && function
+                    .instructions
+                    .iter()
+                    .all(|op| op.name != "GetEnvironment")
+        })
+        .collect::<Vec<_>>();
+    mark_closure_cycles(&dependencies, &mut inlineable);
+    let needed_factories = dependencies
+        .iter()
+        .flatten()
+        .filter(|target| !inlineable[**target])
+        .copied()
+        .collect::<HashSet<_>>();
+    if !needed_factories.is_empty() {
+        wrapper_body.push(b::var("_make", Some(b::array(vec![]))));
+    }
+    let mut expander = FunctionExpander::new(&function_templates, &inlineable);
+    for index in needed_factories.iter().copied() {
+        let mut factory = factory_bodies[index].clone();
+        expander.expand_statements(&mut factory);
+        wrapper_body.push(b::assign(
+            b::member(b::id("_make"), b::number(index as f64)),
             b::function(None, vec!["_env".into()], factory),
         ));
     }
+    let mut global = expander.expand(h.global_code_index as usize, b::undefined());
+
     // Global var declarations stay at script scope, retaining global binding
     // behaviour. Everything introduced by the decompiler lives inside the IIFE.
     let mut body: Vec<_> = globals.iter().map(|name| b::var(name, None)).collect();
-    factories.push(b::ret(b::call(
+    wrapper_body.push(b::ret(b::call(
         b::id("_apply"),
-        vec![
-            b::call(
-                b::member(b::id("_make"), b::number(f64::from(h.global_code_index))),
-                vec![],
-            ),
-            b::id("_g"),
-            b::array(vec![]),
-        ],
+        vec![global.clone(), b::id("_g"), b::array(vec![])],
     )));
     let mut wrapper_params = vec!["_g".into(), "_apply".into()];
     let mut wrapper_args = vec![
@@ -544,7 +600,26 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         wrapper_params.push("_type_error".into());
         wrapper_args.push(b::member(b::this(), b::string("TypeError")));
     }
-    let mut wrapper = b::function(None, wrapper_params, factories);
+    if wrapper_params.len() == 2
+        && wrapper_body.len() == 1
+        && !raw.functions[h.global_code_index as usize]
+            .flags
+            .strict_mode
+        && !uses_identifier(&mut global, "_apply")
+    {
+        global.visit_mut_with(&mut Namespace(prefix.clone()));
+        global.visit_mut_with(&mut ReplaceIdentifier {
+            from: format!("{prefix}_g"),
+            to: "globalThis".into(),
+        });
+        body.push(b::expr(b::call(b::paren(global), vec![])));
+        return Ok(SwcModule::generated(Program::Script(Script {
+            span: DUMMY_SP,
+            body,
+            shebang: None,
+        })));
+    }
+    let mut wrapper = b::function(None, wrapper_params, wrapper_body);
     wrapper.visit_mut_with(&mut Namespace(prefix));
     body.push(b::expr(b::call(b::paren(wrapper), wrapper_args)));
     Ok(SwcModule::generated(Program::Script(Script {
@@ -552,6 +627,189 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         body,
         shebang: None,
     })))
+}
+
+fn uses_identifier(expression: &mut Expr, name: &str) -> bool {
+    struct Finder<'a> {
+        name: &'a str,
+        found: bool,
+    }
+    impl VisitMut for Finder<'_> {
+        fn visit_mut_ident(&mut self, identifier: &mut Ident) {
+            self.found |= identifier.sym == *self.name;
+        }
+    }
+    let mut finder = Finder { name, found: false };
+    expression.visit_mut_with(&mut finder);
+    finder.found
+}
+
+struct ReplaceIdentifier {
+    from: String,
+    to: String,
+}
+
+impl VisitMut for ReplaceIdentifier {
+    fn visit_mut_ident(&mut self, identifier: &mut Ident) {
+        if identifier.sym == *self.from {
+            identifier.sym = self.to.clone().into();
+        }
+    }
+}
+
+fn mark_closure_cycles(dependencies: &[Vec<usize>], inlineable: &mut [bool]) {
+    fn visit(
+        index: usize,
+        dependencies: &[Vec<usize>],
+        inlineable: &mut [bool],
+        states: &mut [u8],
+        stack: &mut Vec<usize>,
+    ) {
+        if states[index] != 0 || !inlineable[index] {
+            return;
+        }
+        states[index] = 1;
+        stack.push(index);
+        for &target in &dependencies[index] {
+            if !inlineable[target] {
+                continue;
+            }
+            if states[target] == 0 {
+                visit(target, dependencies, inlineable, states, stack);
+            } else if states[target] == 1 {
+                let cycle_start = stack
+                    .iter()
+                    .position(|entry| *entry == target)
+                    .expect("visiting closure is on the dependency stack");
+                for &cyclic in &stack[cycle_start..] {
+                    inlineable[cyclic] = false;
+                }
+            }
+        }
+        stack.pop();
+        states[index] = 2;
+    }
+
+    let mut states = vec![0; dependencies.len()];
+    let mut stack = Vec::new();
+    for index in 0..dependencies.len() {
+        visit(index, dependencies, inlineable, &mut states, &mut stack);
+    }
+}
+
+struct FunctionExpander<'a> {
+    templates: &'a [Box<Expr>],
+    inlineable: &'a [bool],
+}
+
+impl<'a> FunctionExpander<'a> {
+    fn new(templates: &'a [Box<Expr>], inlineable: &'a [bool]) -> Self {
+        Self {
+            templates,
+            inlineable,
+        }
+    }
+
+    fn expand(&mut self, index: usize, environment: Box<Expr>) -> Box<Expr> {
+        let mut expanded = self.templates[index].clone();
+        expanded.visit_mut_with(&mut EnvironmentSubstitutor {
+            environment: &environment,
+            function_depth: 0,
+        });
+        self.expand_expr(&mut expanded);
+        expanded
+    }
+
+    fn expand_expr(&mut self, expression: &mut Expr) {
+        expression.visit_mut_with(&mut ClosureInlineVisitor { expander: self });
+    }
+
+    fn expand_statements(&mut self, statements: &mut [Stmt]) {
+        for statement in statements {
+            statement.visit_mut_with(&mut ClosureInlineVisitor { expander: self });
+        }
+    }
+}
+
+struct EnvironmentSubstitutor<'a> {
+    environment: &'a Expr,
+    function_depth: usize,
+}
+
+impl VisitMut for EnvironmentSubstitutor<'_> {
+    fn visit_mut_expr(&mut self, expression: &mut Expr) {
+        if self.function_depth == 1
+            && matches!(expression, Expr::Ident(identifier) if identifier.sym == *"_env")
+        {
+            *expression = self.environment.clone();
+            return;
+        }
+        expression.visit_mut_children_with(self);
+    }
+
+    fn visit_mut_fn_expr(&mut self, expression: &mut FnExpr) {
+        if self.function_depth != 0 {
+            return;
+        }
+        self.function_depth += 1;
+        expression.function.visit_mut_with(self);
+        self.function_depth -= 1;
+    }
+
+    fn visit_mut_arrow_expr(&mut self, expression: &mut ArrowExpr) {
+        if self.function_depth != 0 {
+            return;
+        }
+        self.function_depth += 1;
+        expression.visit_mut_children_with(self);
+        self.function_depth -= 1;
+    }
+}
+
+struct ClosureInlineVisitor<'a, 'b> {
+    expander: &'a mut FunctionExpander<'b>,
+}
+
+impl VisitMut for ClosureInlineVisitor<'_, '_> {
+    fn visit_mut_expr(&mut self, expression: &mut Expr) {
+        if let Some((target, environment)) = closure_factory_target(expression) {
+            if self.expander.inlineable[target] {
+                *expression = *self.expander.expand(target, environment);
+                return;
+            }
+        }
+        expression.visit_mut_children_with(self);
+    }
+}
+
+fn closure_factory_target(expression: &Expr) -> Option<(usize, Box<Expr>)> {
+    let Expr::Call(call) = expression else {
+        return None;
+    };
+    if call.args.len() != 1 || call.args[0].spread.is_some() {
+        return None;
+    }
+    let Callee::Expr(callee) = &call.callee else {
+        return None;
+    };
+    let Expr::Member(member) = callee.as_ref() else {
+        return None;
+    };
+    let Expr::Ident(object) = member.obj.as_ref() else {
+        return None;
+    };
+    if object.sym != *"_make" {
+        return None;
+    }
+    let MemberProp::Computed(property) = &member.prop else {
+        return None;
+    };
+    let Expr::Lit(Lit::Num(index)) = property.expr.as_ref() else {
+        return None;
+    };
+    let index = index.value;
+    (index >= 0.0 && index.fract() == 0.0 && index <= usize::MAX as f64)
+        .then(|| (index as usize, call.args[0].expr.clone()))
 }
 
 // Keep generated local names distinct from named function-expression bindings.
@@ -798,6 +1056,7 @@ impl Lower<'_> {
                 } else {
                     stmts.extend(self.instruction(
                         f,
+                        block.instructions,
                         op,
                         resumable,
                         uses_arguments,
@@ -904,6 +1163,7 @@ impl Lower<'_> {
     fn instruction(
         &self,
         f: &RawFunction,
+        block: &[RawInstruction],
         op: &RawInstruction,
         resumable: bool,
         uses_arguments: bool,
@@ -1222,7 +1482,11 @@ impl Lower<'_> {
                 let args = (3..op.operands.len())
                     .map(r)
                     .collect::<Result<Vec<_>, _>>()?;
-                b::call(b::id("_apply"), vec![r(1)?, r(2)?, b::array(args)])
+                if definitely_undefined_receiver(block, op)? {
+                    b::call(r(1)?, args)
+                } else {
+                    b::call(b::id("_apply"), vec![r(1)?, r(2)?, b::array(args)])
+                }
             }
             "Call" | "CallLong" => {
                 let argument_count = uint(op, 2)?;
@@ -1745,6 +2009,86 @@ impl Lower<'_> {
             .collect()
     }
 }
+
+fn definitely_undefined_receiver(
+    block: &[RawInstruction],
+    call: &RawInstruction,
+) -> Result<bool, Error> {
+    let receiver = uint(call, 2)?;
+    let Some(call_index) = block
+        .iter()
+        .position(|instruction| instruction.offset == call.offset)
+    else {
+        return Ok(false);
+    };
+    for instruction in block[..call_index].iter().rev() {
+        if !defines_first_register(&instruction.name) {
+            return Ok(false);
+        }
+        if uint(instruction, 0).ok() == Some(receiver) {
+            return Ok(instruction.name == "LoadConstUndefined");
+        }
+    }
+    Ok(false)
+}
+
+fn defines_first_register(name: &str) -> bool {
+    name.starts_with("Load")
+        || name.starts_with("Create")
+        || name.starts_with("Get")
+        || name.starts_with("TryGet")
+        || name.starts_with("New")
+        || name.starts_with("Call")
+        || name.starts_with("Construct")
+        || matches!(
+            name,
+            "Mov"
+                | "MovLong"
+                | "Catch"
+                | "CoerceThisNS"
+                | "DirectEval"
+                | "ReifyArguments"
+                | "SelectObject"
+                | "IteratorBegin"
+                | "IteratorNext"
+                | "Eq"
+                | "Neq"
+                | "StrictEq"
+                | "StrictNeq"
+                | "Less"
+                | "LessEq"
+                | "Greater"
+                | "GreaterEq"
+                | "LShift"
+                | "RShift"
+                | "URshift"
+                | "Add"
+                | "Add32"
+                | "Sub"
+                | "Sub32"
+                | "Mul"
+                | "Mul32"
+                | "Div"
+                | "Divi32"
+                | "Divu32"
+                | "Mod"
+                | "BitOr"
+                | "BitXor"
+                | "BitAnd"
+                | "IsIn"
+                | "InstanceOf"
+                | "Not"
+                | "Negate"
+                | "ToNumber"
+                | "ToNumeric"
+                | "ToInt32"
+                | "TypeOf"
+                | "BitNot"
+                | "Inc"
+                | "Dec"
+        )
+}
+
 fn uint(op: &RawInstruction, index: usize) -> Result<u32, Error> {
     match op.operands.get(index) {
         Some(RawOperand::U8(v)) => Ok(u32::from(*v)),

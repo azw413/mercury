@@ -11,9 +11,9 @@ use mercury_spec::BytecodeSpec;
 use swc_core::atoms::Wtf8Atom;
 use swc_core::ecma::ast::{
     ArrowExpr, ArrowFunctionBody, AssignOp, AssignTarget, BinaryOp, BlockStmt, Callee, Decl, Expr,
-    ForHead, Function, FunctionBody, Lit, MemberExpr, MemberProp, MetaPropKind, ObjectPatProp, Pat,
-    Program, Prop, PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt, TaggedTpl, Tpl,
-    TplElement, UnaryOp, UpdateOp, VarDecl, VarDeclKind, VarDeclOrExpr,
+    ForHead, Function, FunctionBody, Ident, Lit, MemberExpr, MemberProp, MetaPropKind,
+    ObjectPatProp, Pat, Program, Prop, PropName, PropOrSpread, Script, SimpleAssignTarget, Stmt,
+    TaggedTpl, Tpl, TplElement, UnaryOp, UpdateOp, VarDecl, VarDeclKind, VarDeclOrExpr,
 };
 use swc_core::ecma::visit::{Visit, VisitWith};
 
@@ -21,6 +21,8 @@ use crate::{Error, SwcModule};
 
 const LEXICAL_THIS_BINDING: &str = "\0mercury_lexical_this";
 const LEXICAL_ARGUMENTS_BINDING: &str = "\0mercury_lexical_arguments";
+// Leave 64 registers for the environment and expression temporaries.
+const MAX_REGISTER_BINDINGS_PER_SCOPE: usize = 192;
 // Hermes 0.12's HBC 96 runtime uses the legacy private-builtin layout.
 const SILENT_SET_PROTOTYPE_OF_BUILTIN: u8 = 37;
 const GET_TEMPLATE_OBJECT_BUILTIN: u8 = 39;
@@ -86,11 +88,15 @@ struct Compiler {
     next_function_id: u32,
     scope: Option<Rc<FunctionScope>>,
     environment_register: Option<u8>,
+    parent_environment_register: Option<u8>,
     base_registers: u16,
     is_global: bool,
     current_function_id: u32,
     current_function_kind: NativeFunctionKind,
     current_function_strict: bool,
+    current_function_resumable: bool,
+    captured_names: HashSet<String>,
+    redirect_definition_on_store: bool,
 }
 
 #[derive(Clone)]
@@ -150,6 +156,7 @@ impl BindingKind {
 #[derive(Clone, Copy, Debug)]
 struct Binding {
     slot: u8,
+    register: Option<u8>,
     kind: BindingKind,
 }
 
@@ -158,6 +165,96 @@ enum BindingLocation {
     Local { environment: u8, binding: Binding },
     Parent { level: u8, binding: Binding },
     Global,
+}
+
+#[derive(Default)]
+struct NestedFunctionReferenceFinder {
+    function_depth: usize,
+    nested_scopes: Vec<HashSet<String>>,
+    names: HashSet<String>,
+    all_names: HashSet<String>,
+}
+
+impl NestedFunctionReferenceFinder {
+    fn visit_nested_function<'a>(
+        &mut self,
+        params: impl IntoIterator<Item = &'a Pat>,
+        body: Option<&FunctionBody>,
+        regular: bool,
+        visit: impl FnOnce(&mut Self),
+    ) {
+        let mut bindings = Vec::new();
+        for parameter in params {
+            let _ = collect_pattern_bindings(parameter, BindingKind::Var, &mut bindings);
+        }
+        if let Some(body) = body {
+            let mut names = Vec::new();
+            let _ = collect_var_declarations(&body.stmts, &mut names);
+            for name in names {
+                let _ = add_binding(&mut bindings, name, BindingKind::Var);
+            }
+            for declaration in top_level_function_declarations(&body.stmts) {
+                let _ = add_binding(
+                    &mut bindings,
+                    declaration.ident.sym.to_string(),
+                    BindingKind::Var,
+                );
+            }
+            if let Ok(lexical) = direct_lexical_bindings(&body.stmts) {
+                for (name, kind) in lexical {
+                    let _ = add_binding(&mut bindings, name, kind);
+                }
+            }
+        }
+        if regular {
+            let _ = add_binding(&mut bindings, "arguments".into(), BindingKind::Var);
+        }
+        self.nested_scopes
+            .push(bindings.into_iter().map(|(name, _)| name).collect());
+        self.function_depth += 1;
+        visit(self);
+        self.function_depth -= 1;
+        self.nested_scopes.pop();
+    }
+}
+
+impl Visit for NestedFunctionReferenceFinder {
+    fn visit_function(&mut self, function: &Function) {
+        self.visit_nested_function(
+            function.params.iter().map(|parameter| &parameter.pat),
+            function.body.as_ref(),
+            true,
+            |finder| function.visit_children_with(finder),
+        );
+    }
+
+    fn visit_arrow_expr(&mut self, arrow: &ArrowExpr) {
+        let body = match &*arrow.body {
+            ArrowFunctionBody::FunctionBody(body) => Some(body),
+            ArrowFunctionBody::Expr(_) => None,
+        };
+        self.visit_nested_function(&arrow.params, body, false, |finder| {
+            arrow.visit_children_with(finder);
+        });
+    }
+
+    fn visit_ident(&mut self, identifier: &Ident) {
+        let name = identifier.sym.to_string();
+        if self
+            .nested_scopes
+            .iter()
+            .rev()
+            .any(|scope| scope.contains(&name))
+        {
+            return;
+        }
+        if name == "arguments" {
+            self.all_names.insert(name.clone());
+        }
+        if self.function_depth > 0 {
+            self.names.insert(name);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -211,6 +308,26 @@ struct ControlTarget {
     cleanup_depth: usize,
 }
 
+struct DecompiledDispatcher<'a> {
+    cases: Vec<DecompiledDispatcherCase<'a>>,
+}
+
+struct DecompiledDispatcherCase<'a> {
+    body: &'a [Stmt],
+    terminator: DecompiledDispatcherTerminator<'a>,
+}
+
+enum DecompiledDispatcherTerminator<'a> {
+    Jump(usize),
+    Branch {
+        test: &'a Expr,
+        negate: bool,
+        target: usize,
+        fallthrough: usize,
+    },
+    Terminal,
+}
+
 impl Compiler {
     fn new(version: u32) -> Self {
         Self {
@@ -238,11 +355,15 @@ impl Compiler {
             next_function_id: 1,
             scope: None,
             environment_register: None,
+            parent_environment_register: None,
             base_registers: 0,
             is_global: true,
             current_function_id: 0,
             current_function_kind: NativeFunctionKind::Regular,
             current_function_strict: false,
+            current_function_resumable: false,
+            captured_names: HashSet::new(),
+            redirect_definition_on_store: false,
         }
     }
 
@@ -256,7 +377,11 @@ impl Compiler {
             .map(|(name, _)| name.clone())
             .collect::<Vec<_>>();
         let captures_this = statements_contain_arrow(&script.body);
+        let mut references = NestedFunctionReferenceFinder::default();
+        script.body.visit_with(&mut references);
+        self.captured_names = references.names;
         if captures_this {
+            self.captured_names.insert(LEXICAL_THIS_BINDING.into());
             add_binding(
                 &mut lexical_bindings,
                 LEXICAL_THIS_BINDING.into(),
@@ -326,7 +451,11 @@ impl Compiler {
             literal_value_buffer: Vec::new(),
             object_key_buffer: Vec::new(),
             object_value_buffer: Vec::new(),
-            reg_exps: self.reg_exps.into_iter().map(|regex| regex.bytecode).collect(),
+            reg_exps: self
+                .reg_exps
+                .into_iter()
+                .map(|regex| regex.bytecode)
+                .collect(),
             functions,
         };
         build_minimal_module(&module, &spec.bytecode)
@@ -359,15 +488,29 @@ impl Compiler {
         self.current_function_id = function_id;
         self.current_function_kind = kind;
         self.current_function_strict = strict;
+        self.current_function_resumable = false;
+        self.parent_environment_register = None;
         self.base_registers = 0;
+        let cache_parent_environment = parent_scope.as_ref().is_some_and(|scope| {
+            std::iter::successors(Some(scope), |scope| scope.parent.as_ref()).any(|scope| {
+                scope
+                    .bindings
+                    .values()
+                    .any(|binding| binding.register.is_none())
+            })
+        });
         let mut chunks = bindings.chunks(255);
         let first_bindings = chunks.next().unwrap_or_default().to_vec();
-        let environment_size = first_bindings.len() as u32;
+        let register_bindings = self.register_storage_names(&first_bindings);
+        let environment_size = first_bindings
+            .iter()
+            .filter(|(name, _)| !register_bindings.contains(name))
+            .count() as u32;
         let environment = self.alloc_register()?;
         self.environment_register = Some(environment);
         self.emit("CreateEnvironment", vec![reg(environment)]);
         self.scope = Some(Rc::new(FunctionScope {
-            bindings: build_binding_map(first_bindings)?,
+            bindings: self.build_binding_map(first_bindings, &register_bindings)?,
             parent: parent_scope,
             function_id,
             environment_register: environment,
@@ -375,6 +518,13 @@ impl Compiler {
         self.initialize_scope_bindings()?;
         for chunk in chunks {
             let _ = self.enter_lexical_scope(chunk.to_vec())?;
+        }
+        if cache_parent_environment {
+            // A closure's parent environment is immutable for its activation.
+            // Cache only that identity, never the mutable values in its slots.
+            let parent = self.alloc_register()?;
+            self.emit("GetEnvironment", vec![reg(parent), DecodedOperand::U8(0)]);
+            self.parent_environment_register = Some(parent);
         }
         self.base_registers = self.next_register;
         Ok(environment_size)
@@ -389,10 +539,7 @@ impl Compiler {
 
     fn emit_this_load(&mut self, output: u8) {
         if self.current_function_strict {
-            self.emit(
-                "LoadParam",
-                vec![reg(output), DecodedOperand::U8(0)],
-            );
+            self.emit("LoadParam", vec![reg(output), DecodedOperand::U8(0)]);
         } else {
             self.emit("LoadThisNS", vec![reg(output)]);
         }
@@ -404,17 +551,41 @@ impl Compiler {
             .values()
             .copied()
             .collect::<Vec<_>>();
-        bindings.sort_by_key(|binding| binding.slot);
+        bindings.sort_by_key(|binding| {
+            (
+                binding.register.map(u16::from).unwrap_or(u16::MAX),
+                binding.slot,
+            )
+        });
+        let mut environment_value = None;
         for binding in bindings {
-            let value = self.alloc_register()?;
-            self.emit(
-                if binding.kind.has_tdz() {
-                    "LoadConstEmpty"
-                } else {
-                    "LoadConstUndefined"
-                },
-                vec![reg(value)],
-            );
+            let opcode = if binding.kind.has_tdz() {
+                "LoadConstEmpty"
+            } else {
+                "LoadConstUndefined"
+            };
+            if let Some(register) = binding.register {
+                self.emit(opcode, vec![reg(register)]);
+                continue;
+            }
+            // New environment slots are already undefined. Only lexical
+            // bindings need an explicit empty sentinel for their TDZ.
+            if !binding.kind.has_tdz() {
+                continue;
+            }
+            let value = if let Some((value, cached_opcode)) = environment_value
+                && cached_opcode == opcode
+            {
+                value
+            } else {
+                if let Some((previous, _)) = environment_value {
+                    self.release_register(previous)?;
+                }
+                let value = self.alloc_register()?;
+                self.emit(opcode, vec![reg(value)]);
+                environment_value = Some((value, opcode));
+                value
+            };
             let environment = self.environment_register()?;
             self.emit(
                 "StoreToEnvironment",
@@ -424,6 +595,8 @@ impl Compiler {
                     reg(value),
                 ],
             );
+        }
+        if let Some((value, _)) = environment_value {
             self.release_register(value)?;
         }
         Ok(())
@@ -434,6 +607,48 @@ impl Compiler {
             .as_ref()
             .map(|scope| &scope.bindings)
             .ok_or_else(|| Error::Bytecode("native compiler has no active lexical scope".into()))
+    }
+
+    fn register_storage_names(&self, bindings: &[(String, BindingKind)]) -> HashSet<String> {
+        bindings
+            .iter()
+            .filter(|(name, _)| !self.captured_names.contains(name))
+            .take(MAX_REGISTER_BINDINGS_PER_SCOPE)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    fn build_binding_map(
+        &mut self,
+        bindings: Vec<(String, BindingKind)>,
+        register_bindings: &HashSet<String>,
+    ) -> Result<HashMap<String, Binding>, Error> {
+        if bindings.len() >= 256 {
+            return Err(Error::Unsupported(
+                "lexical scopes with more than 255 bindings are not supported".into(),
+            ));
+        }
+        let binding_count = bindings.len();
+        let mut environment_slot = 0usize;
+        let mut result = HashMap::with_capacity(binding_count);
+        for (name, kind) in bindings {
+            let (slot, register) = if register_bindings.contains(&name) {
+                (0, Some(self.alloc_register()?))
+            } else {
+                let slot = environment_slot;
+                environment_slot += 1;
+                (slot as u8, None)
+            };
+            result.insert(
+                name,
+                Binding {
+                    slot,
+                    register,
+                    kind,
+                },
+            );
+        }
+        Ok(result)
     }
 
     fn hoist_function_declarations(&mut self, statements: &[Stmt]) -> Result<(), Error> {
@@ -471,11 +686,7 @@ impl Compiler {
         )
     }
 
-    fn register_accessor(
-        &mut self,
-        name: String,
-        function: &Function,
-    ) -> Result<u32, Error> {
+    fn register_accessor(&mut self, name: String, function: &Function) -> Result<u32, Error> {
         let body = function.body.clone().ok_or_else(|| {
             Error::Unsupported("object accessors without bodies are not supported".into())
         })?;
@@ -622,8 +833,15 @@ impl Compiler {
             .params
             .iter()
             .any(|parameter| pattern_binds(parameter, "arguments"));
-        let has_implicit_arguments =
-            pending.kind == NativeFunctionKind::Regular && !arguments_is_shadowed;
+        let mut references = NestedFunctionReferenceFinder::default();
+        pending.params.visit_with(&mut references);
+        match &pending.body {
+            PendingFunctionBody::Block(body) => body.stmts.visit_with(&mut references),
+            PendingFunctionBody::Expression(expression) => expression.visit_with(&mut references),
+        }
+        let has_implicit_arguments = pending.kind == NativeFunctionKind::Regular
+            && !arguments_is_shadowed
+            && references.all_names.contains("arguments");
         if has_implicit_arguments {
             if simple_parameters {
                 body_bindings
@@ -638,7 +856,12 @@ impl Compiler {
         let captures_this = pending.kind == NativeFunctionKind::Regular
             && (pending_body_contains_arrow(&pending.body)
                 || patterns_contain_arrow(&pending.params));
+        self.captured_names = references.names;
+        if has_implicit_arguments && self.captured_names.contains("arguments") {
+            self.captured_names.insert(LEXICAL_ARGUMENTS_BINDING.into());
+        }
         if captures_this {
+            self.captured_names.insert(LEXICAL_THIS_BINDING.into());
             add_binding(
                 &mut parameter_bindings,
                 LEXICAL_THIS_BINDING.into(),
@@ -658,6 +881,11 @@ impl Compiler {
             pending.kind,
             pending.strict,
         )?;
+        self.current_function_resumable = matches!(
+            pending.params.as_slice(),
+            [Pat::Ident(action), Pat::Ident(resume)]
+                if action.id.sym.ends_with("_action") && resume.id.sym.ends_with("_resume")
+        );
         if has_implicit_arguments {
             self.initialize_implicit_arguments()?;
         }
@@ -706,7 +934,7 @@ impl Compiler {
             }
             PendingFunctionBody::Expression(expression) => {
                 let value = self.compile_expression(expression)?;
-                self.emit("Ret", vec![reg(value)]);
+                self.emit_final_value("Ret", value);
                 self.release_register(value)?;
             }
         }
@@ -746,14 +974,18 @@ impl Compiler {
         }
         for (name, source) in copies {
             let value = self.alloc_register()?;
-            self.emit(
-                "LoadFromEnvironment",
-                vec![
-                    reg(value),
-                    reg(outer_environment),
-                    DecodedOperand::U8(source.slot),
-                ],
-            );
+            if let Some(register) = source.register {
+                self.emit("Mov", vec![reg(value), reg(register)]);
+            } else {
+                self.emit(
+                    "LoadFromEnvironment",
+                    vec![
+                        reg(value),
+                        reg(outer_environment),
+                        DecodedOperand::U8(source.slot),
+                    ],
+                );
+            }
             self.emit_binding_initialization(&name, value)?;
             self.release_register(value)?;
         }
@@ -770,6 +1002,19 @@ impl Compiler {
     }
 
     fn emit_implicit_return(&mut self) -> Result<(), Error> {
+        let end_is_targeted = self
+            .labels
+            .iter()
+            .flatten()
+            .any(|label| *label == self.instructions.len());
+        if !end_is_targeted
+            && self
+                .instructions
+                .last()
+                .is_some_and(|instruction| matches!(instruction.name.as_str(), "Ret" | "Throw"))
+        {
+            return Ok(());
+        }
         let result = self.alloc_register()?;
         self.emit("LoadConstUndefined", vec![reg(result)]);
         self.emit("Ret", vec![reg(result)]);
@@ -800,11 +1045,6 @@ impl Compiler {
                     Error::Unsupported("script needs an HBC frame larger than u16".into())
                 })?
         };
-        if frame_size >= 128 {
-            return Err(Error::Unsupported(
-                "script needs a function frame too large for an HBC 96 small header".into(),
-            ));
-        }
         self.resolve_frame_moves(frame_size)?;
         self.resolve_branches(spec)?;
         let exception_handlers = self.resolve_exception_handlers()?;
@@ -828,8 +1068,21 @@ impl Compiler {
                 Ok(())
             }
             Stmt::Expr(statement) => {
-                let result = self.compile_expression(&statement.expr)?;
-                self.release_register(result)
+                if let Expr::Assign(assignment) = &*statement.expr
+                    && assignment.op == AssignOp::Assign
+                    && let AssignTarget::Simple(SimpleAssignTarget::Ident(identifier)) =
+                        &assignment.left
+                {
+                    let value = self.compile_expression(&assignment.right)?;
+                    self.redirect_definition_on_store = true;
+                    let stored = self.emit_identifier_store(identifier.id.sym.as_ref(), value);
+                    self.redirect_definition_on_store = false;
+                    stored?;
+                    self.release_register(value)
+                } else {
+                    let result = self.compile_expression(&statement.expr)?;
+                    self.release_register(result)
+                }
             }
             Stmt::Block(block) => self.compile_block(block),
             Stmt::Decl(Decl::Var(declaration)) => self.compile_var_declaration(declaration),
@@ -849,7 +1102,7 @@ impl Compiler {
                     value
                 };
                 self.compile_cleanups_to_depth(0)?;
-                self.emit("Ret", vec![reg(value)]);
+                self.emit_final_value("Ret", value);
                 self.release_register(value)
             }
             Stmt::If(statement) => self.compile_if(statement),
@@ -862,7 +1115,7 @@ impl Compiler {
             Stmt::Try(statement) => self.compile_try(statement),
             Stmt::Throw(statement) => {
                 let value = self.compile_expression(&statement.arg)?;
-                self.emit("Throw", vec![reg(value)]);
+                self.emit_final_value("Throw", value);
                 self.release_register(value)
             }
             Stmt::Break(statement) => {
@@ -871,11 +1124,10 @@ impl Compiler {
                         "labeled break is not supported by native compilation yet".into(),
                     ));
                 }
-                let target = self
-                    .break_targets
-                    .last()
-                    .copied()
-                    .ok_or_else(|| Error::Unsupported("break outside a loop or switch".into()))?;
+                let target =
+                    self.break_targets.last().copied().ok_or_else(|| {
+                        Error::Unsupported("break outside a loop or switch".into())
+                    })?;
                 self.compile_cleanups_to_depth(target.cleanup_depth)?;
                 self.emit_branch("JmpLong", target.label, None);
                 Ok(())
@@ -922,13 +1174,16 @@ impl Compiler {
     ) -> Result<(Option<Rc<FunctionScope>>, u8, u8), Error> {
         let previous_scope = self.scope.clone();
         let previous_environment = self.environment_register()?;
-        let slot_count = u32::try_from(bindings.len())
-            .map_err(|_| Error::Unsupported("too many lexical bindings".into()))?;
-        if slot_count >= 256 {
+        if bindings.len() >= 256 {
             return Err(Error::Unsupported(
                 "lexical scopes with more than 255 bindings are not supported".into(),
             ));
         }
+        let register_bindings = self.register_storage_names(&bindings);
+        let slot_count = bindings
+            .iter()
+            .filter(|(name, _)| !register_bindings.contains(name))
+            .count() as u32;
         let environment = self.alloc_register()?;
         self.emit(
             "CreateInnerEnvironment",
@@ -939,7 +1194,7 @@ impl Compiler {
             ],
         );
         self.scope = Some(Rc::new(FunctionScope {
-            bindings: build_binding_map(bindings)?,
+            bindings: self.build_binding_map(bindings, &register_bindings)?,
             parent: previous_scope.clone(),
             function_id: self.current_function_id,
             environment_register: environment,
@@ -957,7 +1212,13 @@ impl Compiler {
     ) -> Result<(), Error> {
         self.scope = previous_scope;
         self.environment_register = Some(previous_environment);
-        self.release_register(environment)
+        if self.next_register <= u16::from(environment) {
+            return Err(Error::Bytecode(
+                "native compiler lexical register allocation became unbalanced".into(),
+            ));
+        }
+        self.next_register = u16::from(environment);
+        Ok(())
     }
 
     fn compile_if(&mut self, statement: &swc_core::ecma::ast::IfStmt) -> Result<(), Error> {
@@ -979,6 +1240,11 @@ impl Compiler {
     }
 
     fn compile_while(&mut self, statement: &swc_core::ecma::ast::WhileStmt) -> Result<(), Error> {
+        if !self.current_function_resumable
+            && let Some(dispatcher) = parse_decompiled_dispatcher(statement)
+        {
+            return self.compile_decompiled_dispatcher(dispatcher);
+        }
         let condition = self.new_label();
         let end = self.new_label();
         self.mark_label(condition)?;
@@ -999,6 +1265,53 @@ impl Compiler {
         self.break_targets.pop();
         self.emit_branch("JmpLong", condition, None);
         self.mark_label(end)
+    }
+
+    fn compile_decompiled_dispatcher(
+        &mut self,
+        dispatcher: DecompiledDispatcher<'_>,
+    ) -> Result<(), Error> {
+        let labels = dispatcher
+            .cases
+            .iter()
+            .map(|_| self.new_label())
+            .collect::<Vec<_>>();
+        for (index, case) in dispatcher.cases.iter().enumerate() {
+            self.mark_label(labels[index])?;
+            for statement in case.body {
+                self.compile_statement(statement)?;
+            }
+            match case.terminator {
+                DecompiledDispatcherTerminator::Jump(target) => {
+                    if target != index + 1 {
+                        self.emit_branch("JmpLong", labels[target], None);
+                    }
+                }
+                DecompiledDispatcherTerminator::Branch {
+                    test,
+                    negate,
+                    target,
+                    fallthrough,
+                } => {
+                    let condition = self.compile_expression(test)?;
+                    self.emit_branch(
+                        if negate {
+                            "JmpFalseLong"
+                        } else {
+                            "JmpTrueLong"
+                        },
+                        labels[target],
+                        Some(condition),
+                    );
+                    self.release_register(condition)?;
+                    if fallthrough != index + 1 {
+                        self.emit_branch("JmpLong", labels[fallthrough], None);
+                    }
+                }
+                DecompiledDispatcherTerminator::Terminal => {}
+            }
+        }
+        Ok(())
     }
 
     fn compile_do_while(
@@ -1104,10 +1417,7 @@ impl Compiler {
         self.mark_label(end)
     }
 
-    fn compile_for_in(
-        &mut self,
-        statement: &swc_core::ecma::ast::ForInStmt,
-    ) -> Result<(), Error> {
+    fn compile_for_in(&mut self, statement: &swc_core::ecma::ast::ForInStmt) -> Result<(), Error> {
         let lexical_bindings = match &statement.left {
             ForHead::VarDecl(declaration) if declaration.kind != VarDeclKind::Var => {
                 Some(declaration_bindings(declaration)?)
@@ -1188,12 +1498,9 @@ impl Compiler {
         self.release_register(size)?;
         self.release_register(index)?;
         self.release_register(list)?;
-        if let Some((previous_scope, parent_environment, iteration_environment, _)) = lexical_scope {
-            self.leave_lexical_scope(
-                previous_scope,
-                parent_environment,
-                iteration_environment,
-            )?;
+        if let Some((previous_scope, parent_environment, iteration_environment, _)) = lexical_scope
+        {
+            self.leave_lexical_scope(previous_scope, parent_environment, iteration_environment)?;
         }
         self.release_register(object)
     }
@@ -1211,10 +1518,7 @@ impl Compiler {
         }
     }
 
-    fn compile_for_of(
-        &mut self,
-        statement: &swc_core::ecma::ast::ForOfStmt,
-    ) -> Result<(), Error> {
+    fn compile_for_of(&mut self, statement: &swc_core::ecma::ast::ForOfStmt) -> Result<(), Error> {
         if statement.is_await {
             return Err(Error::Unsupported(
                 "for-await-of statements are not supported by native compilation yet".into(),
@@ -1258,10 +1562,7 @@ impl Compiler {
         let close_on_exception = self.new_label();
         let end = self.new_label();
         self.mark_label(next)?;
-        self.emit(
-            "IteratorNext",
-            vec![reg(value), reg(iterator), reg(source)],
-        );
+        self.emit("IteratorNext", vec![reg(value), reg(iterator), reg(source)]);
         self.emit_branch("JmpUndefinedLong", end, Some(iterator));
 
         let exception_depth = self.active_exception_regions.len();
@@ -1307,22 +1608,16 @@ impl Compiler {
         self.mark_label(close_on_exception)?;
         let exception = self.alloc_register()?;
         self.emit("Catch", vec![reg(exception)]);
-        self.emit(
-            "IteratorClose",
-            vec![reg(iterator), DecodedOperand::U8(1)],
-        );
+        self.emit("IteratorClose", vec![reg(iterator), DecodedOperand::U8(1)]);
         self.emit("Throw", vec![reg(exception)]);
         self.release_register(exception)?;
 
         self.mark_label(end)?;
         self.release_register(value)?;
         self.release_register(iterator)?;
-        if let Some((previous_scope, parent_environment, iteration_environment, _)) = lexical_scope {
-            self.leave_lexical_scope(
-                previous_scope,
-                parent_environment,
-                iteration_environment,
-            )?;
+        if let Some((previous_scope, parent_environment, iteration_environment, _)) = lexical_scope
+        {
+            self.leave_lexical_scope(previous_scope, parent_environment, iteration_environment)?;
         }
         self.release_register(source)
     }
@@ -1580,11 +1875,8 @@ impl Compiler {
             .and_then(|position| *position)
             .ok_or_else(|| Error::Bytecode("exception segment has no end".into()))?;
         if start_position < end_position {
-            self.exception_handlers.push(PendingExceptionHandler {
-                start,
-                end,
-                target,
-            });
+            self.exception_handlers
+                .push(PendingExceptionHandler { start, end, target });
         }
         Ok(())
     }
@@ -1956,8 +2248,93 @@ impl Compiler {
                 "binary operator `{operator}` is not supported by native compilation yet"
             ))
         })?;
-        self.emit(opcode, vec![reg(left), reg(left), reg(right)]);
+        let (left_source, right_source) = self.take_binary_operand_moves(left, right);
+        self.emit(opcode, vec![reg(left), reg(left_source), reg(right_source)]);
         Ok(())
+    }
+
+    fn take_binary_operand_moves(&mut self, left: u8, right: u8) -> (u8, u8) {
+        let right_source = self.take_last_move(right).unwrap_or(right);
+        let left_source = self
+            .take_last_move(left)
+            .or_else(|| self.take_move_before_independent_result(left, right))
+            .unwrap_or(left);
+        (left_source, right_source)
+    }
+
+    /// Forward a register copy directly into its consumer. A label or outgoing
+    /// frame move at either boundary makes this local rewrite unsafe.
+    fn take_last_move(&mut self, destination: u8) -> Option<u8> {
+        let index = self.instructions.len().checked_sub(1)?;
+        if !self.can_remove_trailing_instructions(index) {
+            return None;
+        }
+        let source = match &self.instructions[index] {
+            instruction
+                if instruction.name == "Mov"
+                    && instruction.operands.first() == Some(&reg(destination))
+                    && instruction.operands.len() == 2 =>
+            {
+                match instruction.operands[1] {
+                    DecodedOperand::U8(source) => source,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        self.instructions.pop();
+        Some(source)
+    }
+
+    fn emit_final_value(&mut self, opcode: &str, value: u8) {
+        let source = self.take_last_move(value).unwrap_or(value);
+        self.emit(opcode, vec![reg(source)]);
+    }
+
+    /// Fold the left operand of a binary operation when the right operand is a
+    /// single independent definition, such as `local | 0`. The intervening
+    /// instruction must not read registers or overwrite the move's source.
+    fn take_move_before_independent_result(
+        &mut self,
+        destination: u8,
+        result_register: u8,
+    ) -> Option<u8> {
+        let index = self.instructions.len().checked_sub(2)?;
+        if !self.can_remove_trailing_instructions(index) {
+            return None;
+        }
+        let source = match &self.instructions[index] {
+            instruction
+                if instruction.name == "Mov"
+                    && instruction.operands.first() == Some(&reg(destination))
+                    && instruction.operands.len() == 2 =>
+            {
+                match instruction.operands[1] {
+                    DecodedOperand::U8(source) => source,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        let result = &self.instructions[index + 1];
+        if source == result_register
+            || result.operands.first() != Some(&reg(result_register))
+            || result.operands[1..]
+                .iter()
+                .any(|operand| matches!(operand, DecodedOperand::U8(_)))
+        {
+            return None;
+        }
+        self.instructions.remove(index);
+        Some(source)
+    }
+
+    fn can_remove_trailing_instructions(&self, start: usize) -> bool {
+        !self.labels.iter().flatten().any(|label| *label >= start)
+            && !self
+                .frame_moves
+                .iter()
+                .any(|pending| pending.instruction >= start)
     }
 
     fn compile_expression(&mut self, expression: &Expr) -> Result<u8, Error> {
@@ -2083,15 +2460,20 @@ impl Compiler {
                 continue;
             };
             let value = self.compile_expression(&element.expr)?;
+            let value_source = self.take_last_move(value).unwrap_or(value);
             if let Ok(index) = u8::try_from(index) {
                 self.emit(
                     "PutOwnByIndex",
-                    vec![reg(output), reg(value), DecodedOperand::U8(index)],
+                    vec![reg(output), reg(value_source), DecodedOperand::U8(index)],
                 );
             } else {
                 self.emit(
                     "PutOwnByIndexL",
-                    vec![reg(output), reg(value), DecodedOperand::U32(index as u32)],
+                    vec![
+                        reg(output),
+                        reg(value_source),
+                        DecodedOperand::U32(index as u32),
+                    ],
                 );
             }
             self.release_register(value)?;
@@ -2374,6 +2756,32 @@ impl Compiler {
                 binding,
             } => {
                 let output = self.alloc_register()?;
+                if let Some(register) = binding.register {
+                    self.emit("Mov", vec![reg(output), reg(register)]);
+                } else {
+                    self.emit(
+                        "LoadFromEnvironment",
+                        vec![
+                            reg(output),
+                            reg(environment),
+                            DecodedOperand::U8(binding.slot),
+                        ],
+                    );
+                }
+                self.emit_tdz_check(output, binding.kind);
+                Ok(output)
+            }
+            BindingLocation::Parent { level, binding } => {
+                let output = self.alloc_register()?;
+                let environment = if let Some(environment) = self.cached_parent_environment(level) {
+                    environment
+                } else {
+                    self.emit(
+                        "GetEnvironment",
+                        vec![reg(output), DecodedOperand::U8(level)],
+                    );
+                    output
+                };
                 self.emit(
                     "LoadFromEnvironment",
                     vec![
@@ -2385,23 +2793,12 @@ impl Compiler {
                 self.emit_tdz_check(output, binding.kind);
                 Ok(output)
             }
-            BindingLocation::Parent { level, binding } => {
-                let output = self.alloc_register()?;
-                self.emit(
-                    "GetEnvironment",
-                    vec![reg(output), DecodedOperand::U8(level)],
-                );
-                self.emit(
-                    "LoadFromEnvironment",
-                    vec![reg(output), reg(output), DecodedOperand::U8(binding.slot)],
-                );
-                self.emit_tdz_check(output, binding.kind);
-                Ok(output)
-            }
             BindingLocation::Global => {
                 let output = self.alloc_register()?;
                 self.emit("GetGlobalObject", vec![reg(output)]);
-                self.emit_get_by_id(output, output, name, true)?;
+                if name != "globalThis" {
+                    self.emit_get_by_id(output, output, name, true)?;
+                }
                 Ok(output)
             }
         }
@@ -2413,15 +2810,19 @@ impl Compiler {
             BindingLocation::Local {
                 environment,
                 binding,
-            } => self.emit_checked_environment_store(name, environment, binding, value)?,
+            } => self.emit_checked_binding_store(name, environment, binding, value)?,
             BindingLocation::Parent { level, binding } => {
-                let environment = self.alloc_register()?;
-                self.emit(
-                    "GetEnvironment",
-                    vec![reg(environment), DecodedOperand::U8(level)],
-                );
-                self.emit_checked_environment_store(name, environment, binding, value)?;
-                self.release_register(environment)?;
+                if let Some(environment) = self.cached_parent_environment(level) {
+                    self.emit_checked_binding_store(name, environment, binding, value)?;
+                } else {
+                    let environment = self.alloc_register()?;
+                    self.emit(
+                        "GetEnvironment",
+                        vec![reg(environment), DecodedOperand::U8(level)],
+                    );
+                    self.emit_checked_binding_store(name, environment, binding, value)?;
+                    self.release_register(environment)?;
+                }
             }
             BindingLocation::Global => {
                 let global = self.alloc_register()?;
@@ -2433,7 +2834,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_checked_environment_store(
+    fn emit_checked_binding_store(
         &mut self,
         name: &str,
         environment: u8,
@@ -2442,29 +2843,61 @@ impl Compiler {
     ) -> Result<(), Error> {
         if binding.kind.has_tdz() {
             let current = self.alloc_register()?;
-            self.emit(
-                "LoadFromEnvironment",
-                vec![
-                    reg(current),
-                    reg(environment),
-                    DecodedOperand::U8(binding.slot),
-                ],
-            );
+            if let Some(register) = binding.register {
+                self.emit("Mov", vec![reg(current), reg(register)]);
+            } else {
+                self.emit(
+                    "LoadFromEnvironment",
+                    vec![
+                        reg(current),
+                        reg(environment),
+                        DecodedOperand::U8(binding.slot),
+                    ],
+                );
+            }
             self.emit_tdz_check(current, binding.kind);
             self.release_register(current)?;
         }
         if binding.kind == BindingKind::Const {
             return self.emit_const_assignment_error(name);
         }
-        self.emit(
-            "StoreToEnvironment",
-            vec![
-                reg(environment),
-                DecodedOperand::U8(binding.slot),
-                reg(value),
-            ],
-        );
+        if let Some(register) = binding.register {
+            if !self.redirect_definition_on_store || !self.redirect_last_definition(register, value)
+            {
+                self.emit("Mov", vec![reg(register), reg(value)]);
+            }
+        } else {
+            self.emit(
+                "StoreToEnvironment",
+                vec![
+                    reg(environment),
+                    DecodedOperand::U8(binding.slot),
+                    reg(value),
+                ],
+            );
+        }
         Ok(())
+    }
+
+    fn redirect_last_definition(&mut self, output: u8, value: u8) -> bool {
+        if self
+            .labels
+            .iter()
+            .flatten()
+            .any(|label| *label == self.instructions.len())
+        {
+            return false;
+        }
+        let Some(instruction) = self.instructions.last_mut() else {
+            return false;
+        };
+        if !defines_first_register(&instruction.name)
+            || instruction.operands.first() != Some(&reg(value))
+        {
+            return false;
+        }
+        instruction.operands[0] = reg(output);
+        true
     }
 
     fn emit_const_assignment_error(&mut self, name: &str) -> Result<(), Error> {
@@ -2505,20 +2938,34 @@ impl Compiler {
             BindingLocation::Local {
                 environment,
                 binding,
-            } => self.emit(
-                "StoreToEnvironment",
-                vec![
-                    reg(environment),
-                    DecodedOperand::U8(binding.slot),
-                    reg(value),
-                ],
-            ),
+            } => {
+                if let Some(register) = binding.register {
+                    if !self.redirect_last_definition(register, value) {
+                        self.emit("Mov", vec![reg(register), reg(value)]);
+                    }
+                } else {
+                    self.emit(
+                        "StoreToEnvironment",
+                        vec![
+                            reg(environment),
+                            DecodedOperand::U8(binding.slot),
+                            reg(value),
+                        ],
+                    );
+                }
+            }
             BindingLocation::Parent { level, binding } => {
-                let environment = self.alloc_register()?;
-                self.emit(
-                    "GetEnvironment",
-                    vec![reg(environment), DecodedOperand::U8(level)],
-                );
+                let cached_environment = self.cached_parent_environment(level);
+                let environment = if let Some(environment) = cached_environment {
+                    environment
+                } else {
+                    let environment = self.alloc_register()?;
+                    self.emit(
+                        "GetEnvironment",
+                        vec![reg(environment), DecodedOperand::U8(level)],
+                    );
+                    environment
+                };
                 self.emit(
                     "StoreToEnvironment",
                     vec![
@@ -2527,7 +2974,9 @@ impl Compiler {
                         reg(value),
                     ],
                 );
-                self.release_register(environment)?;
+                if cached_environment.is_none() {
+                    self.release_register(environment)?;
+                }
             }
             BindingLocation::Global => {
                 let global = self.alloc_register()?;
@@ -2568,6 +3017,11 @@ impl Compiler {
                         binding: *binding,
                     }));
                 }
+                if binding.register.is_some() {
+                    return Err(Error::Bytecode(format!(
+                        "native compiler failed to environment-capture `{name}`"
+                    )));
+                }
                 return Ok(Some(BindingLocation::Parent {
                     level: u8::try_from(level).map_err(|_| {
                         Error::Unsupported(
@@ -2588,6 +3042,12 @@ impl Compiler {
     fn environment_register(&self) -> Result<u8, Error> {
         self.environment_register
             .ok_or_else(|| Error::Bytecode("native compiler has no active environment".into()))
+    }
+
+    fn cached_parent_environment(&self, level: u8) -> Option<u8> {
+        (level == 0)
+            .then_some(self.parent_environment_register)
+            .flatten()
     }
 
     fn compile_unary(&mut self, operator: UnaryOp, argument: &Expr) -> Result<u8, Error> {
@@ -2670,9 +3130,15 @@ impl Compiler {
                 self.emit_get_by_id(object, object, property.sym.as_ref(), false)?;
             }
             MemberProp::Computed(property) => {
-                let key = self.compile_expression(&property.expr)?;
-                self.emit("GetByVal", vec![reg(object), reg(object), reg(key)]);
-                self.release_register(key)?;
+                if let Expr::Lit(Lit::Str(name)) = &*property.expr
+                    && let Some(name) = name.value.as_str()
+                {
+                    self.emit_get_by_id(object, object, name, false)?;
+                } else {
+                    let key = self.compile_expression(&property.expr)?;
+                    self.emit("GetByVal", vec![reg(object), reg(object), reg(key)]);
+                    self.release_register(key)?;
+                }
             }
             MemberProp::PrivateName(_) => {
                 return Err(Error::Unsupported(
@@ -3002,17 +3468,29 @@ impl Compiler {
         match &member.prop {
             MemberProp::Ident(property) => {
                 let value = self.compile_expression(value)?;
-                self.emit_put_by_id(object, value, property.sym.as_ref())?;
-                self.emit("Mov", vec![reg(object), reg(value)]);
+                let source = self.take_last_move(value).unwrap_or(value);
+                self.emit_put_by_id(object, source, property.sym.as_ref())?;
+                self.emit("Mov", vec![reg(object), reg(source)]);
                 self.release_register(value)?;
             }
             MemberProp::Computed(property) => {
-                let key = self.compile_expression(&property.expr)?;
-                let value = self.compile_expression(value)?;
-                self.emit("PutByVal", vec![reg(object), reg(key), reg(value)]);
-                self.emit("Mov", vec![reg(object), reg(value)]);
-                self.release_register(value)?;
-                self.release_register(key)?;
+                if let Expr::Lit(Lit::Str(name)) = &*property.expr
+                    && let Some(name) = name.value.as_str()
+                {
+                    let value = self.compile_expression(value)?;
+                    let source = self.take_last_move(value).unwrap_or(value);
+                    self.emit_put_by_id(object, source, name)?;
+                    self.emit("Mov", vec![reg(object), reg(source)]);
+                    self.release_register(value)?;
+                } else {
+                    let key = self.compile_expression(&property.expr)?;
+                    let value = self.compile_expression(value)?;
+                    let source = self.take_last_move(value).unwrap_or(value);
+                    self.emit("PutByVal", vec![reg(object), reg(key), reg(source)]);
+                    self.emit("Mov", vec![reg(object), reg(source)]);
+                    self.release_register(value)?;
+                    self.release_register(key)?;
+                }
             }
             MemberProp::PrivateName(_) => {
                 return Err(Error::Unsupported(
@@ -3080,9 +3558,7 @@ impl Compiler {
         for argument in &call.args {
             arguments.push(self.compile_expression(&argument.expr)?);
         }
-        let output = self.emit_call(function, this_value, &arguments)?;
-        self.emit("Mov", vec![reg(result), reg(output)]);
-        self.release_register(output)?;
+        self.emit_call_into(result, function, this_value, &arguments)?;
         while let Some(argument) = arguments.pop() {
             self.release_register(argument)?;
         }
@@ -3097,16 +3573,35 @@ impl Compiler {
     /// Call `function` with `this_value` and `arguments`, returning the result
     /// in a newly allocated register.
     fn emit_call(&mut self, function: u8, this_value: u8, arguments: &[u8]) -> Result<u8, Error> {
+        let output = self.alloc_register()?;
+        self.emit_call_into(output, function, this_value, arguments)?;
+        Ok(output)
+    }
+
+    fn emit_call_into(
+        &mut self,
+        output: u8,
+        function: u8,
+        this_value: u8,
+        arguments: &[u8],
+    ) -> Result<(), Error> {
         let argument_count = u32::try_from(arguments.len() + 1)
             .map_err(|_| Error::Unsupported("too many call arguments".into()))?;
         self.max_call_arguments = self.max_call_arguments.max(
             u16::try_from(argument_count)
                 .map_err(|_| Error::Unsupported("too many call arguments".into()))?,
         );
-        let output = self.alloc_register()?;
         if arguments.len() <= 3 {
+            // Direct calls encode their inputs explicitly. Fold a consecutive
+            // suffix of argument copies, then the receiver and callee copies.
+            let mut argument_sources = arguments.to_vec();
+            for source in argument_sources.iter_mut().rev() {
+                *source = self.take_last_move(*source).unwrap_or(*source);
+            }
+            let this_value = self.take_last_move(this_value).unwrap_or(this_value);
+            let function = self.take_last_move(function).unwrap_or(function);
             let mut operands = vec![reg(output), reg(function), reg(this_value)];
-            operands.extend(arguments.iter().copied().map(reg));
+            operands.extend(argument_sources.into_iter().map(reg));
             let opcode = match arguments.len() {
                 0 => "Call1",
                 1 => "Call2",
@@ -3144,7 +3639,7 @@ impl Compiler {
                 );
             }
         }
-        Ok(output)
+        Ok(())
     }
 
     /// Compile a template literal as hermesc does: `HermesInternal.concat`
@@ -3381,6 +3876,13 @@ impl Compiler {
         name: &str,
         checked: bool,
     ) -> Result<(), Error> {
+        let object = if output == object {
+            // The read overwrites the copy, so its destination cannot have a
+            // later use as the original object.
+            self.take_last_move(object).unwrap_or(object)
+        } else {
+            object
+        };
         let id = self.intern_identifier(name)?;
         let cache = self.alloc_cache()?;
         let (short, long) = if checked {
@@ -3388,7 +3890,17 @@ impl Compiler {
         } else {
             ("GetById", "GetByIdLong")
         };
-        if let Ok(id) = u16::try_from(id) {
+        if !checked && let Ok(id) = u8::try_from(id) {
+            self.emit(
+                "GetByIdShort",
+                vec![
+                    reg(output),
+                    reg(object),
+                    DecodedOperand::U8(cache),
+                    DecodedOperand::U8(id),
+                ],
+            );
+        } else if let Ok(id) = u16::try_from(id) {
             self.emit(
                 short,
                 vec![
@@ -3462,7 +3974,9 @@ impl Compiler {
             Some(id) => *id,
             None => {
                 let compiled = mercury_regex::compile_str(pattern, flags).map_err(|error| {
-                    Error::Parse(format!("invalid regular expression /{pattern}/{flags}: {error}"))
+                    Error::Parse(format!(
+                        "invalid regular expression /{pattern}/{flags}: {error}"
+                    ))
                 })?;
                 let id = u32::try_from(self.reg_exps.len())
                     .map_err(|_| Error::Unsupported("too many regular expressions".into()))?;
@@ -3521,10 +4035,10 @@ impl Compiler {
     }
 
     fn alloc_register(&mut self) -> Result<u8, Error> {
-        // Small HBC function headers encode a seven-bit frame size.
-        if self.next_register >= 127 {
+        // Large function headers support the full eight-bit register range.
+        if self.next_register > u16::from(u8::MAX) {
             return Err(Error::Unsupported(
-                "expression needs more than 127 live registers".into(),
+                "expression needs more than 256 live registers".into(),
             ));
         }
         let register = self.next_register as u8;
@@ -3623,18 +4137,57 @@ impl Compiler {
     }
 
     fn resolve_branches(&mut self, spec: &BytecodeSpec) -> Result<(), Error> {
-        let mut offsets = Vec::with_capacity(self.instructions.len() + 1);
-        let mut offset = 0u32;
-        for instruction in &self.instructions {
+        let instruction_offsets = |compiler: &Self| -> Result<Vec<u32>, Error> {
+            let mut offsets = Vec::with_capacity(compiler.instructions.len() + 1);
+            let mut offset = 0u32;
+            for instruction in &compiler.instructions {
+                offsets.push(offset);
+                let size = encode_instruction(instruction, spec)
+                    .map_err(|error| Error::Bytecode(error.to_string()))?
+                    .len();
+                offset = offset
+                    .checked_add(u32::try_from(size).expect("instruction size fits u32"))
+                    .ok_or_else(|| Error::Unsupported("function bytecode is too large".into()))?;
+            }
             offsets.push(offset);
-            let size = encode_instruction(instruction, spec)
-                .map_err(|error| Error::Bytecode(error.to_string()))?
-                .len();
-            offset = offset
-                .checked_add(u32::try_from(size).expect("instruction size fits u32"))
-                .ok_or_else(|| Error::Unsupported("function bytecode is too large".into()))?;
-        }
-        offsets.push(offset);
+            Ok(offsets)
+        };
+
+        let offsets = loop {
+            let offsets = instruction_offsets(self)?;
+            let mut narrowed = false;
+            for branch in &self.branches {
+                let instruction = &mut self.instructions[branch.instruction];
+                let Some(short_name) = instruction.name.strip_suffix("Long") else {
+                    continue;
+                };
+                if !spec
+                    .instructions
+                    .iter()
+                    .any(|definition| definition.name == short_name)
+                {
+                    continue;
+                }
+                let target_instruction = self
+                    .labels
+                    .get(branch.target)
+                    .and_then(|target| *target)
+                    .ok_or_else(|| {
+                        Error::Bytecode("native compiler left a label unresolved".into())
+                    })?;
+                let source = i64::from(offsets[branch.instruction]);
+                let target = i64::from(offsets[target_instruction]);
+                let displacement = target - source;
+                if let Ok(displacement) = i8::try_from(displacement) {
+                    instruction.name = short_name.into();
+                    instruction.operands[0] = DecodedOperand::I8(displacement);
+                    narrowed = true;
+                }
+            }
+            if !narrowed {
+                break offsets;
+            }
+        };
 
         for branch in &self.branches {
             let target_instruction = self
@@ -3646,7 +4199,14 @@ impl Compiler {
             let target = i64::from(offsets[target_instruction]);
             let displacement = i32::try_from(target - source)
                 .map_err(|_| Error::Unsupported("branch displacement exceeds HBC 96".into()))?;
-            self.instructions[branch.instruction].operands[0] = DecodedOperand::I32(displacement);
+            let instruction = &mut self.instructions[branch.instruction];
+            instruction.operands[0] = if instruction.name.ends_with("Long") {
+                DecodedOperand::I32(displacement)
+            } else {
+                DecodedOperand::I8(i8::try_from(displacement).map_err(|_| {
+                    Error::Bytecode("short branch displacement exceeds HBC 96".into())
+                })?)
+            };
         }
 
         for (index, instruction) in self.instructions.iter_mut().enumerate() {
@@ -3699,6 +4259,100 @@ impl Compiler {
             })
             .collect()
     }
+}
+
+fn parse_decompiled_dispatcher(
+    statement: &swc_core::ecma::ast::WhileStmt,
+) -> Option<DecompiledDispatcher<'_>> {
+    if !matches!(&*statement.test, Expr::Lit(Lit::Bool(value)) if value.value) {
+        return None;
+    }
+    let Stmt::Block(body) = &*statement.body else {
+        return None;
+    };
+    let [Stmt::Switch(switch)] = body.stmts.as_slice() else {
+        return None;
+    };
+    let Expr::Ident(pc) = &*switch.discriminant else {
+        return None;
+    };
+    let offsets = switch
+        .cases
+        .iter()
+        .map(|case| numeric_dispatcher_offset(case.test.as_deref()?))
+        .collect::<Option<Vec<_>>>()?;
+    if offsets.first() != Some(&0) {
+        return None;
+    }
+    let target_index = |offset| offsets.iter().position(|candidate| *candidate == offset);
+    let mut cases = Vec::with_capacity(switch.cases.len());
+    for case in &switch.cases {
+        let statements = case.cons.as_slice();
+        let (body, terminator) = if matches!(statements.last(), Some(Stmt::Continue(_))) {
+            let control = statements.len().checked_sub(2)?;
+            if let Some(target) = statements
+                .get(control)
+                .and_then(|statement| dispatcher_pc_assignment(statement, pc))
+            {
+                (
+                    &statements[..control],
+                    DecompiledDispatcherTerminator::Jump(target_index(target)?),
+                )
+            } else {
+                let Stmt::If(branch) = statements.get(control)? else {
+                    return None;
+                };
+                let target = dispatcher_pc_assignment(&branch.cons, pc)?;
+                let fallthrough = dispatcher_pc_assignment(branch.alt.as_deref()?, pc)?;
+                let (test, negate) = match &*branch.test {
+                    Expr::Unary(unary) if unary.op == UnaryOp::Bang => (&*unary.arg, true),
+                    test => (test, false),
+                };
+                (
+                    &statements[..control],
+                    DecompiledDispatcherTerminator::Branch {
+                        test,
+                        negate,
+                        target: target_index(target)?,
+                        fallthrough: target_index(fallthrough)?,
+                    },
+                )
+            }
+        } else if matches!(statements.last(), Some(Stmt::Return(_) | Stmt::Throw(_))) {
+            (statements, DecompiledDispatcherTerminator::Terminal)
+        } else {
+            return None;
+        };
+        cases.push(DecompiledDispatcherCase { body, terminator });
+    }
+    Some(DecompiledDispatcher { cases })
+}
+
+fn dispatcher_pc_assignment(statement: &Stmt, pc: &Ident) -> Option<usize> {
+    let Stmt::Expr(statement) = statement else {
+        return None;
+    };
+    let Expr::Assign(assignment) = &*statement.expr else {
+        return None;
+    };
+    if assignment.op != AssignOp::Assign {
+        return None;
+    }
+    let AssignTarget::Simple(SimpleAssignTarget::Ident(target)) = &assignment.left else {
+        return None;
+    };
+    if target.id.sym != pc.sym {
+        return None;
+    }
+    numeric_dispatcher_offset(&assignment.right)
+}
+
+fn numeric_dispatcher_offset(expression: &Expr) -> Option<usize> {
+    let Expr::Lit(Lit::Num(number)) = expression else {
+        return None;
+    };
+    let value = number.value;
+    (value >= 0.0 && value.fract() == 0.0 && value <= u32::MAX as f64).then_some(value as usize)
 }
 
 fn collect_var_declarations(statements: &[Stmt], names: &mut Vec<String>) -> Result<(), Error> {
@@ -3853,29 +4507,6 @@ fn add_binding(
     Ok(())
 }
 
-fn build_binding_map(
-    bindings: Vec<(String, BindingKind)>,
-) -> Result<HashMap<String, Binding>, Error> {
-    if bindings.len() >= 256 {
-        return Err(Error::Unsupported(
-            "lexical scopes with more than 255 bindings are not supported".into(),
-        ));
-    }
-    Ok(bindings
-        .into_iter()
-        .enumerate()
-        .map(|(slot, (name, kind))| {
-            (
-                name,
-                Binding {
-                    slot: slot as u8,
-                    kind,
-                },
-            )
-        })
-        .collect())
-}
-
 fn collect_statement_var_declarations(
     statement: &Stmt,
     names: &mut Vec<String>,
@@ -4012,6 +4643,63 @@ fn binary_opcode(operator: BinaryOp) -> Option<&'static str> {
         | BinaryOp::Exp
         | BinaryOp::NullishCoalescing => return None,
     })
+}
+
+fn defines_first_register(name: &str) -> bool {
+    name.starts_with("Load")
+        || name.starts_with("Create")
+        || name.starts_with("Get")
+        || name.starts_with("TryGet")
+        || name.starts_with("New")
+        || name.starts_with("Call")
+        || name.starts_with("Construct")
+        || matches!(
+            name,
+            "Mov"
+                | "MovLong"
+                | "Catch"
+                | "CoerceThisNS"
+                | "DirectEval"
+                | "ReifyArguments"
+                | "SelectObject"
+                | "IteratorBegin"
+                | "IteratorNext"
+                | "Eq"
+                | "Neq"
+                | "StrictEq"
+                | "StrictNeq"
+                | "Less"
+                | "LessEq"
+                | "Greater"
+                | "GreaterEq"
+                | "LShift"
+                | "RShift"
+                | "URshift"
+                | "Add"
+                | "Add32"
+                | "Sub"
+                | "Sub32"
+                | "Mul"
+                | "Mul32"
+                | "Div"
+                | "Divi32"
+                | "Divu32"
+                | "Mod"
+                | "BitOr"
+                | "BitXor"
+                | "BitAnd"
+                | "IsIn"
+                | "InstanceOf"
+                | "Not"
+                | "Negate"
+                | "ToNumber"
+                | "ToNumeric"
+                | "ToInt32"
+                | "TypeOf"
+                | "BitNot"
+                | "Inc"
+                | "Dec"
+        )
 }
 
 fn reg(value: u8) -> DecodedOperand {
