@@ -1,6 +1,6 @@
 [package]
 name = "mercury-hbc"
-description = "SWC-based JavaScript and TypeScript compiler and decompiler for Hermes HBC 96"
+description = "Compile, decompile, inspect, and transform Hermes bytecode and JavaScript"
 readme = "README.md"
 keywords = ["hermes", "bytecode", "swc", "javascript", "decompiler"]
 categories = ["compilers", "development-tools", "parser-implementations"]
@@ -9,14 +9,32 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+cli = ["dep:clap"]
 
 [dependencies]
-mercury-binary.workspace = true
-mercury-ir.workspace = true
-mercury-regex.workspace = true
-mercury-spec.workspace = true
-mercury-spec-builtin.workspace = true
+anyhow.workspace = true
+clap = { workspace = true, optional = true }
 num-bigint = "0.4"
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
 swc_core = { version = "82.0.0", features = ["common", "ecma_ast", "ecma_parser", "ecma_parser_typescript", "ecma_codegen", "ecma_transforms_typescript", "ecma_transforms", "ecma_visit"] }
 tempfile = "3"
 thiserror.workspace = true
+
+[build-dependencies]
+anyhow.workspace = true
+
+[[bin]]
+name = "mercury"
+path = "src/bin/mercury.rs"
+required-features = ["cli"]
+
+[[test]]
+name = "box2d_roundtrip"
+path = "tests/box2d_roundtrip.rs"
+required-features = ["cli"]

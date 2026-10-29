@@ -556,111 +556,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
-name = "mercury-asm"
-version = "0.1.0"
-dependencies = [
- "mercury-binary",
- "mercury-ir",
- "mercury-spec",
- "mercury-spec-builtin",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "mercury-binary"
-version = "0.1.0"
-dependencies = [
- "mercury-ir",
- "mercury-spec",
- "mercury-spec-builtin",
- "serde_json",
- "sha1",
- "thiserror",
-]
-
-[[package]]
-name = "mercury-cli"
+name = "mercury-hbc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "mercury-asm",
- "mercury-binary",
- "mercury-hbc",
- "mercury-ir",
- "mercury-spec",
- "mercury-spec-builtin",
- "mercury-spec-extract",
- "serde_json",
-]
-
-[[package]]
-name = "mercury-disasm"
-version = "0.1.0"
-dependencies = [
- "mercury-binary",
- "mercury-ir",
- "mercury-spec",
-]
-
-[[package]]
-name = "mercury-hbc"
-version = "0.1.0"
-dependencies = [
- "mercury-binary",
- "mercury-ir",
- "mercury-regex",
- "mercury-spec",
- "mercury-spec-builtin",
  "num-bigint",
+ "serde",
+ "serde_json",
+ "sha1",
  "swc_core",
  "tempfile",
  "thiserror",
-]
-
-[[package]]
-name = "mercury-ir"
-version = "0.1.0"
-dependencies = [
- "mercury-spec",
- "thiserror",
-]
-
-[[package]]
-name = "mercury-regex"
-version = "0.1.0"
-dependencies = [
- "mercury-binary",
- "mercury-spec-builtin",
- "serde_json",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "mercury-spec"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "mercury-spec-builtin"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "mercury-spec",
- "serde_json",
-]
-
-[[package]]
-name = "mercury-spec-extract"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "mercury-spec",
- "serde_json",
 ]
 
 [[package]]

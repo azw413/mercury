@@ -1,16 +1,5 @@
 [workspace]
-members = [
-    "crates/asm",
-    "crates/binary",
-    "crates/cli",
-    "crates/disasm",
-    "crates/ir",
-    "crates/regex",
-    "crates/spec",
-    "crates/spec-builtin",
-    "crates/spec-extract",
-    "crates/swc",
-]
+members = ["crates/swc"]
 resolver = "3"
 
 [workspace.package]
@@ -22,19 +11,8 @@ repository = "https://github.com/azw413/mercury"
 
 [workspace.dependencies]
 anyhow = "1.0"
-camino = "1.1"
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"
 thiserror = "2.0"
-
-mercury-asm = { version = "0.1.0", path = "crates/asm" }
-mercury-binary = { version = "0.1.0", path = "crates/binary" }
-mercury-disasm = { version = "0.1.0", path = "crates/disasm" }
-mercury-ir = { version = "0.1.0", path = "crates/ir" }
-mercury-regex = { version = "0.1.0", path = "crates/regex" }
-mercury-spec = { version = "0.1.0", path = "crates/spec" }
-mercury-spec-builtin = { version = "0.1.0", path = "crates/spec-builtin" }
-mercury-spec-extract = { version = "0.1.0", path = "crates/spec-extract" }
-mercury-hbc = { version = "0.1.0", path = "crates/swc" }

@@ -9,7 +9,7 @@ are needed for this test.
 Run the self-contained suite:
 
 ```sh
-cargo test --workspace
+cargo test --workspace --all-features
 ```
 
 Run the execution check with a Hermes executable that reports
@@ -17,7 +17,7 @@ Run the execution check with a Hermes executable that reports
 
 ```sh
 HERMES_BIN=/absolute/path/to/hermes \
-  cargo test -p mercury-cli --test box2d_roundtrip -- --ignored
+  cargo test -p mercury-hbc --features cli --test box2d_roundtrip -- --ignored
 ```
 
 This check executes the original and unchanged rebuild and requires identical
@@ -39,7 +39,7 @@ execution and external comparisons:
 ```sh
 HERMES_BIN=/absolute/path/to/hermes \
 HERMES_DEC_ROOT=/absolute/path/to/hermes-dec \
-  cargo test --workspace -- --include-ignored
+  cargo test --workspace --all-features -- --include-ignored
 ```
 
 The external checks were verified against hermes-dec commit

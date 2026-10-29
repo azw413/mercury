@@ -5,7 +5,7 @@ transforming, and decompiling [Hermes](https://github.com/facebook/hermes)
 bytecode. Its high-level API uses real [SWC](https://swc.rs/) syntax trees, and
 its native compiler emits HBC 96 directly without invoking `hermesc`.
 
-The workspace also provides versioned bytecode specifications, raw and semantic
+The same crate also provides versioned bytecode specifications, raw and semantic
 IRs, semantic assembly, and a Hermes-compatible regular-expression compiler.
 
 ## Highlights
@@ -86,32 +86,38 @@ cargo run -p mercury-hbc --example roundtrip -- \
 
 ## Command-line interface
 
-From a checkout, invoke the CLI through Cargo:
+The optional `mercury` binary is enabled by the `cli` feature. Install it with:
 
 ```sh
-cargo run -p mercury-cli -- --help
+cargo install mercury-hbc --features cli
+```
+
+From a checkout, invoke it through Cargo:
+
+```sh
+cargo run -p mercury-hbc --features cli --bin mercury -- --help
 ```
 
 Compile and decompile:
 
 ```sh
-cargo run -p mercury-cli -- compile input.js -o /tmp/example.hbc
-cargo run -p mercury-cli -- decompile /tmp/example.hbc -o /tmp/recovered.js
+cargo run -p mercury-hbc --features cli --bin mercury -- compile input.js -o /tmp/example.hbc
+cargo run -p mercury-hbc --features cli --bin mercury -- decompile /tmp/example.hbc -o /tmp/recovered.js
 ```
 
 List embedded bytecode versions and decode a file:
 
 ```sh
-cargo run -p mercury-cli -- versions
-cargo run -p mercury-cli -- decode test/box2d.hbc -o /tmp/box2d.raw.txt
-cargo run -p mercury-cli -- decode test/box2d.hbc \
+cargo run -p mercury-hbc --features cli --bin mercury -- versions
+cargo run -p mercury-hbc --features cli --bin mercury -- decode test/box2d.hbc -o /tmp/box2d.raw.txt
+cargo run -p mercury-hbc --features cli --bin mercury -- decode test/box2d.hbc \
   --format semantic -o /tmp/box2d.semantic.txt
 ```
 
 Assemble supported semantic HBC 96 text:
 
 ```sh
-cargo run -p mercury-cli -- assemble /tmp/box2d.semantic.txt \
+cargo run -p mercury-hbc --features cli --bin mercury -- assemble /tmp/box2d.semantic.txt \
   --target-version 96 -o /tmp/box2d.assembled.hbc
 ```
 
@@ -166,20 +172,22 @@ recompilation cannot be recovered from bytecode. Generated code assumes standard
 intrinsics; arbitrary host interception and mutated globals are outside the
 current contract.
 
-## Workspace crates
+## Public modules
 
-| Crate | Role |
+Everything is distributed in the single `mercury-hbc` crate. The high-level
+compiler, decompiler, and SWC types are available at the crate root; lower-level
+APIs are organized into modules:
+
+| Module | Role |
 | --- | --- |
-| `mercury-hbc` | Public SWC API, native HBC compiler, and HBC decompiler |
-| `mercury-cli` | User-facing command-line interface |
-| `mercury-binary` | Version-aware HBC parsing, instruction encoding, and container writing |
-| `mercury-ir` | Raw and normalized semantic intermediate representations |
-| `mercury-asm` | Semantic assembly parser and raiser |
-| `mercury-regex` | Hermes-compatible regular-expression bytecode compiler |
-| `mercury-spec` | Serializable versioned specification schema |
-| `mercury-spec-builtin` | Embedded generated specification registry |
-| `mercury-spec-extract` | Specification extraction from a Hermes checkout |
-| `mercury-disasm` | Placeholder for future standalone disassembly helpers |
+| `mercury_hbc::binary` | Version-aware HBC parsing, instruction encoding, and container writing |
+| `mercury_hbc::ir` | Raw and normalized semantic intermediate representations |
+| `mercury_hbc::asm` | Semantic assembly parser and raiser |
+| `mercury_hbc::regex` | Hermes-compatible regular-expression bytecode compiler |
+| `mercury_hbc::spec` | Serializable versioned specification schema |
+| `mercury_hbc::spec_builtin` | Embedded generated specification registry |
+| `mercury_hbc::spec_extract` | Specification extraction from a Hermes checkout |
+| `mercury_hbc::disasm` | Placeholder for future standalone disassembly helpers |
 
 The central design rule is to handle bytecode versions through generated,
 versioned specs rather than scattered ad hoc parser branches. Raw decoding keeps
@@ -187,10 +195,10 @@ encoding details; semantic lowering is a separate, normalized layer.
 
 ## Building and testing
 
-The default test suite is self-contained:
+The self-contained suite, including the CLI integration tests, runs with:
 
 ```sh
-cargo test --workspace
+cargo test --workspace --all-features
 ```
 
 Validate the public documentation and examples:
@@ -212,17 +220,17 @@ See [fixture and test instructions](test/README.md) for reproducible commands.
 With a local Hermes checkout:
 
 ```sh
-cargo run -p mercury-cli -- extract-spec \
+cargo run -p mercury-hbc --features cli --bin mercury -- extract-spec \
   --hermes-repo /path/to/hermes --tag v0.12.0
 ```
 
 Generated JSON specifications live under `spec/generated/` and are embedded by
-`mercury-spec-builtin` at build time. After regenerating them, update the
+`mercury_hbc::spec_builtin` at build time. After regenerating them, update the
 package-local mirror used by crates.io builds:
 
 ```sh
-cp spec/generated/*.json crates/spec-builtin/spec/generated/
-cargo test -p mercury-spec-builtin
+cp spec/generated/*.json crates/swc/spec/generated/
+cargo test -p mercury-hbc --test spec_sync
 ```
 
 The sync test keeps the workspace and packaged registries identical. The current

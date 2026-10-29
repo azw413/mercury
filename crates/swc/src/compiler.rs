@@ -1,4 +1,5 @@
 use crate::{Error, SourceKind, SourceLanguage, SwcModule};
+use crate::{binary as mercury_binary, spec_builtin as mercury_spec_builtin};
 use std::{
     fs,
     path::{Path, PathBuf},

@@ -1,8 +1,8 @@
-use mercury_binary::{
+use mercury_hbc::binary::{
     build_minimal_module, decode_raw_module, parse_hbc_container_with_spec, DecodedInstruction,
     DecodedOperand, MinimalFunction, MinimalModule,
 };
-use mercury_spec_builtin::load_spec;
+use mercury_hbc::spec_builtin::load_spec;
 use mercury_hbc::{
     ast::Number,
     decompile,
@@ -1086,7 +1086,7 @@ fn direct_eval_preserves_global_scope_strictness_and_completion() {
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn committed_hex_and_box2d_fixtures_recompile_with_identical_output() {
     let compiler = compiler();
-    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test");
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     for name in ["hex.hbc", "box2d.hbc"] {
         let original = fs::read(fixtures.join(name)).unwrap();
         let expected = execute(&original);

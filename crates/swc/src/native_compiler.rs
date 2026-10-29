@@ -3,11 +3,12 @@ use std::{
     rc::Rc,
 };
 
-use mercury_binary::{
+use crate::binary::{
     DecodedInstruction, DecodedOperand, ExceptionHandlerEntry, HbcString, MinimalFunction,
     MinimalModule, StringKind, build_minimal_module, encode_instruction,
 };
-use mercury_spec::BytecodeSpec;
+use crate::spec::BytecodeSpec;
+use crate::{regex as mercury_regex, spec_builtin as mercury_spec_builtin};
 use swc_core::atoms::Wtf8Atom;
 use swc_core::ecma::ast::{
     ArrowExpr, ArrowFunctionBody, AssignOp, AssignTarget, BinaryOp, BlockStmt, Callee, Decl, Expr,

@@ -1,12 +1,14 @@
 use std::{fs, process::Command};
 
-use mercury_binary::{decode_raw_module, parse_hbc_container_with_spec};
-use mercury_ir::RawOperand;
-use mercury_spec_builtin::load_spec;
+use mercury_hbc::binary::{decode_raw_module, parse_hbc_container_with_spec};
+use mercury_hbc::ir::RawOperand;
+use mercury_hbc::spec_builtin::load_spec;
 use mercury_hbc::{
     HbcCompiler, SourceKind, SourceLanguage, SwcModule,
     ast::Ident,
     decompile,
+    ir as mercury_ir,
+    regex as mercury_regex,
     visit::{VisitMut, VisitMutWith},
 };
 
@@ -263,6 +265,7 @@ fn rejects_invalid_regex_literals() {
 }
 
 #[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
 fn splits_large_binding_sets_across_environments() {
     let mut source = String::new();
     for index in 0..300 {
@@ -285,6 +288,7 @@ fn splits_large_binding_sets_across_environments() {
 }
 
 #[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
 fn native_large_register_pressure_calls_execute() {
     let bytes = compile(
         include_str!("fixtures/register_pressure.js.txt"),
@@ -1130,9 +1134,9 @@ fn native_self_hosted_large_fixtures_roundtrip_survives_renaming() {
         .map(|step| format!("Completed step {step}\n"))
         .collect::<String>();
     for (original, expected) in [
-        (&include_bytes!("../../../test/hex.hbc")[..], "".to_owned()),
+        (&include_bytes!("fixtures/hex.hbc")[..], "".to_owned()),
         (
-            &include_bytes!("../../../test/box2d.hbc")[..],
+            &include_bytes!("fixtures/box2d.hbc")[..],
             expected_box2d,
         ),
     ] {

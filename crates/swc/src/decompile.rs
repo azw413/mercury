@@ -1,6 +1,7 @@
 use crate::{Error, SwcModule, ast_builder as b, cfg, literal};
-use mercury_binary::{HbcContainer, decode_raw_module, parse_hbc_container_with_spec};
-use mercury_ir::{RawFunction, RawInstruction, RawModule, RawOperand};
+use crate::binary::{HbcContainer, decode_raw_module, parse_hbc_container_with_spec};
+use crate::ir::{RawFunction, RawInstruction, RawModule, RawOperand};
+use crate::spec_builtin as mercury_spec_builtin;
 use num_bigint::BigInt;
 use std::collections::HashSet;
 use swc_core::{

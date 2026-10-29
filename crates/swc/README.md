@@ -88,6 +88,14 @@ printed, edited, or compiled again.
 useful for external-oracle testing or syntax outside Mercury's native source
 coverage.
 
+### Lower-level modules
+
+The same crate exposes `binary` for HBC parsing and writing, `ir` for raw and
+semantic representations, `asm` for semantic assembly, `regex` for Hermes regex
+bytecode, `spec` and `spec_builtin` for versioned specifications, and
+`spec_extract` for extracting specifications from a Hermes checkout. None of
+these requires a separate crate dependency.
+
 ## Cargo examples
 
 Run the no-setup, in-memory workflow:
@@ -116,11 +124,20 @@ cargo run -p mercury-hbc --example roundtrip -- \
   test/box2d.hbc /tmp/box2d-rebuilt.hbc --rename-generated
 ```
 
-The workspace CLI exposes the same main operations:
+## Command-line interface
+
+The `mercury` binary is an optional target gated by the `cli` feature. Library
+users do not need to enable it. Install it from crates.io with:
 
 ```sh
-cargo run -p mercury-cli -- compile input.js -o /tmp/example.hbc
-cargo run -p mercury-cli -- decompile /tmp/example.hbc -o /tmp/recovered.js
+cargo install mercury-hbc --features cli
+```
+
+From a checkout, run it through Cargo:
+
+```sh
+cargo run -p mercury-hbc --features cli --bin mercury -- compile input.js -o /tmp/example.hbc
+cargo run -p mercury-hbc --features cli --bin mercury -- decompile /tmp/example.hbc -o /tmp/recovered.js
 ```
 
 ## Native source-compilation contract
@@ -214,7 +231,7 @@ cargo check -p mercury-hbc --examples
 Run the self-contained tests:
 
 ```sh
-cargo test -p mercury-hbc
+cargo test -p mercury-hbc --all-features
 ```
 
 Execution tests require a Hermes runtime and, for fixtures authored from source,
@@ -222,7 +239,7 @@ its compiler:
 
 ```sh
 HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
-  cargo test -p mercury-hbc -- --include-ignored
+  cargo test -p mercury-hbc --all-features -- --include-ignored
 ```
 
 The corpus harness covers 12 focused fixtures and 49 generated programs at `-O0`

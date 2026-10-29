@@ -55,17 +55,41 @@
 //! [`HermesCompiler`] is a separate adapter for callers that explicitly configure
 //! an external `hermesc` executable; it is not used by [`HbcCompiler`].
 //!
+//! # Lower-level APIs
+//!
+//! The [`binary`], [`ir`], [`asm`], and [`regex`] modules expose Mercury's
+//! container codec, intermediate representations, semantic assembler, and Hermes
+//! regex compiler. Versioned specifications are available through [`spec`],
+//! [`spec_builtin`], and [`spec_extract`]. All are part of this single crate.
+//!
 //! The crate README documents the detailed source-language and bytecode contracts.
 
 #![warn(missing_docs)]
 
 mod ast_builder;
+#[allow(missing_docs)]
+pub mod asm;
+#[allow(missing_docs)]
+pub mod binary;
 mod cfg;
 mod compiler;
 mod decompile;
+#[allow(missing_docs)]
+pub mod disasm;
+#[allow(missing_docs)]
+pub mod ir;
 mod literal;
 mod native_compiler;
+#[allow(missing_docs)]
+pub mod regex;
 mod source;
+#[allow(missing_docs)]
+pub mod spec;
+/// Embedded Hermes bytecode specifications.
+#[allow(missing_docs)]
+pub mod spec_builtin;
+#[allow(missing_docs)]
+pub mod spec_extract;
 
 pub use compiler::HermesCompiler;
 pub use decompile::decompile;

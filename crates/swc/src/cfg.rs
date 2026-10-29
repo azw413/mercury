@@ -1,6 +1,6 @@
 //! Basic blocks retain original instruction addresses; no guessed structuring.
 use crate::Error;
-use mercury_ir::{RawFunction, RawInstruction, RawOperand};
+use crate::ir::{RawFunction, RawInstruction, RawOperand};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct Block<'a> {
