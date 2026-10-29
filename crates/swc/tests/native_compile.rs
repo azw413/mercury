@@ -285,6 +285,16 @@ fn splits_large_binding_sets_across_environments() {
 }
 
 #[test]
+fn native_large_register_pressure_calls_execute() {
+    let bytes = compile(
+        include_str!("fixtures/register_pressure.js.txt"),
+        SourceLanguage::JavaScript,
+    );
+
+    assert_eq!(execute(bytes), "14853,3120\n");
+}
+
+#[test]
 fn rejects_unsupported_syntax_at_the_native_boundary() {
     let module = SwcModule::parse(
         "input.js",

@@ -90,6 +90,7 @@ struct Compiler {
     environment_register: Option<u8>,
     parent_environment_register: Option<u8>,
     base_registers: u16,
+    register_binding_budget: usize,
     is_global: bool,
     current_function_id: u32,
     current_function_kind: NativeFunctionKind,
@@ -165,6 +166,36 @@ enum BindingLocation {
     Local { environment: u8, binding: Binding },
     Parent { level: u8, binding: Binding },
     Global,
+}
+
+#[derive(Default)]
+struct CallArityFinder {
+    max_arguments: usize,
+}
+
+impl Visit for CallArityFinder {
+    fn visit_function(&mut self, _function: &Function) {}
+
+    fn visit_arrow_expr(&mut self, _arrow: &ArrowExpr) {}
+
+    fn visit_call_expr(&mut self, call: &swc_core::ecma::ast::CallExpr) {
+        self.max_arguments = self.max_arguments.max(call.args.len() + 1);
+        call.visit_children_with(self);
+    }
+
+    fn visit_new_expr(&mut self, expression: &swc_core::ecma::ast::NewExpr) {
+        self.max_arguments = self.max_arguments.max(
+            expression.args.as_deref().unwrap_or_default().len() + 1,
+        );
+        expression.visit_children_with(self);
+    }
+
+    fn visit_tagged_tpl(&mut self, tagged: &TaggedTpl) {
+        // getTemplateObject receives an id, a duplicate flag, and every raw
+        // string, plus the implicit receiver counted by CallBuiltin.
+        self.max_arguments = self.max_arguments.max(tagged.tpl.quasis.len() + 3);
+        tagged.visit_children_with(self);
+    }
 }
 
 #[derive(Default)]
@@ -357,6 +388,7 @@ impl Compiler {
             environment_register: None,
             parent_environment_register: None,
             base_registers: 0,
+            register_binding_budget: MAX_REGISTER_BINDINGS_PER_SCOPE,
             is_global: true,
             current_function_id: 0,
             current_function_kind: NativeFunctionKind::Regular,
@@ -388,6 +420,8 @@ impl Compiler {
                 BindingKind::Var,
             )?;
         }
+        let mut call_arity = CallArityFinder::default();
+        script.body.visit_with(&mut call_arity);
         let global_environment_size = self.begin_function(
             0,
             lexical_bindings,
@@ -395,6 +429,7 @@ impl Compiler {
             true,
             NativeFunctionKind::Regular,
             strict,
+            call_arity.max_arguments,
         )?;
         if captures_this {
             self.initialize_lexical_this()?;
@@ -470,6 +505,7 @@ impl Compiler {
         is_global: bool,
         kind: NativeFunctionKind,
         strict: bool,
+        syntax_max_call_arguments: usize,
     ) -> Result<u32, Error> {
         self.instructions.clear();
         self.next_register = 0;
@@ -491,6 +527,9 @@ impl Compiler {
         self.current_function_resumable = false;
         self.parent_environment_register = None;
         self.base_registers = 0;
+        let call_reserve = syntax_max_call_arguments.saturating_add(8);
+        self.register_binding_budget =
+            usize::from(u8::MAX).saturating_add(1).saturating_sub(call_reserve);
         let cache_parent_environment = parent_scope.as_ref().is_some_and(|scope| {
             std::iter::successors(Some(scope), |scope| scope.parent.as_ref()).any(|scope| {
                 scope
@@ -613,7 +652,10 @@ impl Compiler {
         bindings
             .iter()
             .filter(|(name, _)| !self.captured_names.contains(name))
-            .take(MAX_REGISTER_BINDINGS_PER_SCOPE)
+            .take(MAX_REGISTER_BINDINGS_PER_SCOPE.min(
+                self.register_binding_budget
+                    .saturating_sub(usize::from(self.next_register)),
+            ))
             .map(|(name, _)| name.clone())
             .collect()
     }
@@ -873,6 +915,11 @@ impl Compiler {
                 add_binding(&mut parameter_bindings, name, kind)?;
             }
         }
+        let mut call_arity = CallArityFinder::default();
+        match &pending.body {
+            PendingFunctionBody::Block(body) => body.stmts.visit_with(&mut call_arity),
+            PendingFunctionBody::Expression(expression) => expression.visit_with(&mut call_arity),
+        }
         let environment_size = self.begin_function(
             pending.id,
             parameter_bindings,
@@ -880,6 +927,7 @@ impl Compiler {
             false,
             pending.kind,
             pending.strict,
+            call_arity.max_arguments,
         )?;
         self.current_function_resumable = matches!(
             pending.params.as_slice(),
@@ -1045,6 +1093,8 @@ impl Compiler {
                     Error::Unsupported("script needs an HBC frame larger than u16".into())
                 })?
         };
+        self.propagate_register_copies(spec)?;
+        self.coalesce_register_moves(spec)?;
         self.resolve_frame_moves(frame_size)?;
         self.resolve_branches(spec)?;
         let exception_handlers = self.resolve_exception_handlers()?;
@@ -4117,6 +4167,408 @@ impl Compiler {
             .push(PendingFrameMove { instruction, slot });
     }
 
+    fn propagate_register_copies(&mut self, spec: &BytecodeSpec) -> Result<(), Error> {
+        if self.instructions.is_empty() {
+            return Ok(());
+        }
+        let definitions = spec
+            .instructions
+            .iter()
+            .map(|definition| (definition.name.as_str(), definition))
+            .collect::<HashMap<_, _>>();
+        let register = |operand: &DecodedOperand| match operand {
+            DecodedOperand::U8(value) => Some(u32::from(*value)),
+            DecodedOperand::U16(value) => Some(u32::from(*value)),
+            DecodedOperand::U32(value) => Some(*value),
+            _ => None,
+        };
+        let mut uses = HashMap::<u32, usize>::new();
+        for instruction in &self.instructions {
+            let definition = definitions.get(instruction.name.as_str()).ok_or_else(|| {
+                Error::Bytecode(format!(
+                    "embedded HBC 96 spec has no {} instruction",
+                    instruction.name
+                ))
+            })?;
+            let defines_output = defines_first_register(&instruction.name);
+            for (index, (operand, operand_spec)) in instruction
+                .operands
+                .iter()
+                .zip(&definition.operands)
+                .enumerate()
+            {
+                if operand_spec.kind.starts_with("Reg")
+                    && !(index == 0 && defines_output)
+                    && let Some(register) = register(operand)
+                {
+                    *uses.entry(register).or_default() += 1;
+                }
+            }
+        }
+        let block_starts = self.labels.iter().flatten().copied().collect::<HashSet<_>>();
+        let frame_moves = self
+            .frame_moves
+            .iter()
+            .map(|pending| pending.instruction)
+            .collect::<HashSet<_>>();
+        let mut removed = vec![false; self.instructions.len()];
+        for index in 0..self.instructions.len() {
+            let instruction = &self.instructions[index];
+            if !matches!(instruction.name.as_str(), "Mov" | "MovLong")
+                || frame_moves.contains(&index)
+            {
+                continue;
+            }
+            let (Some(destination), Some(source)) = (
+                register(&instruction.operands[0]),
+                register(&instruction.operands[1]),
+            ) else {
+                continue;
+            };
+            if destination == source || uses.get(&destination) != Some(&1) {
+                continue;
+            }
+            for use_index in index + 1..self.instructions.len() {
+                if block_starts.contains(&use_index) {
+                    break;
+                }
+                let user = &mut self.instructions[use_index];
+                let definition = definitions[user.name.as_str()];
+                let defines_output = defines_first_register(&user.name);
+                let output = if defines_output {
+                    register(&user.operands[0])
+                } else {
+                    None
+                };
+                let reads_destination = user
+                    .operands
+                    .iter()
+                    .zip(&definition.operands)
+                    .enumerate()
+                    .any(|(operand_index, (operand, operand_spec))| {
+                        operand_spec.kind.starts_with("Reg")
+                            && !(operand_index == 0 && defines_output)
+                            && register(operand) == Some(destination)
+                    });
+                if reads_destination && output != Some(source) {
+                    for (operand_index, (operand, operand_spec)) in user
+                        .operands
+                        .iter_mut()
+                        .zip(&definition.operands)
+                        .enumerate()
+                    {
+                        if operand_spec.kind.starts_with("Reg")
+                            && !(operand_index == 0 && defines_output)
+                            && register(operand) == Some(destination)
+                        {
+                            *operand = match operand {
+                                DecodedOperand::U8(_) => DecodedOperand::U8(
+                                    u8::try_from(source).map_err(|_| {
+                                        Error::Bytecode("propagated register does not fit Reg8".into())
+                                    })?,
+                                ),
+                                DecodedOperand::U16(_) => DecodedOperand::U16(
+                                    u16::try_from(source).map_err(|_| {
+                                        Error::Bytecode(
+                                            "propagated register does not fit Reg16".into(),
+                                        )
+                                    })?,
+                                ),
+                                DecodedOperand::U32(_) => DecodedOperand::U32(source),
+                                _ => unreachable!(),
+                            };
+                        }
+                    }
+                    *uses.get_mut(&destination).expect("one destination use") -= 1;
+                    *uses.entry(source).or_default() += 1;
+                    *uses.get_mut(&source).expect("move source use") -= 1;
+                    removed[index] = true;
+                    break;
+                }
+                if output == Some(source) || output == Some(destination) {
+                    break;
+                }
+            }
+        }
+        self.remove_instructions(removed)
+    }
+
+    fn coalesce_register_moves(&mut self, spec: &BytecodeSpec) -> Result<(), Error> {
+        if self.instructions.is_empty() {
+            return Ok(());
+        }
+        let definitions = spec
+            .instructions
+            .iter()
+            .map(|definition| (definition.name.as_str(), definition))
+            .collect::<HashMap<_, _>>();
+        let register = |operand: &DecodedOperand| match operand {
+            DecodedOperand::U8(value) => Some(u32::from(*value)),
+            DecodedOperand::U16(value) => Some(u32::from(*value)),
+            DecodedOperand::U32(value) => Some(*value),
+            _ => None,
+        };
+        let mut source_uses = HashMap::<u32, usize>::new();
+        for instruction in &self.instructions {
+            let definition = definitions.get(instruction.name.as_str()).ok_or_else(|| {
+                Error::Bytecode(format!(
+                    "embedded HBC 96 spec has no {} instruction",
+                    instruction.name
+                ))
+            })?;
+            let defines_output = defines_first_register(&instruction.name);
+            for (index, (operand, operand_spec)) in instruction
+                .operands
+                .iter()
+                .zip(&definition.operands)
+                .enumerate()
+            {
+                if operand_spec.kind.starts_with("Reg")
+                    && !(index == 0 && defines_output)
+                    && let Some(register) = register(operand)
+                {
+                    *source_uses.entry(register).or_default() += 1;
+                }
+            }
+        }
+
+        let block_starts = self.labels.iter().flatten().copied().collect::<HashSet<_>>();
+        let frame_moves = self
+            .frame_moves
+            .iter()
+            .map(|pending| pending.instruction)
+            .collect::<HashSet<_>>();
+        let exception_live = self.exception_live_registers(spec)?;
+        let mut last_assignment = HashMap::<u32, usize>::new();
+        let mut last_use = HashMap::<u32, usize>::new();
+        let mut removed = vec![false; self.instructions.len()];
+        let mut block_start = 0;
+        for index in 0..self.instructions.len() {
+            if block_starts.contains(&index) {
+                block_start = index;
+            }
+            let candidate = {
+                let instruction = &self.instructions[index];
+                if matches!(instruction.name.as_str(), "Mov" | "MovLong")
+                    && !frame_moves.contains(&index)
+                    && let (Some(destination), Some(source)) =
+                        (register(&instruction.operands[0]), register(&instruction.operands[1]))
+                    && destination != source
+                    && source_uses.get(&source) == Some(&1)
+                    && let Some(&producer) = last_assignment.get(&source)
+                    && producer > block_start
+                    && last_assignment.get(&destination).copied().unwrap_or(0) < producer
+                    && last_use.get(&destination).copied().unwrap_or(0) <= producer
+                    && !(producer..index)
+                        .any(|instruction| exception_live[instruction].contains(&destination))
+                {
+                    Some((producer, destination))
+                } else {
+                    None
+                }
+            };
+            if let Some((producer, destination)) = candidate {
+                let destination_operand = &mut self.instructions[producer - 1].operands[0];
+                match destination_operand {
+                    DecodedOperand::U8(value) => {
+                        *value = u8::try_from(destination).map_err(|_| {
+                            Error::Bytecode("coalesced register does not fit Reg8".into())
+                        })?
+                    }
+                    DecodedOperand::U16(value) => {
+                        *value = u16::try_from(destination).map_err(|_| {
+                            Error::Bytecode("coalesced register does not fit Reg16".into())
+                        })?
+                    }
+                    DecodedOperand::U32(value) => *value = destination,
+                    _ => {
+                        return Err(Error::Bytecode(
+                            "coalesced producer has a non-register output".into(),
+                        ));
+                    }
+                }
+                removed[index] = true;
+                continue;
+            }
+            let instruction = &self.instructions[index];
+            let definition = definitions[instruction.name.as_str()];
+            let defines_output = defines_first_register(&instruction.name);
+            for (operand_index, (operand, operand_spec)) in instruction
+                .operands
+                .iter()
+                .zip(&definition.operands)
+                .enumerate()
+            {
+                if !operand_spec.kind.starts_with("Reg") {
+                    continue;
+                }
+                let Some(register) = register(operand) else {
+                    continue;
+                };
+                if operand_index == 0 && defines_output {
+                    last_assignment.insert(register, index + 1);
+                } else {
+                    last_use.insert(register, index + 1);
+                }
+            }
+        }
+
+        self.remove_instructions(removed)
+    }
+
+    fn remove_instructions(&mut self, removed: Vec<bool>) -> Result<(), Error> {
+        if removed.len() != self.instructions.len() {
+            return Err(Error::Bytecode(
+                "instruction removal map has the wrong length".into(),
+            ));
+        }
+        if !removed.iter().any(|removed| *removed) {
+            return Ok(());
+        }
+        let mut old_to_new = Vec::with_capacity(self.instructions.len() + 1);
+        let mut removals = 0;
+        for old in 0..=self.instructions.len() {
+            old_to_new.push(old - removals);
+            if old < removed.len() && removed[old] {
+                removals += 1;
+            }
+        }
+        for label in self.labels.iter_mut().flatten() {
+            *label = old_to_new[*label];
+        }
+        for branch in &mut self.branches {
+            if removed[branch.instruction] {
+                return Err(Error::Bytecode(
+                    "instruction removal deleted a pending branch".into(),
+                ));
+            }
+            branch.instruction = old_to_new[branch.instruction];
+        }
+        for pending in &mut self.frame_moves {
+            if removed[pending.instruction] {
+                return Err(Error::Bytecode(
+                    "instruction removal deleted an outgoing frame move".into(),
+                ));
+            }
+            pending.instruction = old_to_new[pending.instruction];
+        }
+        let mut index = 0;
+        self.instructions.retain(|_| {
+            let keep = !removed[index];
+            index += 1;
+            keep
+        });
+        Ok(())
+    }
+
+    fn exception_live_registers(&self, spec: &BytecodeSpec) -> Result<Vec<HashSet<u32>>, Error> {
+        let mut protected_live = vec![HashSet::new(); self.instructions.len()];
+        if self.exception_handlers.is_empty() {
+            return Ok(protected_live);
+        }
+        let label_position = |label: usize| {
+            self.labels
+                .get(label)
+                .and_then(|position| *position)
+                .ok_or_else(|| Error::Bytecode("control flow has an unresolved label".into()))
+        };
+        let handlers = self
+            .exception_handlers
+            .iter()
+            .map(|handler| {
+                Ok((
+                    label_position(handler.start)?,
+                    label_position(handler.end)?,
+                    label_position(handler.target)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let definitions = spec
+            .instructions
+            .iter()
+            .map(|definition| (definition.name.as_str(), definition))
+            .collect::<HashMap<_, _>>();
+        let mut successors = vec![Vec::new(); self.instructions.len()];
+        let mut uses = vec![HashSet::new(); self.instructions.len()];
+        let mut definitions_by_instruction = vec![None; self.instructions.len()];
+        for (index, instruction) in self.instructions.iter().enumerate() {
+            if index + 1 < self.instructions.len()
+                && !matches!(
+                    instruction.name.as_str(),
+                    "Jmp" | "JmpLong" | "Ret" | "Throw" | "Unreachable"
+                )
+            {
+                successors[index].push(index + 1);
+            }
+            let definition = definitions.get(instruction.name.as_str()).ok_or_else(|| {
+                Error::Bytecode(format!(
+                    "embedded HBC 96 spec has no {} instruction",
+                    instruction.name
+                ))
+            })?;
+            let defines_output = defines_first_register(&instruction.name);
+            for (operand_index, (operand, operand_spec)) in instruction
+                .operands
+                .iter()
+                .zip(&definition.operands)
+                .enumerate()
+            {
+                if !operand_spec.kind.starts_with("Reg") {
+                    continue;
+                }
+                let register = match operand {
+                    DecodedOperand::U8(value) => u32::from(*value),
+                    DecodedOperand::U16(value) => u32::from(*value),
+                    DecodedOperand::U32(value) => *value,
+                    _ => continue,
+                };
+                if operand_index == 0 && defines_output {
+                    definitions_by_instruction[index] = Some(register);
+                } else {
+                    uses[index].insert(register);
+                }
+            }
+        }
+        for branch in &self.branches {
+            successors[branch.instruction].push(label_position(branch.target)?);
+        }
+        for &(start, end, target) in &handlers {
+            for instruction in start..end {
+                successors[instruction].push(target);
+            }
+        }
+
+        let mut live_in = vec![HashSet::new(); self.instructions.len()];
+        loop {
+            let mut changed = false;
+            for index in (0..self.instructions.len()).rev() {
+                let mut next = HashSet::new();
+                for &successor in &successors[index] {
+                    if let Some(successor_live) = live_in.get(successor) {
+                        next.extend(successor_live.iter().copied());
+                    }
+                }
+                if let Some(definition) = definitions_by_instruction[index] {
+                    next.remove(&definition);
+                }
+                next.extend(uses[index].iter().copied());
+                if next != live_in[index] {
+                    live_in[index] = next;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for &(start, end, target) in &handlers {
+            for instruction in start..end {
+                protected_live[instruction].extend(live_in[target].iter().copied());
+            }
+        }
+        Ok(protected_live)
+    }
+
     fn resolve_frame_moves(&mut self, frame_size: u16) -> Result<(), Error> {
         if self.frame_moves.is_empty() {
             return Ok(());
@@ -4128,10 +4580,24 @@ impl Compiler {
             let destination = this_register.checked_sub(pending.slot).ok_or_else(|| {
                 Error::Bytecode("constructor arguments exceed the outgoing frame".into())
             })?;
-            self.instructions[pending.instruction].operands[0] =
-                DecodedOperand::U8(u8::try_from(destination).map_err(|_| {
-                    Error::Bytecode("outgoing register does not fit HBC 96".into())
-                })?);
+            let instruction = &mut self.instructions[pending.instruction];
+            if let Ok(destination) = u8::try_from(destination) {
+                instruction.operands[0] = DecodedOperand::U8(destination);
+            } else {
+                let source = match instruction.operands[1] {
+                    DecodedOperand::U8(value) => u32::from(value),
+                    _ => {
+                        return Err(Error::Bytecode(
+                            "outgoing frame move has a non-register source".into(),
+                        ));
+                    }
+                };
+                instruction.name = "MovLong".into();
+                instruction.operands = vec![
+                    DecodedOperand::U32(u32::from(destination)),
+                    DecodedOperand::U32(source),
+                ];
+            }
         }
         Ok(())
     }
@@ -4748,4 +5214,235 @@ fn unsupported_expression(expression: &Expr) -> Error {
             _ => "this",
         }
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn coalesce(compiler: &mut Compiler) {
+        compiler
+            .coalesce_register_moves(&mercury_spec_builtin::load_spec(96).unwrap().bytecode)
+            .unwrap();
+    }
+
+    fn propagate(compiler: &mut Compiler) {
+        compiler
+            .propagate_register_copies(&mercury_spec_builtin::load_spec(96).unwrap().bytecode)
+            .unwrap();
+    }
+
+    fn register(operand: &DecodedOperand) -> u32 {
+        match operand {
+            DecodedOperand::U8(value) => u32::from(*value),
+            DecodedOperand::U16(value) => u32::from(*value),
+            DecodedOperand::U32(value) => *value,
+            _ => panic!("expected a register operand"),
+        }
+    }
+
+    #[test]
+    fn coalesces_a_single_use_move_into_its_producer() {
+        let mut compiler = Compiler::new(96);
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        compiler.emit("Mov", vec![reg(2), reg(1)]);
+        compiler.emit("Ret", vec![reg(2)]);
+
+        coalesce(&mut compiler);
+
+        assert_eq!(compiler.instructions.len(), 2);
+        assert_eq!(register(&compiler.instructions[0].operands[0]), 2);
+        assert_eq!(compiler.instructions[1].name, "Ret");
+    }
+
+    #[test]
+    fn preserves_a_move_when_the_destination_is_live() {
+        let mut compiler = Compiler::new(96);
+        compiler.emit("LoadConstUInt8", vec![reg(2), DecodedOperand::U8(7)]);
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        compiler.emit("Add", vec![reg(3), reg(2), reg(2)]);
+        compiler.emit("Mov", vec![reg(2), reg(1)]);
+        compiler.emit("Ret", vec![reg(2)]);
+
+        coalesce(&mut compiler);
+
+        assert_eq!(compiler.instructions.len(), 5);
+        assert_eq!(register(&compiler.instructions[1].operands[0]), 1);
+    }
+
+    #[test]
+    fn preserves_a_move_when_the_source_has_another_use() {
+        let mut compiler = Compiler::new(96);
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        compiler.emit("Mov", vec![reg(2), reg(1)]);
+        compiler.emit("Ret", vec![reg(1)]);
+
+        coalesce(&mut compiler);
+
+        assert_eq!(compiler.instructions.len(), 3);
+        assert_eq!(compiler.instructions[1].name, "Mov");
+    }
+
+    #[test]
+    fn does_not_coalesce_across_a_label() {
+        let mut compiler = Compiler::new(96);
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        let label = compiler.new_label();
+        compiler.mark_label(label).unwrap();
+        compiler.emit("Mov", vec![reg(2), reg(1)]);
+        compiler.emit("Ret", vec![reg(2)]);
+
+        coalesce(&mut compiler);
+
+        assert_eq!(compiler.instructions.len(), 3);
+        assert_eq!(compiler.instructions[1].name, "Mov");
+    }
+
+    #[test]
+    fn does_not_coalesce_an_outgoing_frame_move() {
+        let mut compiler = Compiler::new(96);
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        compiler.emit_frame_move(1, 1);
+        compiler.emit("Ret", vec![reg(0)]);
+
+        coalesce(&mut compiler);
+
+        assert_eq!(compiler.instructions.len(), 3);
+        assert_eq!(compiler.instructions[1].name, "Mov");
+    }
+
+    #[test]
+    fn remaps_labels_and_pending_positions_after_coalescing() {
+        let mut compiler = Compiler::new(96);
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        compiler.emit("Mov", vec![reg(2), reg(1)]);
+        let target = compiler.new_label();
+        compiler.emit_branch("JmpLong", target, None);
+        compiler.mark_label(target).unwrap();
+        compiler.emit("Ret", vec![reg(2)]);
+
+        coalesce(&mut compiler);
+
+        assert_eq!(compiler.branches[0].instruction, 1);
+        assert_eq!(compiler.branches[0].target, target);
+        assert_eq!(compiler.labels[target], Some(2));
+        assert_eq!(compiler.instructions.len(), 3);
+    }
+
+    #[test]
+    fn preserves_a_destination_live_in_an_exception_handler() {
+        let mut compiler = Compiler::new(96);
+        let start = compiler.new_label();
+        let end = compiler.new_label();
+        let target = compiler.new_label();
+        compiler.mark_label(start).unwrap();
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        compiler.emit("GetGlobalObject", vec![reg(3)]);
+        compiler.emit("Mov", vec![reg(2), reg(1)]);
+        compiler.mark_label(end).unwrap();
+        compiler.mark_label(target).unwrap();
+        compiler.emit("Catch", vec![reg(4)]);
+        compiler.emit("Ret", vec![reg(2)]);
+        compiler.exception_handlers.push(PendingExceptionHandler {
+            start,
+            end,
+            target,
+        });
+
+        coalesce(&mut compiler);
+
+        assert_eq!(compiler.instructions.len(), 5);
+        assert_eq!(compiler.instructions[2].name, "Mov");
+        assert_eq!(register(&compiler.instructions[0].operands[0]), 1);
+    }
+
+    #[test]
+    fn coalesces_when_exception_handlers_do_not_read_the_destination() {
+        let mut compiler = Compiler::new(96);
+        let start = compiler.new_label();
+        let end = compiler.new_label();
+        let target = compiler.new_label();
+        compiler.mark_label(start).unwrap();
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        compiler.emit("GetGlobalObject", vec![reg(3)]);
+        compiler.emit("Mov", vec![reg(2), reg(1)]);
+        compiler.mark_label(end).unwrap();
+        compiler.mark_label(target).unwrap();
+        compiler.emit("Catch", vec![reg(4)]);
+        compiler.emit("Ret", vec![reg(4)]);
+        compiler.exception_handlers.push(PendingExceptionHandler {
+            start,
+            end,
+            target,
+        });
+
+        coalesce(&mut compiler);
+
+        assert_eq!(compiler.instructions.len(), 4);
+        assert_eq!(register(&compiler.instructions[0].operands[0]), 2);
+        assert_eq!(compiler.instructions[1].name, "GetGlobalObject");
+        assert_eq!(compiler.instructions[2].name, "Catch");
+    }
+
+    #[test]
+    fn forwards_a_copy_with_a_multi_use_source() {
+        let mut compiler = Compiler::new(96);
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        compiler.emit("Mov", vec![reg(2), reg(1)]);
+        compiler.emit("Add", vec![reg(3), reg(2), reg(1)]);
+        compiler.emit("Ret", vec![reg(3)]);
+
+        propagate(&mut compiler);
+
+        assert_eq!(compiler.instructions.len(), 3);
+        assert_eq!(compiler.instructions[1].name, "Add");
+        assert_eq!(register(&compiler.instructions[1].operands[1]), 1);
+        assert_eq!(register(&compiler.instructions[1].operands[2]), 1);
+    }
+
+    #[test]
+    fn does_not_forward_across_a_source_redefinition() {
+        let mut compiler = Compiler::new(96);
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        compiler.emit("Mov", vec![reg(2), reg(1)]);
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(9)]);
+        compiler.emit("Ret", vec![reg(2)]);
+
+        propagate(&mut compiler);
+
+        assert_eq!(compiler.instructions.len(), 4);
+        assert_eq!(compiler.instructions[1].name, "Mov");
+        assert_eq!(register(&compiler.instructions[3].operands[0]), 2);
+    }
+
+    #[test]
+    fn does_not_forward_a_copy_across_a_label() {
+        let mut compiler = Compiler::new(96);
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        compiler.emit("Mov", vec![reg(2), reg(1)]);
+        let label = compiler.new_label();
+        compiler.mark_label(label).unwrap();
+        compiler.emit("Ret", vec![reg(2)]);
+
+        propagate(&mut compiler);
+
+        assert_eq!(compiler.instructions.len(), 3);
+        assert_eq!(compiler.instructions[1].name, "Mov");
+        assert_eq!(register(&compiler.instructions[2].operands[0]), 2);
+    }
+
+    #[test]
+    fn forwards_a_chain_of_single_use_copies() {
+        let mut compiler = Compiler::new(96);
+        compiler.emit("LoadConstUInt8", vec![reg(1), DecodedOperand::U8(42)]);
+        compiler.emit("Mov", vec![reg(2), reg(1)]);
+        compiler.emit("Mov", vec![reg(3), reg(2)]);
+        compiler.emit("Ret", vec![reg(3)]);
+
+        propagate(&mut compiler);
+
+        assert_eq!(compiler.instructions.len(), 2);
+        assert_eq!(compiler.instructions[1].name, "Ret");
+        assert_eq!(register(&compiler.instructions[1].operands[0]), 1);
+    }
 }
