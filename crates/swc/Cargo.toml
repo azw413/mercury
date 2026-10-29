@@ -1,6 +1,6 @@
 [package]
 name = "mercury-hbc"
-description = "Compile, decompile, inspect, and transform Hermes bytecode and JavaScript"
+description = "A crate to compile, decompile, inspect, and transform Hermes bytecode"
 readme = "README.md"
 keywords = ["hermes", "bytecode", "swc", "javascript", "decompiler"]
 categories = ["compilers", "development-tools", "parser-implementations"]
