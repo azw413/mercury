@@ -1,4 +1,4 @@
-use mercury_swc::{Error, SourceKind, SourceLanguage, SwcModule, ast::*, decompile};
+use mercury_hbc::{Error, SourceKind, SourceLanguage, SwcModule, ast::*, decompile};
 
 #[test]
 fn committed_compiler_fixture_decompiles_to_real_nodes_and_prints_valid_js() {

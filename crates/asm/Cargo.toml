@@ -1,5 +1,9 @@
 [package]
 name = "mercury-asm"
+description = "Parser and raiser for Mercury's semantic Hermes bytecode assembly"
+readme = "../../README.md"
+keywords = ["hermes", "bytecode", "assembly", "disassembler"]
+categories = ["compilers", "development-tools"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,11 +11,11 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-mercury-binary = { path = "../binary" }
-mercury-ir = { path = "../ir" }
-mercury-spec = { path = "../spec" }
+mercury-binary.workspace = true
+mercury-ir.workspace = true
+mercury-spec.workspace = true
 serde_json = "1"
 thiserror = "2"
 
 [dev-dependencies]
-mercury-spec-builtin = { path = "../spec-builtin" }
+mercury-spec-builtin.workspace = true

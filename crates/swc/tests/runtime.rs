@@ -3,7 +3,7 @@ use mercury_binary::{
     DecodedOperand, MinimalFunction, MinimalModule,
 };
 use mercury_spec_builtin::load_spec;
-use mercury_swc::{
+use mercury_hbc::{
     ast::Number,
     decompile,
     visit::{VisitMut, VisitMutWith},

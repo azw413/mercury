@@ -1,374 +1,229 @@
-# mercury
+# Mercury
 
-`mercury` is a Rust command-line toolkit for Hermes bytecode reverse engineering, disassembly, reassembly, and transformation.
+Mercury is a Rust library and command-line toolkit for compiling, inspecting,
+transforming, and decompiling [Hermes](https://github.com/facebook/hermes)
+bytecode. Its high-level API uses real [SWC](https://swc.rs/) syntax trees, and
+its native compiler emits HBC 96 directly without invoking `hermesc`.
 
-Mercury is dual-licensed under [GPLv3](LICENSE) or the alternative
+The workspace also provides versioned bytecode specifications, raw and semantic
+IRs, semantic assembly, and a Hermes-compatible regular-expression compiler.
+
+## Highlights
+
+- Parse, print, and transform JavaScript or TypeScript with SWC.
+- Compile supported JS/TS scripts to HBC 96 with no external compiler.
+- Decompile HBC 96 into editable, executable SWC trees.
+- Decode raw HBC 89, HBC 94, and HBC 96 containers using generated specs.
+- Inspect normalized semantic IR and assemble the supported HBC 96 subset.
+- Compile regular-expression literals to Hermes-compatible regex bytecode.
+
+Mercury is dual-licensed under [GPLv3](LICENSE) or an alternative
 [commercial license](LICENSE-commercial). Cargo metadata identifies the GPLv3
-option as `GPL-3.0-only`. Commercial terms and eligibility, including the
-existing employer exemption, are described in `LICENSE-commercial`.
+option as `GPL-3.0-only`; see the commercial license for its terms and employer
+exemption.
 
-The core design rule is that Hermes bytecode versions must be handled through generated versioned specs rather than scattered ad hoc parser branches.
+## Library quickstart
 
-## CLI Usage
-
-Show embedded supported bytecode versions:
-
-```bash
-cargo run -p mercury-cli -- versions
-```
-
-Decode a Hermes bytecode file in raw form:
-
-```bash
-cargo run -p mercury-cli -- decode test/box2d.hbc
-```
-
-Decode to the normalized semantic view:
-
-```bash
-cargo run -p mercury-cli -- decode test/box2d.hbc --format semantic -o /tmp/box2d.semantic.txt
-```
-
-Assemble semantic text back into a real `hbc96` file:
-
-```bash
-cargo run -p mercury-cli -- assemble /tmp/box2d.semantic.txt --target-version 96 -o /tmp/box2d.assembled.hbc
-```
-
-Write decode output to a file:
-
-```bash
-cargo run -p mercury-cli -- decode test/amazon.hbc --format semantic -o /tmp/amazon.semantic.txt
-```
-
-Extract a versioned spec from the local Hermes checkout:
-
-```bash
-cargo run -p mercury-cli -- extract-spec --tag v0.12.0
-```
-
-Extract a spec and compare it against `hermes-dec`:
-
-```bash
-cargo run -p mercury-cli -- extract-spec --tag v0.12.0 --compare-hermes-dec ../hermes-dec
-```
-
-## Current Status
-
-Implemented now:
-
-- versioned spec extraction from `../hermes`
-- generated JSON specs keyed by Hermes bytecode version under `spec/generated/`
-- embedded build-time spec registry for the CLI
-- binary parsing for real `.hbc` files including:
-  - file header
-  - section boundaries
-  - compact and overflowed function headers
-  - function bodies
-  - function info
-  - exception and debug-offset records
-  - string tables and storage
-  - CJS and function-source pair tables
-- spec-backed instruction decoding
-- raw IR generation
-- semantic IR lowering
-- raw and semantic CLI decode modes
-- first semantic assembly parser and raiser
-- first real `assemble -o out.hbc` path for semantic `hbc96` modules
-- minimal `hbc96` container writer with:
-  - generated string tables
-  - generated identifier hashes
-  - synthesized small function headers
-  - empty debug section
-  - SHA-1 footer
-
-Verified fixtures:
-
-- `test/box2d.hbc`: version-96 semantic decode, rebuild, edit, and Hermes execution
-- `test/amazon.hbc`: large-container parsing
-- `hermes-dec/tests/sample.hbc`: version-94 parsing in explicitly configured external tests
-
-The version-96 editing milestone now includes:
-
-- deterministic semantic text with symbolic labels and no required instruction offsets
-- checked operand widths and counts, duplicate-symbol rejection, and recalculated long branches
-- preservation of function names, JSON string escapes, and negative zero
-- correct SHA-1 footers calculated after writing the final header
-- explicit assembly rejection of unsupported runtime metadata and cross-version rebuilds
-- a self-contained Box2D editing test and an opt-in Hermes execution test that verifies a deliberate edit
-
-`test/hex.hbc` now covers compact version-96 header parsing and header
-byte-equality after the SWC integration exposed and fixed the small-file layout
-heuristic. Box2D remains the verified semantic editing fixture.
-
-See [fixture and test instructions](test/README.md) for reproducible checks.
-
-Not implemented yet:
-
-- byte-perfect full-file rewrite path
-- full semantic-to-raw raising coverage for the entire semantic vocabulary
-- container writing beyond the current minimal `hbc96` path
-- exact/preservation-oriented rebuild mode
-
-## JavaScript / TypeScript and SWC
-
-The [`mercury-swc`](crates/swc/README.md) module parses JS/TS into actual SWC AST
-structs, prints/transforms them, compiles a growing source subset natively to HBC
-96 without `hermesc`, and decompiles HBC 96 into executable SWC trees. Regex
-literals are compiled by [`mercury-regex`](crates/regex/README.md), a port of
-Hermes's regex compiler checked byte for byte against hermesc. The first
-decompiler uses register temporaries and a
-basic-block dispatcher. It reconstructs mutable captured environments, including
-siblings and multiple lexical levels, and preserves empty, sparse, buffered, and
-dynamically populated arrays. It also recovers buffer-backed object literals and
-later own-property definitions, including computed keys and custom prototypes.
-Dense integer switch tables and exception-handler control flow are also recovered.
-Regular-expression and BigInt constants are rebuilt from their container tables.
-Tagged templates' strings arrays are rebuilt by a small runtime helper that
-caches them per template, as Hermes does.
-Generator and async frames preserve suspended registers, captured environments,
-receiver/arguments state, `next`/`throw`/`return`, `yield*`, and fulfilled or
-rejected awaits through a small generated runtime adapter. Constructor recovery
-now covers `Construct`, `ConstructLong`, `CreateThis`, `SelectObject`, and
-`GetNewTarget`, including native constructors and Hermes' ES6 class lowering for
-inheritance, methods, accessors, static methods, and `super` calls.
-Increment/decrement, numeric and string coercions, and property deletion complete
-the opcode families used by the committed Box2D fixture; all 983 functions now
-decompile to SWC, recompile natively to HBC without `hermesc`, and produce the
-original runtime output. The self-hosted integration also applies an SWC visitor
-that renames Mercury's generated bindings before rebuilding.
-Native argument-object reads and object-literal getter/setter definitions are
-also recovered with their observable parameter, descriptor, and name semantics.
-Native source compilation now emits concise object methods, getter/setter
-descriptors, and `__proto__` prototype selection, including computed-key order
-and null or primitive prototype values.
-Property enumeration, value iteration, iterator closing, object spread/rest,
-array, call, and constructor spread, exponentiation, and non-finite numeric
-constants are now covered as well. The native compiler uses Hermes' iterable
-and apply builtins for spread evaluation, preserving receiver and constructor
-behavior without depending on `hermesc`.
-UTF-16 string values and property keys preserve lone surrogates through SWC's
-WTF-8 representation and JavaScript escape emission.
-Direct eval preserves HBC 96's global-only scope, strict-caller behavior,
-non-string passthrough, and completion values.
-
-An opt-in corpus harness now runs 12 focused fixtures and 49 generated programs
-with `hermesc` at unoptimized and optimized settings. The generated set ranges
-from compact language-semantics cases to large functions, property tables,
-switches, and straight-line workloads, with classic calculation kernels such as
-sieve, matrix multiplication, binary trees, spectral norm, Mandelbrot, and
-n-body. Each reference HBC is executed, roundtripped through SWC and the native
-HBC compiler, and compared by process result. The harness also accepts external
-recursive corpus paths for broader compatibility runs.
-
-The native rebuild path now emits nested exception tables and preserves strict
-function flags and receivers. Decompiled exception dispatchers, iterator
-cleanup, and the generator/async runtime adapters therefore rebuild without
-`hermesc`, including returns and loop exits through `finally` and cleanup that
-throws or replaces a pending return.
-
-Native source compilation now includes arithmetic, global and property access,
-fixed-arity calls, short-circuit expressions, conditionals, and structured
-`if`/loop control flow. Compiler-owned labels are resolved to bytecode
-displacements after instruction selection. Update and compound assignments,
-sparse arrays, data-property object literals, and constructor calls lower to
-native HBC operations as well. Property and value iteration use native `for…in`
-and `for…of` opcodes, including iterator closing on abrupt completion.
-Exponentiation uses the HBC builtin, and the string builder preserves lone
-UTF-16 surrogates. Regular function declarations and anonymous
-functions compile into a multi-function HBC graph with parameter and local
-bindings in parent-linked environments. This supports hoisting, recursion,
-multilevel capture, shared mutation between sibling closures, independent state
-across outer calls, `this`, and constructor invocation. `let` and `const` use
-block environments with shadowing and TDZ checks; loop entries and `for (let …)`
-iterations preserve distinct captured bindings. Arrow functions support
-expression and block bodies, lexical `this`, nested captures, and call-only HBC
-headers that reject construction.
+Add the high-level crate:
 
 ```sh
-cargo run -p mercury-swc --example compile -- input.js /tmp/example.hbc
-cargo run -p mercury-cli -- decompile /tmp/example.hbc -o /tmp/example.js
-cargo run -p mercury-swc --example decompile -- test/hex.hbc /tmp/hex.js
-cargo run -p mercury-swc --example roundtrip -- \
+cargo add mercury-hbc
+```
+
+Compile TypeScript and decompile the resulting bytecode entirely in memory:
+
+```rust
+use mercury_hbc::{decompile, HbcCompiler, SourceKind, SourceLanguage, SwcModule};
+
+fn main() -> Result<(), mercury_hbc::Error> {
+    let module = SwcModule::parse(
+        "example.ts",
+        "const answer: number = 40 + 2; print(answer);",
+        SourceLanguage::TypeScript,
+        SourceKind::Script,
+    )?;
+
+    let bytecode = HbcCompiler::new(96).compile(&module)?;
+    let recovered = decompile(&bytecode)?;
+    println!("{}", recovered.print());
+    Ok(())
+}
+```
+
+`HbcCompiler` does not require a Hermes installation and never executes the
+input program. TypeScript is transpiled, not type-checked. Native compilation
+currently targets scripts; ES modules must be bundled before compilation.
+
+See the [`mercury-hbc` crate guide](crates/swc/README.md) for the complete API,
+language contract, decompiler assumptions, and examples.
+
+## Cargo examples
+
+Run the in-memory quickstart from the workspace root:
+
+```sh
+cargo run -p mercury-hbc --example quickstart
+```
+
+Compile a JavaScript or TypeScript file without `hermesc`:
+
+```sh
+cargo run -p mercury-hbc --example compile -- input.js output.hbc
+```
+
+Decompile HBC 96 to JavaScript, writing to stdout or a file:
+
+```sh
+cargo run -p mercury-hbc --example decompile -- input.hbc output.js
+```
+
+Decompile, apply an SWC visitor, and rebuild in memory:
+
+```sh
+cargo run -p mercury-hbc --example roundtrip -- \
   test/box2d.hbc /tmp/box2d-rebuilt.hbc --rename-generated
 ```
 
-See the module README for the supported contract, Rust interface, and execution
-tests, including an SWC visitor edit verified in Hermes.
+## Command-line interface
 
-## Semantic Assembly Draft
+From a checkout, invoke the CLI through Cargo:
 
-The semantic text format is now the primary assembly target.
-
-Guiding rules:
-
-- function labels are authoritative, not instruction offsets
-- string literals are authored as literals, not raw string ids
-- function references are symbolic, using `@name`
-- semantic readability takes priority over byte-preserving container details
-
-Current parser shape accepted by `crates/asm`:
-
-```text
-bytecode_version 96
-
-.strings
-  s0 = ""
-  s9 = "encode"
-.end
-
-.function @global params=1 frame=3 env=0
-  declare_global_var "encode"
-  create_environment r0
-  create_closure r2, r0, @encode
-L1:
-  branch_false r10, L2
-.end
-
-.function @encode params=2 frame=25 env=0
-  load_param r9, 1
-  return r0
-.end
+```sh
+cargo run -p mercury-cli -- --help
 ```
 
-Notes:
+Compile and decompile:
 
-- instruction offsets like `0000:` are accepted for compatibility and ignored during encoding; labels determine branch targets, and the assembler currently uses long branches
-- `.strings` is also currently accepted in the emitted form `s9 = "encode"`, but the longer-term intent is that string literals in instructions are the semantic source of truth and the assembler will rebuild string tables automatically
+```sh
+cargo run -p mercury-cli -- compile input.js -o /tmp/example.hbc
+cargo run -p mercury-cli -- decompile /tmp/example.hbc -o /tmp/recovered.js
+```
 
-## Goals
+List embedded bytecode versions and decode a file:
 
-- Extract canonical Hermes bytecode metadata directly from upstream Hermes source and tags.
-- Represent opcode definitions and container-format definitions in a versioned intermediate format.
-- Parse Hermes bytecode files into a byte-exact raw model suitable for round-trip rewriting.
-- Provide a stable semantic IR for reverse engineering, rewriting, and obfuscation.
-- Disassemble into a deterministic text format and assemble back into byte-for-byte equivalent binaries when unchanged.
+```sh
+cargo run -p mercury-cli -- versions
+cargo run -p mercury-cli -- decode test/box2d.hbc -o /tmp/box2d.raw.txt
+cargo run -p mercury-cli -- decode test/box2d.hbc \
+  --format semantic -o /tmp/box2d.semantic.txt
+```
 
-## Major Components
+Assemble supported semantic HBC 96 text:
 
-### `mercury-cli`
+```sh
+cargo run -p mercury-cli -- assemble /tmp/box2d.semantic.txt \
+  --target-version 96 -o /tmp/box2d.assembled.hbc
+```
 
-User-facing command-line entry point.
+The semantic assembler rebuilds a minimal container. It does not promise
+byte-for-byte preservation of the original file, and rejects metadata and
+instructions outside its explicit rebuilding contract.
 
-Current commands:
+## Compatibility at a glance
 
-- `versions`
-- `decode`
-- `assemble`
-- `extract-spec`
+| Operation | Current support | Important boundary |
+| --- | --- | --- |
+| JS/TS parsing and printing | SWC scripts and modules | No type checking, JSX/TSX setup, or bundling |
+| Native source compilation | HBC 96 scripts | Unsupported syntax returns an explicit error |
+| Bytecode decompilation | HBC 96 | Executable reconstruction, not original source recovery |
+| Raw container decoding | HBC 89, 94, and 96 | Support depends on the embedded versioned spec |
+| Semantic assembly | HBC 96 subset | Minimal writer; not a byte-perfect roundtrip |
+| Regex bytecode compilation | HBC 96 format | Matches the tested Hermes compiler format |
 
-### `mercury-spec-extract`
+A bytecode version appearing in `versions` does not imply that every high-level
+operation supports that version. Native source compilation and decompilation
+currently have separate HBC 96 contracts.
 
-Reads Hermes source from `../hermes` and emits canonical versioned specs.
+## Native compiler coverage
 
-It extracts both:
+The native compiler supports ordinary declarations and functions, closures and
+captured mutation, lexical bindings and TDZ checks, arrow functions, parameters
+and destructuring, arrays and objects, regular expressions, template literals,
+fixed and spread calls, constructors, property operations, iteration,
+short-circuiting, exceptions, and structured control flow. It emits real HBC
+function and exception tables and preserves strictness, receivers, and iterator
+cleanup.
 
-- bytecode metadata:
-  - `BytecodeVersion.h`
-  - `BytecodeList.def`
-  - operand meanings
-  - builtins
-- container metadata:
-  - `BytecodeFileFormat.h`
-  - function header layouts
-  - bitfields
-  - section order and alignment
-  - serializer-derived container semantics
+The principal unsupported source constructs include destructuring assignments,
+block-level function declarations, source-authored async and generator
+functions, classes, unbundled modules, labeled control flow, and `for await…of`.
+The decompiler can reconstruct bytecode for some constructs that the native
+source compiler does not yet accept directly; coverage in one direction does not
+imply coverage in the other.
 
-### `mercury-spec`
+## Decompiler output
 
-Defines the versioned independent spec format used by the rest of the project.
+Decompilation constructs SWC nodes directly from decoded instructions and a
+private control-flow graph. It retains register temporaries and uses a
+basic-block dispatcher rather than attempting to recover the author's original
+control flow. Generated adapters preserve captured environments, exceptions,
+iterators, generator and async suspension, constructors, class helper calls,
+regular expressions, BigInts, and UTF-16 edge cases within the documented HBC 96
+contract.
 
-This is the compatibility boundary between upstream Hermes and Mercury.
+Original comments, formatting, local names, TypeScript types, and byte-identical
+recompilation cannot be recovered from bytecode. Generated code assumes standard
+intrinsics; arbitrary host interception and mutated globals are outside the
+current contract.
 
-### `mercury-spec-builtin`
+## Workspace crates
 
-Embeds generated `hbcNN.json` specs into the final binary at build time.
+| Crate | Role |
+| --- | --- |
+| `mercury-hbc` | Public SWC API, native HBC compiler, and HBC decompiler |
+| `mercury-cli` | User-facing command-line interface |
+| `mercury-binary` | Version-aware HBC parsing, instruction encoding, and container writing |
+| `mercury-ir` | Raw and normalized semantic intermediate representations |
+| `mercury-asm` | Semantic assembly parser and raiser |
+| `mercury-regex` | Hermes-compatible regular-expression bytecode compiler |
+| `mercury-spec` | Serializable versioned specification schema |
+| `mercury-spec-builtin` | Embedded generated specification registry |
+| `mercury-spec-extract` | Specification extraction from a Hermes checkout |
+| `mercury-disasm` | Placeholder for future standalone disassembly helpers |
 
-This makes the CLI self-contained and lets the binary report exactly which Hermes bytecode versions it supports.
+The central design rule is to handle bytecode versions through generated,
+versioned specs rather than scattered ad hoc parser branches. Raw decoding keeps
+encoding details; semantic lowering is a separate, normalized layer.
 
-### `mercury-binary`
+## Building and testing
 
-Owns parsing and writing `.hbc` files using `mercury-spec`.
+The default test suite is self-contained:
 
-The crate is split by domain:
+```sh
+cargo test --workspace
+```
 
-- `header.rs`
-- `sections.rs`
-- `functions.rs`
-- `tables.rs`
-- `decode.rs`
-- `encode.rs`
-- `parse.rs`
+Validate the public documentation and examples:
 
-Function-domain and table-domain parsing/writing are kept paired for symmetry and future round-tripping.
+```sh
+RUSTDOCFLAGS="-D warnings" cargo doc -p mercury-hbc --no-deps
+cargo test --doc -p mercury-hbc
+cargo check -p mercury-hbc --examples
+```
 
-### `mercury-ir`
+Runtime and external-oracle tests are opt-in. They use `HERMES_BIN`,
+`HERMESC_BIN`, and, for legacy comparisons, `HERMES_DEC_ROOT`. The corpus harness
+runs 122 combinations of committed JavaScript programs and Hermes optimization
+modes, comparing execution before and after HBC-to-SWC-to-HBC reconstruction.
+See [fixture and test instructions](test/README.md) for reproducible commands.
 
-Defines the internal representations above the raw binary layer.
+## Regenerating bytecode specs
 
-Current split:
+With a local Hermes checkout:
 
-- `Raw`
-  - decoded instructions preserving their original encoding; full-container preservation is still pending
-- `Semantic`
-  - normalized instruction layer used by the semantic decode mode
+```sh
+cargo run -p mercury-cli -- extract-spec \
+  --hermes-repo /path/to/hermes --tag v0.12.0
+```
 
-### `mercury-disasm`
+Generated JSON specifications live under `spec/generated/` and are embedded by
+`mercury-spec-builtin` at build time. After regenerating them, update the
+package-local mirror used by crates.io builds:
 
-Planned home for deterministic text disassembly.
+```sh
+cp spec/generated/*.json crates/spec-builtin/spec/generated/
+cargo test -p mercury-spec-builtin
+```
 
-At the moment, the semantic decode formatter in `mercury-cli` is acting as the proving ground for that eventual assembly syntax.
-
-### `mercury-asm`
-
-Home for parsing Mercury assembly text, raising it into raw bytecode instructions, and feeding binary emission through `mercury-binary`.
-
-Current status:
-
-- semantic assembly AST
-- line-oriented parser for the current semantic disassembly syntax
-- first semantic-to-raw raiser for a useful `hbc96` subset
-- first end-to-end semantic assembly path that can emit a real `.hbc` through the CLI
-- support for:
-  - `.strings`
-  - `.function`
-  - labels
-  - optional displayed instruction offsets
-  - registers, labels, function refs, string literals, integers, and barewords as operands
-
-The eventual target is:
-
-- `decode -> encode -> identical bytes` when unchanged
-- semantic editing and obfuscation against a stable IR
-
-## Current Version Support
-
-The build currently embeds generated specs for the versions present in `spec/generated/`.
-
-At the time of writing this README, that includes:
-
-- `hbc89`
-- `hbc94`
-- `hbc96`
-
-## Semantic rebuild contract and next steps
-
-The current writer supports a subset of version 96. It rebuilds a minimal
-container and drops debug/source metadata; it does not promise byte-for-byte
-preservation of the original file. Opaque literal/object buffers and their
-string-table ordering are carried through unchanged. Editing those buffers or
-reordering/removing their string entries is outside the verified editing path.
-
-Decode remains available for inspection when rebuilding is unsupported. It
-emits `.unsupported` markers for runtime metadata the writer cannot preserve
-(such as exception handlers, strict/invocation flags, non-default options,
-nonzero entry functions, and regexp/bigint tables). Assembly rejects those
-markers with a reason. Unsupported instructions and values that do not fit the
-selected encoding also fail explicitly. Long branches can make functions
-larger; functions exceeding small-header limits are rejected.
-
-The next steps are to move text formatting into `mercury-disasm`, expand
-explicitly tested runtime metadata and instruction coverage, and model
-container layout variants in the generated specs. Exact container preservation
-needs a separate representation and byte-equality test contract.
+The sync test keeps the workspace and packaged registries identical. The current
+registry contains HBC 89, 94, and 96.

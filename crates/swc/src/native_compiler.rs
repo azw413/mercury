@@ -34,19 +34,35 @@ const APPLY_BUILTIN: u8 = 47;
 const EXPONENTIATION_BUILTIN: u8 = 49;
 const INIT_REGEX_NAMED_GROUPS_BUILTIN: u8 = 50;
 
-/// Native SWC-AST to Hermes-bytecode compiler.
+/// A native compiler from SWC syntax trees to Hermes bytecode.
 ///
-/// The native compiler targets HBC 96 scripts. Unsupported syntax is
-/// reported explicitly instead of being delegated to an installed `hermesc`.
+/// This compiler does not invoke `hermesc`, require a Hermes installation, or
+/// execute the input program. It currently targets HBC 96 scripts and lowers
+/// TypeScript on an internal copy before compilation.
+#[derive(Debug, Clone, Copy)]
 pub struct HbcCompiler {
     target_version: u32,
 }
 
 impl HbcCompiler {
+    /// Creates a compiler for `target_version`.
+    ///
+    /// Version 96 is currently the only supported target. Other versions return
+    /// [`Error::Unsupported`] when [`compile`](Self::compile) is called.
     pub fn new(target_version: u32) -> Self {
         Self { target_version }
     }
 
+    /// Compiles a JavaScript or TypeScript module into a complete HBC file.
+    ///
+    /// The returned bytes can be written directly to an `.hbc` file. Compilation
+    /// does not modify `module`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Unsupported`] for a non-96 target, an unbundled ES module,
+    /// or source syntax outside the native compiler's implemented subset. Returns
+    /// [`Error::Bytecode`] if internal encoding or container invariants fail.
     pub fn compile(&self, module: &SwcModule) -> Result<Vec<u8>, Error> {
         if self.target_version != 96 {
             return Err(Error::Unsupported(

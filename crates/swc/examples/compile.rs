@@ -1,11 +1,11 @@
 //! Compile JavaScript or TypeScript source directly to HBC 96.
 //!
 //! Run with:
-//! cargo run -p mercury-swc --example compile -- input.js output.hbc
+//! cargo run -p mercury-hbc --example compile -- input.js output.hbc
 
 use std::{env, fs, path::Path, process};
 
-use mercury_swc::{HbcCompiler, SourceKind, SourceLanguage, SwcModule};
+use mercury_hbc::{HbcCompiler, SourceKind, SourceLanguage, SwcModule};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args_os().skip(1);

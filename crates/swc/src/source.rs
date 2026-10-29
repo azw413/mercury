@@ -15,23 +15,37 @@ use swc_core::{
     },
 };
 
+/// The source syntax used to parse a [`SwcModule`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceLanguage {
+    /// Parse standard JavaScript, including ECMAScript proposals accepted by SWC.
     JavaScript,
+    /// Parse TypeScript annotations and runtime constructs such as enums.
     TypeScript,
 }
+
+/// The goal used when parsing source text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceKind {
+    /// Parse a classic script, suitable for native HBC compilation.
     Script,
+    /// Parse an ECMAScript module with `import` and `export` declarations.
     Module,
 }
 
-/// A real SWC tree plus the context needed by SWC passes and code generation.
-/// Use `transform` for SWC passes, or `with_ast` to edit/inspect binding contexts.
-/// Generated identifiers must be fresh or carry the intended existing context.
+/// A real SWC tree together with its comments, source map, and binding contexts.
+///
+/// Values returned by [`parse`](Self::parse) have already run SWC's resolver.
+/// Use [`with_ast`](Self::with_ast) for visitor-based edits or
+/// [`transform`](Self::transform) for an SWC pass so operations run with the
+/// correct [`Globals`](swc_core::common::Globals). Generated identifiers must be
+/// fresh or carry the intended existing syntax context.
 pub struct SwcModule {
+    /// The parsed script or module, including any subsequent edits.
     pub program: Program,
+    /// Comments captured by the parser and retained during code generation.
     pub comments: SingleThreadedComments,
+    /// Source files and locations used for diagnostics and printing.
     pub source_map: Lrc<SourceMap>,
     globals: Globals,
     unresolved: Mark,
@@ -41,6 +55,16 @@ pub struct SwcModule {
 }
 
 impl SwcModule {
+    /// Parses JavaScript or TypeScript and resolves its binding contexts.
+    ///
+    /// `name` is used in diagnostics and does not need to name an existing file.
+    /// Comments are retained for printing. TypeScript syntax is preserved until
+    /// [`javascript`](Self::javascript) or native HBC compilation requests lowering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Parse`] with filename, line, and column diagnostics when
+    /// SWC reports fatal or recoverable syntax errors.
     pub fn parse(
         name: &str,
         text: &str,
@@ -133,15 +157,25 @@ impl SwcModule {
         }
     }
 
+    /// Runs `edit` on the program with this module's SWC globals installed.
+    ///
+    /// This is the general escape hatch for inspection and visitor-based mutation.
+    /// The closure's return value is forwarded unchanged. Prefer this method over
+    /// accessing [`program`](Self::program) directly when creating or resolving
+    /// identifiers, since SWC operations may depend on thread-local globals.
     pub fn with_ast<R>(&mut self, edit: impl FnOnce(&mut Program) -> R) -> R {
         GLOBALS.set(&self.globals, || edit(&mut self.program))
     }
 
+    /// Applies an SWC pass to the program in the module's binding context.
     pub fn transform(&mut self, pass: impl Pass) {
         self.with_ast(|program| program.mutate(pass));
     }
 
-    /// Prints the current tree, retaining TypeScript syntax when present.
+    /// Prints the current tree with comments, retaining TypeScript syntax.
+    ///
+    /// This method does not mutate the module. Exporting a generated source map is
+    /// not currently implemented.
     pub fn print(&self) -> String {
         GLOBALS.set(&self.globals, || {
             // Decompiler builders produce emission-ready nodes and namespace

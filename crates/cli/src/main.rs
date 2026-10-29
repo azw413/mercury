@@ -79,26 +79,26 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Compile { input, output } => {
             let language = if input.extension().is_some_and(|ext| ext == "ts") {
-                mercury_swc::SourceLanguage::TypeScript
+                mercury_hbc::SourceLanguage::TypeScript
             } else {
-                mercury_swc::SourceLanguage::JavaScript
+                mercury_hbc::SourceLanguage::JavaScript
             };
             let text = fs::read_to_string(&input)
                 .with_context(|| format!("failed to read {}", input.display()))?;
-            let module = mercury_swc::SwcModule::parse(
+            let module = mercury_hbc::SwcModule::parse(
                 &input.display().to_string(),
                 &text,
                 language,
-                mercury_swc::SourceKind::Script,
+                mercury_hbc::SourceKind::Script,
             )?;
-            let bytes = mercury_swc::HbcCompiler::new(96).compile(&module)?;
+            let bytes = mercury_hbc::HbcCompiler::new(96).compile(&module)?;
             fs::write(&output, bytes)
                 .with_context(|| format!("failed to write {}", output.display()))?;
         }
         Command::Decompile { input, output } => {
             let bytes =
                 fs::read(&input).with_context(|| format!("failed to read {}", input.display()))?;
-            let module = mercury_swc::decompile(&bytes)?;
+            let module = mercury_hbc::decompile(&bytes)?;
             let text = module.print();
             if let Some(output) = output {
                 fs::write(&output, text)

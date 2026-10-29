@@ -1,11 +1,11 @@
 //! Decompile an HBC-96 file through Mercury's SWC AST and emit JavaScript.
 //!
 //! Run with:
-//! cargo run -p mercury-swc --example decompile -- input.hbc [output.js]
+//! cargo run -p mercury-hbc --example decompile -- input.hbc [output.js]
 
 use std::{env, fs, io::Write, path::PathBuf, process};
 
-use mercury_swc::decompile;
+use mercury_hbc::decompile;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args_os().skip(1);

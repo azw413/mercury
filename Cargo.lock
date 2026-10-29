@@ -587,11 +587,11 @@ dependencies = [
  "clap",
  "mercury-asm",
  "mercury-binary",
+ "mercury-hbc",
  "mercury-ir",
  "mercury-spec",
  "mercury-spec-builtin",
  "mercury-spec-extract",
- "mercury-swc",
  "serde_json",
 ]
 
@@ -602,6 +602,21 @@ dependencies = [
  "mercury-binary",
  "mercury-ir",
  "mercury-spec",
+]
+
+[[package]]
+name = "mercury-hbc"
+version = "0.1.0"
+dependencies = [
+ "mercury-binary",
+ "mercury-ir",
+ "mercury-regex",
+ "mercury-spec",
+ "mercury-spec-builtin",
+ "num-bigint",
+ "swc_core",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -646,21 +661,6 @@ dependencies = [
  "anyhow",
  "mercury-spec",
  "serde_json",
-]
-
-[[package]]
-name = "mercury-swc"
-version = "0.1.0"
-dependencies = [
- "mercury-binary",
- "mercury-ir",
- "mercury-regex",
- "mercury-spec",
- "mercury-spec-builtin",
- "num-bigint",
- "swc_core",
- "tempfile",
- "thiserror",
 ]
 
 [[package]]
@@ -1516,9 +1516,9 @@ dependencies = [
 
 [[package]]
 name = "yoke-derive"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33811428bee40dbceb6d545e95754741d17a6aef9a4849f0fd62e2ba4f412a78"
+checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
 dependencies = [
  "proc-macro2",
  "quote",

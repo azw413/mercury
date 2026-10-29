@@ -6,12 +6,18 @@ use anyhow::{Context, Result};
 
 fn main() -> Result<()> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").context("missing CARGO_MANIFEST_DIR")?);
-    let spec_dir = manifest_dir
+    let workspace_spec_dir = manifest_dir
         .parent()
         .context("crate dir should have parent")?
         .parent()
         .context("workspace root should have parent")?
         .join("spec/generated");
+    let packaged_spec_dir = manifest_dir.join("spec/generated");
+    let spec_dir = if workspace_spec_dir.is_dir() {
+        workspace_spec_dir
+    } else {
+        packaged_spec_dir
+    };
 
     println!("cargo:rerun-if-changed={}", spec_dir.display());
 

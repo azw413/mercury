@@ -17,8 +17,8 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-only"
-authors = ["Andrew"]
-repository = "https://github.com/example/mercury"
+authors = ["Andrew Whaley"]
+repository = "https://github.com/azw413/mercury"
 
 [workspace.dependencies]
 anyhow = "1.0"
@@ -28,3 +28,13 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"
 thiserror = "2.0"
+
+mercury-asm = { version = "0.1.0", path = "crates/asm" }
+mercury-binary = { version = "0.1.0", path = "crates/binary" }
+mercury-disasm = { version = "0.1.0", path = "crates/disasm" }
+mercury-ir = { version = "0.1.0", path = "crates/ir" }
+mercury-regex = { version = "0.1.0", path = "crates/regex" }
+mercury-spec = { version = "0.1.0", path = "crates/spec" }
+mercury-spec-builtin = { version = "0.1.0", path = "crates/spec-builtin" }
+mercury-spec-extract = { version = "0.1.0", path = "crates/spec-extract" }
+mercury-hbc = { version = "0.1.0", path = "crates/swc" }

@@ -5,13 +5,20 @@ use std::{
     process::Command,
 };
 
-/// An explicitly configured external compiler. Compilation never executes the
-/// input program; every invocation uses a private temporary directory.
+/// An adapter for an explicitly configured external `hermesc` executable.
+///
+/// Use [`HbcCompiler`](crate::HbcCompiler) for the native path with no external
+/// tool dependency. This adapter is useful for compatibility testing and for
+/// source syntax that Mercury does not lower itself. Compilation never executes
+/// the input program; each invocation uses a private temporary directory.
+#[derive(Debug, Clone)]
 pub struct HermesCompiler {
     executable: PathBuf,
     target_version: u32,
 }
+
 impl HermesCompiler {
+    /// Creates an adapter for `executable` and an expected HBC `target_version`.
     pub fn new(executable: impl AsRef<Path>, target_version: u32) -> Self {
         Self {
             executable: executable.as_ref().to_owned(),
@@ -19,6 +26,17 @@ impl HermesCompiler {
         }
     }
 
+    /// Prints the module as JavaScript, invokes `hermesc`, and validates its output.
+    ///
+    /// The compiler runs with optimization, debug output disabled, and Hermes' ES6
+    /// class flag enabled. ES modules must be bundled into a script first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Compiler`] when the process cannot run or reports failure,
+    /// [`Error::Version`] when its output has an unexpected HBC version, and
+    /// [`Error::Io`] for temporary-file failures. Unsupported targets and modules
+    /// return [`Error::Unsupported`].
     pub fn compile(&self, module: &SwcModule) -> Result<Vec<u8>, Error> {
         if self.target_version != 96 {
             return Err(Error::Unsupported(

@@ -1,0 +1,6273 @@
+{
+  "hermes_tag": "v0.12.0",
+  "bytecode_version": 89,
+  "bytecode": {
+    "operand_types": [
+      {
+        "name": "Reg8",
+        "rust_like_type": "uint8_t"
+      },
+      {
+        "name": "Reg32",
+        "rust_like_type": "uint32_t"
+      },
+      {
+        "name": "UInt8",
+        "rust_like_type": "uint8_t"
+      },
+      {
+        "name": "UInt16",
+        "rust_like_type": "uint16_t"
+      },
+      {
+        "name": "UInt32",
+        "rust_like_type": "uint32_t"
+      },
+      {
+        "name": "Addr8",
+        "rust_like_type": "int8_t"
+      },
+      {
+        "name": "Addr32",
+        "rust_like_type": "int32_t"
+      },
+      {
+        "name": "Imm32",
+        "rust_like_type": "int32_t"
+      },
+      {
+        "name": "Double",
+        "rust_like_type": "double"
+      }
+    ],
+    "instructions": [
+      {
+        "opcode": 0,
+        "name": "Unreachable",
+        "operands": [],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 1,
+        "name": "NewObjectWithBuffer",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt16",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt16",
+            "meaning": null
+          },
+          {
+            "index": 4,
+            "kind": "UInt16",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 2,
+        "name": "NewObjectWithBufferLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt16",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt32",
+            "meaning": null
+          },
+          {
+            "index": 4,
+            "kind": "UInt32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 3,
+        "name": "NewObject",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 4,
+        "name": "NewObjectWithParent",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 5,
+        "name": "NewArrayWithBuffer",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt16",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt16",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 6,
+        "name": "NewArrayWithBufferLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt16",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 7,
+        "name": "NewArray",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt16",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 8,
+        "name": "Mov",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 9,
+        "name": "MovLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 10,
+        "name": "Negate",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 11,
+        "name": "Not",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 12,
+        "name": "BitNot",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 13,
+        "name": "TypeOf",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 14,
+        "name": "Eq",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 15,
+        "name": "StrictEq",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 16,
+        "name": "Neq",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 17,
+        "name": "StrictNeq",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 18,
+        "name": "Less",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 19,
+        "name": "LessEq",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 20,
+        "name": "Greater",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 21,
+        "name": "GreaterEq",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 22,
+        "name": "Add",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 23,
+        "name": "AddN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 24,
+        "name": "Mul",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 25,
+        "name": "MulN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 26,
+        "name": "Div",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 27,
+        "name": "DivN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 28,
+        "name": "Mod",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 29,
+        "name": "Sub",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 30,
+        "name": "SubN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 31,
+        "name": "LShift",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 32,
+        "name": "RShift",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 33,
+        "name": "URshift",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 34,
+        "name": "BitAnd",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 35,
+        "name": "BitXor",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 36,
+        "name": "BitOr",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 37,
+        "name": "Inc",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 38,
+        "name": "Dec",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 39,
+        "name": "InstanceOf",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 40,
+        "name": "IsIn",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 41,
+        "name": "GetEnvironment",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 42,
+        "name": "StoreToEnvironment",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 43,
+        "name": "StoreToEnvironmentL",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt16",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 44,
+        "name": "StoreNPToEnvironment",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 45,
+        "name": "StoreNPToEnvironmentL",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt16",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 46,
+        "name": "LoadFromEnvironment",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 47,
+        "name": "LoadFromEnvironmentL",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 48,
+        "name": "GetGlobalObject",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 49,
+        "name": "GetNewTarget",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 50,
+        "name": "CreateEnvironment",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 51,
+        "name": "DeclareGlobalVar",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "UInt32",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 52,
+        "name": "GetByIdShort",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt8",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 53,
+        "name": "GetById",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt16",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 54,
+        "name": "GetByIdLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt32",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 55,
+        "name": "TryGetById",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt16",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 56,
+        "name": "TryGetByIdLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt32",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 57,
+        "name": "PutById",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt16",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 58,
+        "name": "PutByIdLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt32",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 59,
+        "name": "TryPutById",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt16",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 60,
+        "name": "TryPutByIdLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt32",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 61,
+        "name": "PutNewOwnByIdShort",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 62,
+        "name": "PutNewOwnById",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 63,
+        "name": "PutNewOwnByIdLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 64,
+        "name": "PutNewOwnNEById",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 65,
+        "name": "PutNewOwnNEByIdLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 66,
+        "name": "PutOwnByIndex",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 67,
+        "name": "PutOwnByIndexL",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 68,
+        "name": "PutOwnByVal",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 69,
+        "name": "DelById",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 70,
+        "name": "DelByIdLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 71,
+        "name": "GetByVal",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 72,
+        "name": "PutByVal",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 73,
+        "name": "DelByVal",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 74,
+        "name": "PutOwnGetterSetterByVal",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 4,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 75,
+        "name": "GetPNameList",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 76,
+        "name": "GetNextPName",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 4,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 77,
+        "name": "Call",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": true,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 78,
+        "name": "Construct",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": true,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 79,
+        "name": "Call1",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": true,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 80,
+        "name": "CallDirect",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": "function_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": true,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 81,
+        "name": "Call2",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": true,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 82,
+        "name": "Call3",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 4,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": true,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 83,
+        "name": "Call4",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 4,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 5,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": true,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 84,
+        "name": "CallLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": true,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 85,
+        "name": "ConstructLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": true,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 86,
+        "name": "CallDirectLongIndex",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": true,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 87,
+        "name": "CallBuiltin",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 88,
+        "name": "CallBuiltinLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 89,
+        "name": "GetBuiltinClosure",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 90,
+        "name": "Ret",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 91,
+        "name": "Catch",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 92,
+        "name": "DirectEval",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 93,
+        "name": "Throw",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 94,
+        "name": "ThrowIfEmpty",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 95,
+        "name": "Debugger",
+        "operands": [],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 96,
+        "name": "AsyncBreakCheck",
+        "operands": [],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 97,
+        "name": "ProfilePoint",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "UInt16",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 98,
+        "name": "CreateClosure",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": "function_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 99,
+        "name": "CreateClosureLongIndex",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": "function_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 100,
+        "name": "CreateGeneratorClosure",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": "function_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 101,
+        "name": "CreateGeneratorClosureLongIndex",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": "function_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 102,
+        "name": "CreateAsyncClosure",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": "function_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 103,
+        "name": "CreateAsyncClosureLongIndex",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": "function_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 104,
+        "name": "CreateThis",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 105,
+        "name": "SelectObject",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 106,
+        "name": "LoadParam",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 107,
+        "name": "LoadParamLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 108,
+        "name": "LoadConstUInt8",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 109,
+        "name": "LoadConstInt",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Imm32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 110,
+        "name": "LoadConstDouble",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Double",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 111,
+        "name": "LoadConstBigInt",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt16",
+            "meaning": "big_int_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 112,
+        "name": "LoadConstBigIntLongIndex",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt32",
+            "meaning": "big_int_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 113,
+        "name": "LoadConstString",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt16",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 114,
+        "name": "LoadConstStringLongIndex",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt32",
+            "meaning": "string_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 115,
+        "name": "LoadConstEmpty",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 116,
+        "name": "LoadConstUndefined",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 117,
+        "name": "LoadConstNull",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 118,
+        "name": "LoadConstTrue",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 119,
+        "name": "LoadConstFalse",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 120,
+        "name": "LoadConstZero",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 121,
+        "name": "CoerceThisNS",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 122,
+        "name": "LoadThisNS",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 123,
+        "name": "ToNumber",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 124,
+        "name": "ToNumeric",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 125,
+        "name": "ToInt32",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 126,
+        "name": "AddEmptyString",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 127,
+        "name": "GetArgumentsPropByVal",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 128,
+        "name": "GetArgumentsLength",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 129,
+        "name": "ReifyArguments",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 130,
+        "name": "CreateRegExp",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt32",
+            "meaning": "string_id"
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": "string_id"
+          },
+          {
+            "index": 3,
+            "kind": "UInt32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 131,
+        "name": "SwitchImm",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt32",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 3,
+            "kind": "UInt32",
+            "meaning": null
+          },
+          {
+            "index": 4,
+            "kind": "UInt32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 132,
+        "name": "StartGenerator",
+        "operands": [],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 133,
+        "name": "ResumeGenerator",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 134,
+        "name": "CompleteGenerator",
+        "operands": [],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 135,
+        "name": "CreateGenerator",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt16",
+            "meaning": "function_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 136,
+        "name": "CreateGeneratorLongIndex",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "UInt32",
+            "meaning": "function_id"
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 137,
+        "name": "IteratorBegin",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 138,
+        "name": "IteratorNext",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 139,
+        "name": "IteratorClose",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "UInt8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 140,
+        "name": "Jmp",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 141,
+        "name": "JmpLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 142,
+        "name": "JmpTrue",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 143,
+        "name": "JmpTrueLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 144,
+        "name": "JmpFalse",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 145,
+        "name": "JmpFalseLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 146,
+        "name": "JmpUndefined",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 147,
+        "name": "JmpUndefinedLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 148,
+        "name": "SaveGenerator",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 149,
+        "name": "SaveGeneratorLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 150,
+        "name": "JLess",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 151,
+        "name": "JLessLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 152,
+        "name": "JNotLess",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 153,
+        "name": "JNotLessLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 154,
+        "name": "JLessN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 155,
+        "name": "JLessNLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 156,
+        "name": "JNotLessN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 157,
+        "name": "JNotLessNLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 158,
+        "name": "JLessEqual",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 159,
+        "name": "JLessEqualLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 160,
+        "name": "JNotLessEqual",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 161,
+        "name": "JNotLessEqualLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 162,
+        "name": "JLessEqualN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 163,
+        "name": "JLessEqualNLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 164,
+        "name": "JNotLessEqualN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 165,
+        "name": "JNotLessEqualNLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 166,
+        "name": "JGreater",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 167,
+        "name": "JGreaterLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 168,
+        "name": "JNotGreater",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 169,
+        "name": "JNotGreaterLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 170,
+        "name": "JGreaterN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 171,
+        "name": "JGreaterNLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 172,
+        "name": "JNotGreaterN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 173,
+        "name": "JNotGreaterNLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 174,
+        "name": "JGreaterEqual",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 175,
+        "name": "JGreaterEqualLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 176,
+        "name": "JNotGreaterEqual",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 177,
+        "name": "JNotGreaterEqualLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 178,
+        "name": "JGreaterEqualN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 179,
+        "name": "JGreaterEqualNLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 180,
+        "name": "JNotGreaterEqualN",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 181,
+        "name": "JNotGreaterEqualNLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 182,
+        "name": "JEqual",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 183,
+        "name": "JEqualLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 184,
+        "name": "JNotEqual",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 185,
+        "name": "JNotEqualLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 186,
+        "name": "JStrictEqual",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 187,
+        "name": "JStrictEqualLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 188,
+        "name": "JStrictNotEqual",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 189,
+        "name": "JStrictNotEqualLong",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Addr32",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": true
+        }
+      },
+      {
+        "opcode": 190,
+        "name": "Add32",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 191,
+        "name": "Sub32",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 192,
+        "name": "Mul32",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 193,
+        "name": "Divi32",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 194,
+        "name": "Divu32",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 195,
+        "name": "Loadi8",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 196,
+        "name": "Loadu8",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 197,
+        "name": "Loadi16",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 198,
+        "name": "Loadu16",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 199,
+        "name": "Loadi32",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 200,
+        "name": "Loadu32",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 201,
+        "name": "Store8",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 202,
+        "name": "Store16",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      },
+      {
+        "opcode": 203,
+        "name": "Store32",
+        "operands": [
+          {
+            "index": 0,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 1,
+            "kind": "Reg8",
+            "meaning": null
+          },
+          {
+            "index": 2,
+            "kind": "Reg8",
+            "meaning": null
+          }
+        ],
+        "flags": {
+          "has_ret_target": false,
+          "is_value_buffer_user": false,
+          "is_jump_long_variant": false
+        }
+      }
+    ],
+    "builtins": [
+      {
+        "index": 0,
+        "kind": "builtin_object",
+        "name": "Array"
+      },
+      {
+        "index": 1,
+        "kind": "builtin_method",
+        "name": "Array.isArray"
+      },
+      {
+        "index": 2,
+        "kind": "builtin_method",
+        "name": "Date.UTC"
+      },
+      {
+        "index": 3,
+        "kind": "builtin_method",
+        "name": "Date.parse"
+      },
+      {
+        "index": 4,
+        "kind": "builtin_object",
+        "name": "JSON"
+      },
+      {
+        "index": 5,
+        "kind": "builtin_method",
+        "name": "JSON.parse"
+      },
+      {
+        "index": 6,
+        "kind": "builtin_method",
+        "name": "JSON.stringify"
+      },
+      {
+        "index": 7,
+        "kind": "builtin_object",
+        "name": "Math"
+      },
+      {
+        "index": 8,
+        "kind": "builtin_method",
+        "name": "Math.abs"
+      },
+      {
+        "index": 9,
+        "kind": "builtin_method",
+        "name": "Math.acos"
+      },
+      {
+        "index": 10,
+        "kind": "builtin_method",
+        "name": "Math.asin"
+      },
+      {
+        "index": 11,
+        "kind": "builtin_method",
+        "name": "Math.atan"
+      },
+      {
+        "index": 12,
+        "kind": "builtin_method",
+        "name": "Math.atan2"
+      },
+      {
+        "index": 13,
+        "kind": "builtin_method",
+        "name": "Math.ceil"
+      },
+      {
+        "index": 14,
+        "kind": "builtin_method",
+        "name": "Math.cos"
+      },
+      {
+        "index": 15,
+        "kind": "builtin_method",
+        "name": "Math.exp"
+      },
+      {
+        "index": 16,
+        "kind": "builtin_method",
+        "name": "Math.floor"
+      },
+      {
+        "index": 17,
+        "kind": "builtin_method",
+        "name": "Math.hypot"
+      },
+      {
+        "index": 18,
+        "kind": "builtin_method",
+        "name": "Math.imul"
+      },
+      {
+        "index": 19,
+        "kind": "builtin_method",
+        "name": "Math.log"
+      },
+      {
+        "index": 20,
+        "kind": "builtin_method",
+        "name": "Math.max"
+      },
+      {
+        "index": 21,
+        "kind": "builtin_method",
+        "name": "Math.min"
+      },
+      {
+        "index": 22,
+        "kind": "builtin_method",
+        "name": "Math.pow"
+      },
+      {
+        "index": 23,
+        "kind": "builtin_method",
+        "name": "Math.round"
+      },
+      {
+        "index": 24,
+        "kind": "builtin_method",
+        "name": "Math.sin"
+      },
+      {
+        "index": 25,
+        "kind": "builtin_method",
+        "name": "Math.sqrt"
+      },
+      {
+        "index": 26,
+        "kind": "builtin_method",
+        "name": "Math.tan"
+      },
+      {
+        "index": 27,
+        "kind": "builtin_method",
+        "name": "Math.trunc"
+      },
+      {
+        "index": 28,
+        "kind": "builtin_object",
+        "name": "Object"
+      },
+      {
+        "index": 29,
+        "kind": "builtin_method",
+        "name": "Object.create"
+      },
+      {
+        "index": 30,
+        "kind": "builtin_method",
+        "name": "Object.defineProperties"
+      },
+      {
+        "index": 31,
+        "kind": "builtin_method",
+        "name": "Object.defineProperty"
+      },
+      {
+        "index": 32,
+        "kind": "builtin_method",
+        "name": "Object.freeze"
+      },
+      {
+        "index": 33,
+        "kind": "builtin_method",
+        "name": "Object.getOwnPropertyDescriptor"
+      },
+      {
+        "index": 34,
+        "kind": "builtin_method",
+        "name": "Object.getOwnPropertyNames"
+      },
+      {
+        "index": 35,
+        "kind": "builtin_method",
+        "name": "Object.getPrototypeOf"
+      },
+      {
+        "index": 36,
+        "kind": "builtin_method",
+        "name": "Object.isExtensible"
+      },
+      {
+        "index": 37,
+        "kind": "builtin_method",
+        "name": "Object.isFrozen"
+      },
+      {
+        "index": 38,
+        "kind": "builtin_method",
+        "name": "Object.keys"
+      },
+      {
+        "index": 39,
+        "kind": "builtin_method",
+        "name": "Object.seal"
+      },
+      {
+        "index": 40,
+        "kind": "builtin_object",
+        "name": "String"
+      },
+      {
+        "index": 41,
+        "kind": "builtin_method",
+        "name": "String.fromCharCode"
+      },
+      {
+        "index": 42,
+        "kind": "private_builtin",
+        "name": "silentSetPrototypeOf"
+      },
+      {
+        "index": 43,
+        "kind": "private_builtin",
+        "name": "requireFast"
+      },
+      {
+        "index": 44,
+        "kind": "private_builtin",
+        "name": "getTemplateObject"
+      },
+      {
+        "index": 45,
+        "kind": "private_builtin",
+        "name": "ensureObject"
+      },
+      {
+        "index": 46,
+        "kind": "private_builtin",
+        "name": "getMethod"
+      },
+      {
+        "index": 47,
+        "kind": "private_builtin",
+        "name": "throwTypeError"
+      },
+      {
+        "index": 48,
+        "kind": "private_builtin",
+        "name": "generatorSetDelegated"
+      },
+      {
+        "index": 49,
+        "kind": "private_builtin",
+        "name": "copyDataProperties"
+      },
+      {
+        "index": 50,
+        "kind": "private_builtin",
+        "name": "copyRestArgs"
+      },
+      {
+        "index": 51,
+        "kind": "private_builtin",
+        "name": "arraySpread"
+      },
+      {
+        "index": 52,
+        "kind": "private_builtin",
+        "name": "apply"
+      },
+      {
+        "index": 53,
+        "kind": "private_builtin",
+        "name": "exportAll"
+      },
+      {
+        "index": 54,
+        "kind": "private_builtin",
+        "name": "exponentiationOperator"
+      },
+      {
+        "index": 55,
+        "kind": "js_builtin",
+        "name": "spawnAsync"
+      }
+    ]
+  },
+  "container": {
+    "magic": "0x1F1903C103BC1FC6",
+    "delta_magic": "~MAGIC",
+    "bytecode_options": {
+      "name": "BytecodeOptions",
+      "fields": [
+        {
+          "name": "staticBuiltins",
+          "type_name": "bool",
+          "bit_width": 1,
+          "notes": []
+        },
+        {
+          "name": "cjsModulesStaticallyResolved",
+          "type_name": "bool",
+          "bit_width": 1,
+          "notes": []
+        },
+        {
+          "name": "hasAsync",
+          "type_name": "bool",
+          "bit_width": 1,
+          "notes": []
+        }
+      ]
+    },
+    "file_header": {
+      "name": "BytecodeFileHeader",
+      "fields": [
+        {
+          "name": "magic",
+          "type_name": "uint64_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "version",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "sourceHash",
+          "type_name": "uint8_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "fileLength",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "globalCodeIndex",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "functionCount",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "stringKindCount",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "identifierCount",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "stringCount",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "overflowStringCount",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "stringStorageSize",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "bigIntCount",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "bigIntStorageSize",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "regExpCount",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "regExpStorageSize",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "arrayBufferSize",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "objKeyBufferSize",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "objValueBufferSize",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "segmentID",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "cjsModuleCount",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "functionSourceCount",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "debugInfoOffset",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "options",
+          "type_name": "BytecodeOptions",
+          "since_bytecode_version": null,
+          "notes": []
+        },
+        {
+          "name": "padding",
+          "type_name": "uint8_t",
+          "since_bytecode_version": null,
+          "notes": []
+        }
+      ]
+    },
+    "function_header_flags": {
+      "name": "FunctionHeaderFlag",
+      "fields": []
+    },
+    "function_header": {
+      "name": "FunctionHeader",
+      "fields": [
+        {
+          "name": "offset",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": [
+            "bit_width=25"
+          ]
+        },
+        {
+          "name": "paramCount",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": [
+            "bit_width=7"
+          ]
+        },
+        {
+          "name": "bytecodeSizeInBytes",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": [
+            "bit_width=15"
+          ]
+        },
+        {
+          "name": "functionName",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": [
+            "bit_width=17"
+          ]
+        },
+        {
+          "name": "infoOffset",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": [
+            "bit_width=25"
+          ]
+        },
+        {
+          "name": "frameSize",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": [
+            "bit_width=7"
+          ]
+        },
+        {
+          "name": "environmentSize",
+          "type_name": "uint32_t",
+          "since_bytecode_version": null,
+          "notes": [
+            "bit_width=8"
+          ]
+        },
+        {
+          "name": "highestReadCacheIndex",
+          "type_name": "uint8_t",
+          "since_bytecode_version": null,
+          "notes": [
+            "bit_width=8"
+          ]
+        },
+        {
+          "name": "flags",
+          "type_name": "FunctionHeaderFlag",
+          "since_bytecode_version": null,
+          "notes": []
+        }
+      ]
+    },
+    "raw_module": {
+      "function_header": {
+        "small_header_fields": [
+          {
+            "name": "offset",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=25"
+            ]
+          },
+          {
+            "name": "paramCount",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=7"
+            ]
+          },
+          {
+            "name": "bytecodeSizeInBytes",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=15"
+            ]
+          },
+          {
+            "name": "functionName",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=17"
+            ]
+          },
+          {
+            "name": "infoOffset",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=25"
+            ]
+          },
+          {
+            "name": "frameSize",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=7"
+            ]
+          },
+          {
+            "name": "environmentSize",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=8"
+            ]
+          },
+          {
+            "name": "highestReadCacheIndex",
+            "type_name": "uint8_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=8"
+            ]
+          }
+        ],
+        "small_header_flags": "FunctionHeaderFlag",
+        "large_header_fields": [
+          {
+            "name": "offset",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=25"
+            ]
+          },
+          {
+            "name": "paramCount",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=7"
+            ]
+          },
+          {
+            "name": "bytecodeSizeInBytes",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=15"
+            ]
+          },
+          {
+            "name": "functionName",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=17"
+            ]
+          },
+          {
+            "name": "infoOffset",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=25"
+            ]
+          },
+          {
+            "name": "frameSize",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=7"
+            ]
+          },
+          {
+            "name": "environmentSize",
+            "type_name": "uint32_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=8"
+            ]
+          },
+          {
+            "name": "highestReadCacheIndex",
+            "type_name": "uint8_t",
+            "since_bytecode_version": null,
+            "notes": [
+              "bit_width=8"
+            ]
+          },
+          {
+            "name": "flags",
+            "type_name": "FunctionHeaderFlag",
+            "since_bytecode_version": null,
+            "notes": []
+          }
+        ],
+        "overflow_strategy": "SmallFuncHeader either stores compact fields directly or encodes a large header offset when flags.overflowed is set"
+      },
+      "function_body": {
+        "opcode_stream_alignment": null,
+        "jump_table_alignment": 4,
+        "jump_tables_inlined_after_opcodes": true,
+        "optional_padding_control": "BytecodeGenerationOptions::padFunctionBodiesPercent",
+        "notes": [
+          "function bytecode may be deduplicated during layout",
+          "opcode bytes are serialized first; jump tables follow after 4-byte alignment"
+        ]
+      },
+      "function_info": {
+        "info_alignment": null,
+        "large_header_may_be_present": true,
+        "subsections": [
+          {
+            "name": "large_function_header",
+            "alignment": null,
+            "storage": "FunctionHeader",
+            "notes": [
+              "present only when SmallFuncHeader overflows"
+            ]
+          },
+          {
+            "name": "exception_handler_table",
+            "alignment": null,
+            "storage": "ExceptionHandlerTableHeader + HBCExceptionHandlerInfo[]",
+            "notes": [
+              "present only when the function has exception handlers"
+            ]
+          },
+          {
+            "name": "debug_offsets",
+            "alignment": null,
+            "storage": "DebugOffsets",
+            "notes": [
+              "present only when debug info is not stripped and the function has debug info"
+            ]
+          }
+        ],
+        "notes": [
+          "function info is serialized after all function bodies",
+          "BF.infoOffset points to the start of this aligned info block"
+        ]
+      },
+      "exception_handlers": {
+        "header_name": "ExceptionHandlerTableHeader",
+        "table_entry_type": "HBCExceptionHandlerInfo",
+        "alignment": null,
+        "notes": [
+          "serialized within the function info area"
+        ]
+      },
+      "debug_offsets": {
+        "record_type": "DebugOffsets",
+        "alignment": null,
+        "notes": [
+          "serialized within the function info area"
+        ]
+      },
+      "debug_info": {
+        "header_name": "DebugInfoHeader",
+        "alignment": 4,
+        "subsections": [
+          {
+            "name": "filename_table",
+            "alignment": null,
+            "storage": "StringTableEntry[]",
+            "notes": []
+          },
+          {
+            "name": "filename_storage",
+            "alignment": null,
+            "storage": "u8[]",
+            "notes": []
+          },
+          {
+            "name": "file_regions",
+            "alignment": null,
+            "storage": "DebugFileRegion[]",
+            "notes": []
+          },
+          {
+            "name": "debug_data",
+            "alignment": null,
+            "storage": "u8[]",
+            "notes": [
+              "contains source locations and lexical data; lexicalDataOffset points into this blob"
+            ]
+          }
+        ],
+        "strip_behavior": "when stripDebugInfoSection is enabled, an empty DebugInfoHeader is still serialized",
+        "notes": [
+          "debugInfoOffset in the file header points here"
+        ]
+      },
+      "string_table": {
+        "small_entry_type": "SmallStringTableEntry",
+        "overflow_entry_type": "OverflowStringTableEntry",
+        "overflow_strategy": "small entries mark overflowed offset/length and reference overflow table indices",
+        "notes": [
+          "string storage is serialized separately as a raw blob"
+        ]
+      },
+      "array_buffer": {
+        "alignment": 4,
+        "storage": "u8[]",
+        "notes": [
+          "serialized literal array buffer"
+        ]
+      },
+      "object_key_buffer": {
+        "alignment": 4,
+        "storage": "u8[]",
+        "notes": [
+          "first half of BytecodeModule object buffer pair"
+        ]
+      },
+      "object_value_buffer": {
+        "alignment": 4,
+        "storage": "u8[]",
+        "notes": [
+          "second half of BytecodeModule object buffer pair"
+        ]
+      },
+      "bigint_table": {
+        "alignment": 4,
+        "entry_type": "BigIntTableEntry",
+        "storage": "table + separate bigint storage blob",
+        "notes": []
+      },
+      "regexp_table": {
+        "alignment": 4,
+        "entry_type": "RegExpTableEntry",
+        "storage": "table + separate regexp storage blob",
+        "notes": []
+      },
+      "cjs_module_table": {
+        "alignment": 4,
+        "entry_type": "pair<uint32_t, uint32_t> or static module entry",
+        "storage": "dynamic pairs or static table depending on bytecode options",
+        "notes": []
+      },
+      "function_source_table": {
+        "alignment": 4,
+        "entry_type": "uint32_t",
+        "storage": "function source reference array",
+        "notes": []
+      },
+      "footer": {
+        "type_name": "BytecodeFileFooter",
+        "hash_description": "SHA1 of all bytes above the footer",
+        "notes": [
+          "serialized even during layout, with a zero/ignored hash until the final pass"
+        ]
+      }
+    },
+    "sections": [
+      {
+        "name": "file_header",
+        "alignment": 4,
+        "notes": [
+          "serialized first via writeBinary(BytecodeFileHeader)"
+        ]
+      },
+      {
+        "name": "function_headers",
+        "alignment": 4,
+        "notes": [
+          "serialized as SmallFuncHeader entries"
+        ]
+      },
+      {
+        "name": "string_kinds",
+        "alignment": 4,
+        "notes": [
+          "run-length encoded string kind table"
+        ]
+      },
+      {
+        "name": "identifier_hashes",
+        "alignment": 4,
+        "notes": [
+          "identifier hash array"
+        ]
+      },
+      {
+        "name": "small_string_table",
+        "alignment": 4,
+        "notes": [
+          "includes overflow markers pointing into overflow_string_table"
+        ]
+      },
+      {
+        "name": "overflow_string_table",
+        "alignment": 4,
+        "notes": [
+          "present when small string table entries overflow offset or length"
+        ]
+      },
+      {
+        "name": "string_storage",
+        "alignment": 4,
+        "notes": [
+          "raw string blob"
+        ]
+      },
+      {
+        "name": "array_buffer",
+        "alignment": 4,
+        "notes": [
+          "serialized literal array buffer"
+        ]
+      },
+      {
+        "name": "object_key_buffer",
+        "alignment": 4,
+        "notes": [
+          "object key literal buffer"
+        ]
+      },
+      {
+        "name": "object_value_buffer",
+        "alignment": 4,
+        "notes": [
+          "object value literal buffer"
+        ]
+      },
+      {
+        "name": "bigint_table",
+        "alignment": 4,
+        "notes": [
+          "bigint table entries"
+        ]
+      },
+      {
+        "name": "bigint_storage",
+        "alignment": 4,
+        "notes": [
+          "bigint storage blob"
+        ]
+      },
+      {
+        "name": "regexp_table",
+        "alignment": 4,
+        "notes": [
+          "regexp table entries"
+        ]
+      },
+      {
+        "name": "regexp_storage",
+        "alignment": 4,
+        "notes": [
+          "regexp bytecode blob"
+        ]
+      },
+      {
+        "name": "cjs_module_table",
+        "alignment": 4,
+        "notes": [
+          "dynamic pairs or static table depending on bytecode options"
+        ]
+      },
+      {
+        "name": "function_source_table",
+        "alignment": 4,
+        "notes": [
+          "preserved function source references"
+        ]
+      },
+      {
+        "name": "function_bodies",
+        "alignment": null,
+        "notes": [
+          "serialized after the template-driven segments",
+          "jump tables are aligned to 4 bytes after opcode blocks",
+          "optional body padding may be emitted when padFunctionBodiesPercent is enabled"
+        ]
+      },
+      {
+        "name": "function_info",
+        "alignment": 4,
+        "notes": [
+          "contains overflowed large headers when needed",
+          "contains exception handler tables and debug offsets",
+          "subsections use INFO_ALIGNMENT = 4",
+          "serializer pads exception/debug-info subsections to INFO_ALIGNMENT"
+        ]
+      },
+      {
+        "name": "debug_info",
+        "alignment": 4,
+        "notes": [
+          "debugInfoOffset points here",
+          "serialized even in stripped mode as an empty DebugInfoHeader"
+        ]
+      },
+      {
+        "name": "file_footer",
+        "alignment": null,
+        "notes": [
+          "contains the SHA1 file hash of everything above the footer"
+        ]
+      }
+    ],
+    "notes": [
+      "container sections are derived from visitBytecodeSegmentsInOrder and BytecodeSerializer::serialize"
+    ]
+  },
+  "semantic": {
+    "module": {
+      "fields": [
+        {
+          "name": "functions",
+          "type_name": "Vec<Function>",
+          "source": "normalized from function headers + bodies",
+          "notes": []
+        },
+        {
+          "name": "entry_function",
+          "type_name": "FunctionId",
+          "source": "globalCodeIndex in file header",
+          "notes": []
+        },
+        {
+          "name": "strings",
+          "type_name": "StringTable",
+          "source": "normalized from small/overflow string tables + storage",
+          "notes": []
+        },
+        {
+          "name": "bigints",
+          "type_name": "BigIntTable",
+          "source": "normalized from bigint table + storage",
+          "notes": []
+        },
+        {
+          "name": "regexps",
+          "type_name": "RegExpTable",
+          "source": "normalized from regexp table + storage",
+          "notes": []
+        },
+        {
+          "name": "builtins",
+          "type_name": "Vec<BuiltinRef>",
+          "source": "normalized from Builtins.def",
+          "notes": []
+        },
+        {
+          "name": "cjs_modules",
+          "type_name": "CjsModuleTable",
+          "source": "normalized from cjs module section",
+          "notes": []
+        }
+      ],
+      "notes": [
+        "module is the stable semantic root over the raw container",
+        "semantic module intentionally hides alignment, padding, and overflow-header details"
+      ]
+    },
+    "function": {
+      "fields": [
+        {
+          "name": "id",
+          "type_name": "FunctionId",
+          "source": "position in function table",
+          "notes": []
+        },
+        {
+          "name": "name",
+          "type_name": "StringId",
+          "source": "functionName in function header",
+          "notes": []
+        },
+        {
+          "name": "parameters",
+          "type_name": "u32",
+          "source": "paramCount in function header",
+          "notes": []
+        },
+        {
+          "name": "frame_size",
+          "type_name": "u32",
+          "source": "frameSize in function header",
+          "notes": []
+        },
+        {
+          "name": "environment_size",
+          "type_name": "u32",
+          "source": "environmentSize in function header",
+          "notes": []
+        },
+        {
+          "name": "flags",
+          "type_name": "FunctionFlags",
+          "source": "normalized from FunctionHeaderFlag",
+          "notes": []
+        },
+        {
+          "name": "instructions",
+          "type_name": "Vec<Instruction>",
+          "source": "decoded from function bytecode",
+          "notes": []
+        },
+        {
+          "name": "jump_tables",
+          "type_name": "Vec<JumpTable>",
+          "source": "decoded from trailing jump-table area",
+          "notes": []
+        },
+        {
+          "name": "exception_handlers",
+          "type_name": "Vec<ExceptionHandler>",
+          "source": "decoded from function info",
+          "notes": []
+        },
+        {
+          "name": "debug_offsets",
+          "type_name": "Option<DebugOffsets>",
+          "source": "decoded from function info",
+          "notes": []
+        }
+      ],
+      "notes": [
+        "semantic function is intended to remain mostly stable across bytecode versions"
+      ]
+    },
+    "instruction": {
+      "fields": [
+        {
+          "name": "offset",
+          "type_name": "u32",
+          "source": "byte offset within function body",
+          "notes": []
+        },
+        {
+          "name": "opcode",
+          "type_name": "OpcodeId",
+          "source": "decoded from bytecode stream",
+          "notes": []
+        },
+        {
+          "name": "mnemonic",
+          "type_name": "String",
+          "source": "instruction metadata name",
+          "notes": []
+        },
+        {
+          "name": "operands",
+          "type_name": "Vec<Operand>",
+          "source": "decoded and typed via bytecode spec",
+          "notes": []
+        },
+        {
+          "name": "branch_targets",
+          "type_name": "Vec<InstructionOffset>",
+          "source": "normalized from jump operands and switch tables",
+          "notes": []
+        }
+      ],
+      "notes": [
+        "semantic instruction is normalized over short/long encoding details where practical"
+      ]
+    },
+    "exception_handler": {
+      "fields": [
+        {
+          "name": "start",
+          "type_name": "InstructionOffset",
+          "source": "HBCExceptionHandlerInfo.start",
+          "notes": []
+        },
+        {
+          "name": "end",
+          "type_name": "InstructionOffset",
+          "source": "HBCExceptionHandlerInfo.end",
+          "notes": []
+        },
+        {
+          "name": "target",
+          "type_name": "InstructionOffset",
+          "source": "HBCExceptionHandlerInfo.target",
+          "notes": []
+        }
+      ],
+      "notes": [
+        "exception handlers are function-local semantic ranges"
+      ]
+    },
+    "debug_info": {
+      "fields": [
+        {
+          "name": "source_locations",
+          "type_name": "Vec<SourceLocation>",
+          "source": "decoded from DebugInfo data blob",
+          "notes": []
+        },
+        {
+          "name": "lexical_data",
+          "type_name": "LexicalData",
+          "source": "decoded from DebugInfo data blob using lexicalDataOffset",
+          "notes": []
+        },
+        {
+          "name": "file_regions",
+          "type_name": "Vec<FileRegion>",
+          "source": "DebugFileRegion entries",
+          "notes": []
+        },
+        {
+          "name": "filenames",
+          "type_name": "StringTable",
+          "source": "filename table + filename storage",
+          "notes": []
+        }
+      ],
+      "notes": [
+        "semantic debug info hides the packed file format and offset indirections"
+      ]
+    },
+    "side_tables": [
+      {
+        "name": "StringTable",
+        "fields": [
+          {
+            "name": "entries",
+            "type_name": "Vec<StringEntry>",
+            "source": "small/overflow string tables + string storage",
+            "notes": []
+          }
+        ],
+        "notes": []
+      },
+      {
+        "name": "BigIntTable",
+        "fields": [
+          {
+            "name": "entries",
+            "type_name": "Vec<BigIntEntry>",
+            "source": "bigint table + bigint storage",
+            "notes": []
+          }
+        ],
+        "notes": []
+      },
+      {
+        "name": "RegExpTable",
+        "fields": [
+          {
+            "name": "entries",
+            "type_name": "Vec<RegExpEntry>",
+            "source": "regexp table + regexp storage",
+            "notes": []
+          }
+        ],
+        "notes": []
+      },
+      {
+        "name": "CjsModuleTable",
+        "fields": [
+          {
+            "name": "entries",
+            "type_name": "Vec<CjsModuleEntry>",
+            "source": "dynamic or static cjs module section",
+            "notes": []
+          }
+        ],
+        "notes": []
+      }
+    ],
+    "notes": [
+      "semantic layer is analysis-facing and should be more stable across bytecode versions than the raw container",
+      "this layer is currently a target schema; full population will come with binary parsing and lifting"
+    ]
+  }
+}

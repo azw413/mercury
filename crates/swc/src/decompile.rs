@@ -13,9 +13,23 @@ use swc_core::{
     },
 };
 
-/// Decompile the supported HBC-96 subset into executable SWC nodes. Temporaries
-/// and a block dispatcher preserve evaluation order; this is not source recovery.
-/// Generated calls use the standard Reflect.apply intrinsic (see README).
+/// Decompiles supported HBC 96 bytecode into an executable [`SwcModule`].
+///
+/// The result is a behavioral reconstruction, not the original source. Register
+/// temporaries and a basic-block dispatcher preserve evaluation order, while
+/// generated runtime adapters reconstruct closures, exceptions, iterators,
+/// generators, async functions, constructors, and other VM behavior. The returned
+/// tree can be printed, edited with SWC visitors, or passed to
+/// [`HbcCompiler`](crate::HbcCompiler).
+///
+/// Generated code assumes standard intrinsics such as `Reflect.apply`; arbitrary
+/// host hooks and mutated globals are outside the compatibility contract.
+///
+/// # Errors
+///
+/// Returns [`Error::Version`] for non-96 input, [`Error::Bytecode`] for malformed
+/// containers or instruction streams, and [`Error::Unsupported`] for container
+/// features outside the decompiler's contract.
 pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let version = bytes
         .get(8..12)

@@ -65,7 +65,7 @@ and normalized stderr. Run it directly with:
 
 ```sh
 HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
-  cargo test -p mercury-swc --test corpus_roundtrip -- --ignored
+  cargo test -p mercury-hbc --test corpus_roundtrip -- --ignored
 ```
 
 `MERCURY_JS_CORPUS` can point at a larger standalone JavaScript corpus; see the

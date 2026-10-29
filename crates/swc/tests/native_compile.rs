@@ -3,7 +3,7 @@ use std::{fs, process::Command};
 use mercury_binary::{decode_raw_module, parse_hbc_container_with_spec};
 use mercury_ir::RawOperand;
 use mercury_spec_builtin::load_spec;
-use mercury_swc::{
+use mercury_hbc::{
     HbcCompiler, SourceKind, SourceLanguage, SwcModule,
     ast::Ident,
     decompile,

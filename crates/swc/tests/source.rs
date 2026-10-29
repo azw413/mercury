@@ -1,4 +1,4 @@
-use mercury_swc::{
+use mercury_hbc::{
     Error, HermesCompiler, SourceKind, SourceLanguage, SwcModule,
     ast::*,
     visit::{Visit, VisitMut, VisitMutWith, VisitWith},
@@ -16,7 +16,7 @@ fn source_roundtrip_preserves_comments_and_shadowed_bindings() {
     )
     .unwrap();
     // Identifier contexts distinguish the outer binding from the parameter.
-    struct Gather(Vec<mercury_swc::swc_core::common::SyntaxContext>);
+    struct Gather(Vec<mercury_hbc::swc_core::common::SyntaxContext>);
     impl Visit for Gather {
         fn visit_ident(&mut self, id: &Ident) {
             if id.sym == *"value" {

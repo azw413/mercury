@@ -4,7 +4,7 @@ use std::{
     process::{Command, Output},
 };
 
-use mercury_swc::{HbcCompiler, decompile};
+use mercury_hbc::{HbcCompiler, decompile};
 
 #[derive(Debug, PartialEq, Eq)]
 struct Observation {

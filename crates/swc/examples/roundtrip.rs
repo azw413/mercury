@@ -2,11 +2,11 @@
 //! compile the in-memory AST back to HBC without invoking `hermesc`.
 //!
 //! Run with:
-//! cargo run -p mercury-swc --example roundtrip -- input.hbc output.hbc [--rename-generated]
+//! cargo run -p mercury-hbc --example roundtrip -- input.hbc output.hbc [--rename-generated]
 
 use std::{env, fs, process};
 
-use mercury_swc::{
+use mercury_hbc::{
     HbcCompiler,
     ast::Ident,
     decompile,
