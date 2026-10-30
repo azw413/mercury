@@ -120,6 +120,10 @@ pub struct RawModuleSpec {
     pub array_buffer: RawBufferSpec,
     pub object_key_buffer: RawBufferSpec,
     pub object_value_buffer: RawBufferSpec,
+    /// Object literal shapes used by newer Hermes formats in place of a
+    /// separate object-value buffer. Absent from older generated specs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_shape_table: Option<RawTableSpec>,
     pub bigint_table: RawTableSpec,
     pub regexp_table: RawTableSpec,
     pub cjs_module_table: RawTableSpec,

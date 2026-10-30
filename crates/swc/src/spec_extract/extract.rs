@@ -424,6 +424,14 @@ fn build_raw_module_spec(
             storage: "u8[]".to_owned(),
             notes: vec!["second half of BytecodeModule object buffer pair".to_owned()],
         },
+        object_shape_table: file_format.contains("objShapeTableCount").then(|| RawTableSpec {
+            alignment: Some(4),
+            entry_type: "ShapeTableEntry".to_owned(),
+            storage: "key buffer offset and property count pairs".to_owned(),
+            notes: vec![
+                "object values are stored in the shared literal value buffer".to_owned(),
+            ],
+        }),
         bigint_table: RawTableSpec {
             alignment: Some(4),
             entry_type: "BigIntTableEntry".to_owned(),
@@ -762,51 +770,55 @@ fn extract_function_header_fields(source: &str) -> Vec<FieldSpec> {
 }
 
 fn extract_bitfield_spec(source: &str, markers: &[&str], name: &str) -> BitfieldSpec {
-    let mut in_union = false;
-    let mut in_struct = false;
-    let mut saw_struct = false;
+    let mut in_declaration = false;
+    let mut in_anonymous_struct = false;
+    let mut pending = String::new();
     let mut fields = Vec::new();
 
-    for line in source.lines() {
-        let line = line.trim();
-        if !in_union {
+    for source_line in source.lines() {
+        let line = source_line.trim();
+        if !in_declaration {
             if markers.iter().any(|marker| line == *marker) {
-                in_union = true;
+                in_declaration = true;
             }
             continue;
         }
 
-        if !in_struct {
-            if line == "struct {" {
-                in_struct = true;
-                saw_struct = true;
-            } else if line == "};" && saw_struct {
-                break;
-            }
+        if line == "struct {" {
+            in_anonymous_struct = true;
             continue;
         }
-
         if line == "};" {
-            in_struct = false;
+            if in_anonymous_struct {
+                in_anonymous_struct = false;
+                continue;
+            }
+            break;
+        }
+        if line.is_empty() || line.starts_with("//") {
             continue;
         }
 
-        if line.is_empty() || line.starts_with("///") {
+        pending.push_str(line);
+        pending.push(' ');
+        if !line.contains(';') {
             continue;
         }
-
-        if let Some(field) = parse_bitfield_macro_line(line) {
+        let statement = pending.trim();
+        if let Some(field) = parse_bitfield_macro_line(statement) {
             fields.push(field);
+            pending.clear();
             continue;
         }
 
-        let declaration = line
+        let declaration = statement
             .split("//")
             .next()
             .map(str::trim)
             .unwrap_or_default()
             .trim_end_matches(';');
         if !declaration.contains(':') {
+            pending.clear();
             continue;
         }
 
@@ -818,6 +830,7 @@ fn extract_bitfield_spec(source: &str, markers: &[&str], name: &str) -> Bitfield
             .unwrap_or(0);
         let mut left_parts = left.split_whitespace().collect::<Vec<_>>();
         if left_parts.len() < 2 {
+            pending.clear();
             continue;
         }
         let field_name = left_parts.pop().unwrap().to_owned();
@@ -828,6 +841,7 @@ fn extract_bitfield_spec(source: &str, markers: &[&str], name: &str) -> Bitfield
             bit_width,
             notes: Vec::new(),
         });
+        pending.clear();
     }
 
     BitfieldSpec {
@@ -838,14 +852,14 @@ fn extract_bitfield_spec(source: &str, markers: &[&str], name: &str) -> Bitfield
 
 fn parse_bitfield_macro_line(line: &str) -> Option<BitfieldFieldSpec> {
     let body = if let Some(body) = line.strip_prefix("HERMES_FIRST_BITFIELD(") {
-        body.trim_end_matches(");")
+        body.trim_end_matches(");").trim()
     } else if let Some(body) = line.strip_prefix("HERMES_NEXT_BITFIELD(") {
-        body.trim_end_matches(");")
+        body.trim_end_matches(");").trim()
     } else {
         return None;
     };
 
-    let parts = body.split(", ").collect::<Vec<_>>();
+    let parts = body.split(',').map(str::trim).collect::<Vec<_>>();
     let (type_name, field_name, bit_width) = match parts.as_slice() {
         [_, _, api_type, name, bits] => (*api_type, *name, *bits),
         _ => return None,
@@ -992,6 +1006,10 @@ fn map_visit_method_to_section(method_name: &str) -> (&'static str, Vec<String>)
         ),
         "visitStringStorage" => ("string_storage", vec!["raw string blob".to_owned()]),
         "visitArrayBuffer" => ("array_buffer", vec!["serialized literal array buffer".to_owned()]),
+        "visitLiteralValueBuffer" => (
+            "literal_value_buffer",
+            vec!["shared array and object literal value buffer".to_owned()],
+        ),
         "visitObjectKeyBuffer" => (
             "object_key_buffer",
             vec!["object key literal buffer".to_owned()],
@@ -999,6 +1017,10 @@ fn map_visit_method_to_section(method_name: &str) -> (&'static str, Vec<String>)
         "visitObjectValueBuffer" => (
             "object_value_buffer",
             vec!["object value literal buffer".to_owned()],
+        ),
+        "visitObjectShapeTable" => (
+            "object_shape_table",
+            vec!["ShapeTableEntry key buffer offset and property count pairs".to_owned()],
         ),
         "visitBigIntTable" => ("bigint_table", vec!["bigint table entries".to_owned()]),
         "visitBigIntStorage" => ("bigint_storage", vec!["bigint storage blob".to_owned()]),
@@ -1013,5 +1035,65 @@ fn map_visit_method_to_section(method_name: &str) -> (&'static str, Vec<String>)
             vec!["preserved function source references".to_owned()],
         ),
         _ => ("unknown_segment", vec![format!("unrecognized serializer visit method: {method_name}")]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_bitfield_spec;
+
+    #[test]
+    fn extracts_direct_multiline_bitfield_macros() {
+        let source = r#"union BytecodeOptions {
+  HERMES_FIRST_BITFIELD(
+      BytecodeOptions,
+      0,
+      bool,
+      StaticBuiltins,
+      1);
+  HERMES_NEXT_BITFIELD(BytecodeOptions, StaticBuiltins, bool, CjsModulesStaticallyResolved, 1);
+};"#;
+
+        let spec = extract_bitfield_spec(source, &["union BytecodeOptions {"], "BytecodeOptions");
+        let fields = spec
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.type_name.as_str(), field.bit_width))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            fields,
+            vec![
+                ("StaticBuiltins", "bool", 1),
+                ("CjsModulesStaticallyResolved", "bool", 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn extracts_legacy_nested_cpp_bitfields() {
+        let source = r#"struct FunctionHeaderFlag {
+  struct {
+    uint32_t prohibitInvoke : 2;
+    uint32_t strictMode : 1;
+  };
+};"#;
+
+        let spec = extract_bitfield_spec(
+            source,
+            &["struct FunctionHeaderFlag {"],
+            "FunctionHeaderFlag",
+        );
+        let fields = spec
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.type_name.as_str(), field.bit_width))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            fields,
+            vec![
+                ("prohibitInvoke", "uint32_t", 2),
+                ("strictMode", "uint32_t", 1),
+            ]
+        );
     }
 }

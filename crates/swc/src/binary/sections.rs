@@ -306,6 +306,7 @@ mod tests {
                 array_buffer: RawBufferSpec { alignment: Some(4), storage: String::new(), notes: vec![] },
                 object_key_buffer: RawBufferSpec { alignment: Some(4), storage: String::new(), notes: vec![] },
                 object_value_buffer: RawBufferSpec { alignment: Some(4), storage: String::new(), notes: vec![] },
+                object_shape_table: None,
                 bigint_table: RawTableSpec { alignment: Some(4), entry_type: "BigIntTableEntry".into(), storage: String::new(), notes: vec![] },
                 regexp_table: RawTableSpec { alignment: Some(4), entry_type: "RegExpTableEntry".into(), storage: String::new(), notes: vec![] },
                 cjs_module_table: RawTableSpec { alignment: Some(4), entry_type: "pair<uint32_t, uint32_t>".into(), storage: String::new(), notes: vec![] },

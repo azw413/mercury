@@ -234,4 +234,4 @@ cargo test -p mercury-hbc --test spec_sync
 ```
 
 The sync test keeps the workspace and packaged registries identical. The current
-registry contains HBC 89, 94, and 96.
+registry contains HBC 89, 94, 96, and 98.

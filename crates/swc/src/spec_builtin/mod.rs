@@ -36,6 +36,7 @@ mod tests {
         assert!(supported_versions().contains(&89));
         assert!(supported_versions().contains(&94));
         assert!(supported_versions().contains(&96));
+        assert!(supported_versions().contains(&98));
     }
 
     #[test]
