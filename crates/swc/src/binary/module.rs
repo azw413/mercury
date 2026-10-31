@@ -456,8 +456,8 @@ fn build_function_headers(
         .zip(function_name_ids.iter().copied())
         .zip(encoded_bodies.iter())
     {
-        let read_cache = highest_cache_index(body, &function.instructions, true);
-        let write_cache = highest_cache_index(body, &function.instructions, false);
+        let read_cache = cache_metadata(&function.instructions, true, module.version);
+        let write_cache = cache_metadata(&function.instructions, false, module.version);
         let header = FunctionHeader {
             offset: body_offset,
             param_count: function.param_count,
@@ -557,20 +557,45 @@ fn write_function_header_entry(header: &FunctionHeader, version: u32) -> Vec<u8>
     write_small_function_header_for_version(&stub, version)
 }
 
-fn highest_cache_index(_body: &[u8], instructions: &[DecodedInstruction], read: bool) -> u8 {
-    instructions
+fn cache_metadata(instructions: &[DecodedInstruction], read: bool, version: u32) -> u8 {
+    let indices = instructions
         .iter()
-        .filter_map(|instruction| cache_index_for_instruction(instruction, read))
-        .max()
-        .unwrap_or(0)
+        .filter_map(|instruction| cache_index_for_instruction(instruction, read));
+    if version >= 98 {
+        // HBC 98 stores the cache size, with 255 reserved to disable caching.
+        indices
+            .filter(|index| *index != u8::MAX)
+            .max()
+            .map(|index| index + 1)
+            .unwrap_or(0)
+    } else {
+        // HBC 96 stores the highest one-based cache index.
+        indices.max().unwrap_or(0)
+    }
 }
 
 fn cache_index_for_instruction(instruction: &DecodedInstruction, read: bool) -> Option<u8> {
     match instruction.name.as_str() {
-        "GetByIdShort" | "GetById" | "GetByIdLong" | "TryGetById" | "TryGetByIdLong" if read => {
+        "GetByIdShort" | "GetById" | "GetByIdLong" | "TryGetById" | "TryGetByIdLong"
+        | "CreateThisForNew"
+            if read =>
+        {
             operand_as_u8(instruction.operands.get(2))
         }
-        "PutById" | "PutByIdLong" if !read => operand_as_u8(instruction.operands.get(2)),
+        "PutById"
+        | "PutByIdLong"
+        | "PutByIdLoose"
+        | "PutByIdLooseLong"
+        | "PutByIdStrict"
+        | "PutByIdStrictLong"
+        | "TryPutByIdLoose"
+        | "TryPutByIdLooseLong"
+        | "TryPutByIdStrict"
+        | "TryPutByIdStrictLong"
+            if !read =>
+        {
+            operand_as_u8(instruction.operands.get(2))
+        }
         _ => None,
     }
 }

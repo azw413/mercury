@@ -3,7 +3,7 @@
 Mercury is a Rust library and command-line toolkit for compiling, inspecting,
 transforming, and decompiling [Hermes](https://github.com/facebook/hermes)
 bytecode. Its high-level API uses real [SWC](https://swc.rs/) syntax trees, and
-its native compiler emits HBC 96 directly without invoking `hermesc`.
+its native compiler emits HBC 96 or HBC 98 directly without invoking `hermesc`.
 
 The same crate also provides versioned bytecode specifications, raw and semantic
 IRs, semantic assembly, and a Hermes-compatible regular-expression compiler.
@@ -11,9 +11,9 @@ IRs, semantic assembly, and a Hermes-compatible regular-expression compiler.
 ## Highlights
 
 - Parse, print, and transform JavaScript or TypeScript with SWC.
-- Compile supported JS/TS scripts to HBC 96 with no external compiler.
+- Compile supported JS/TS scripts to HBC 96 or HBC 98 with no external compiler.
 - Decompile HBC 96 into editable, executable SWC trees.
-- Decode raw HBC 89, HBC 94, and HBC 96 containers using generated specs.
+- Decode raw HBC 89, HBC 94, HBC 96, and HBC 98 containers using generated specs.
 - Inspect normalized semantic IR and assemble the supported HBC 96 subset.
 - Compile regular-expression literals to Hermes-compatible regex bytecode.
 
@@ -130,15 +130,15 @@ instructions outside its explicit rebuilding contract.
 | Operation | Current support | Important boundary |
 | --- | --- | --- |
 | JS/TS parsing and printing | SWC scripts and modules | No type checking, JSX/TSX setup, or bundling |
-| Native source compilation | HBC 96 scripts | Unsupported syntax returns an explicit error |
+| Native source compilation | HBC 96 and HBC 98 scripts | Unsupported syntax returns an explicit error |
 | Bytecode decompilation | HBC 96 | Executable reconstruction, not original source recovery |
-| Raw container decoding | HBC 89, 94, and 96 | Support depends on the embedded versioned spec |
+| Raw container decoding | HBC 89, 94, 96, and 98 | Support depends on the embedded versioned spec |
 | Semantic assembly | HBC 96 subset | Minimal writer; not a byte-perfect roundtrip |
 | Regex bytecode compilation | HBC 96 format | Matches the tested Hermes compiler format |
 
 A bytecode version appearing in `versions` does not imply that every high-level
-operation supports that version. Native source compilation and decompilation
-currently have separate HBC 96 contracts.
+operation supports that version. Native source compilation targets HBC 96 and
+HBC 98; decompilation remains an HBC 96 contract.
 
 ## Native compiler coverage
 
@@ -210,7 +210,8 @@ cargo check -p mercury-hbc --examples
 ```
 
 Runtime and external-oracle tests are opt-in. They use `HERMES_BIN`,
-`HERMESC_BIN`, and, for legacy comparisons, `HERMES_DEC_ROOT`. The corpus harness
+`HERMESC_BIN`, `HERMES98_BIN` for HBC 98 execution, and, for legacy comparisons,
+`HERMES_DEC_ROOT`. The corpus harness
 runs 122 combinations of committed JavaScript programs and Hermes optimization
 modes, comparing execution before and after HBC-to-SWC-to-HBC reconstruction.
 See [fixture and test instructions](test/README.md) for reproducible commands.

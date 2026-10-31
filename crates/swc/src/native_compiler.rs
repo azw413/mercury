@@ -25,7 +25,11 @@ const LEXICAL_ARGUMENTS_BINDING: &str = "\0mercury_lexical_arguments";
 // Leave 64 registers for the environment and expression temporaries.
 const MAX_REGISTER_BINDINGS_PER_SCOPE: usize = 192;
 const REGISTER_PRESSURE: &str = "expression needs more than 256 live registers";
-// Hermes 0.12's HBC 96 runtime uses the legacy private-builtin layout.
+const CALLER_EXTRA_REGISTERS_HBC96: u16 = 6;
+// HBC 98 adds SHLocals to the caller's stack-frame metadata.
+const CALLER_EXTRA_REGISTERS_HBC98: u16 = 7;
+// Private builtin IDs in HBC 98 are shifted by two additional public builtins.
+const PRIVATE_BUILTIN_ID_OFFSET_HBC98: u8 = 2;
 const SILENT_SET_PROTOTYPE_OF_BUILTIN: u8 = 37;
 const GET_TEMPLATE_OBJECT_BUILTIN: u8 = 39;
 const THROW_TYPE_ERROR_BUILTIN: u8 = 42;
@@ -39,7 +43,7 @@ const INIT_REGEX_NAMED_GROUPS_BUILTIN: u8 = 50;
 /// A native compiler from SWC syntax trees to Hermes bytecode.
 ///
 /// This compiler does not invoke `hermesc`, require a Hermes installation, or
-/// execute the input program. It currently targets HBC 96 scripts and lowers
+/// execute the input program. It targets HBC 96 and HBC 98 scripts and lowers
 /// TypeScript on an internal copy before compilation.
 #[derive(Debug, Clone, Copy)]
 pub struct HbcCompiler {
@@ -49,7 +53,7 @@ pub struct HbcCompiler {
 impl HbcCompiler {
     /// Creates a compiler for `target_version`.
     ///
-    /// Version 96 is currently the only supported target. Other versions return
+    /// Versions 96 and 98 are supported. Other versions return
     /// [`Error::Unsupported`] when [`compile`](Self::compile) is called.
     pub fn new(target_version: u32) -> Self {
         Self { target_version }
@@ -62,13 +66,13 @@ impl HbcCompiler {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Unsupported`] for a non-96 target, an unbundled ES module,
-    /// or source syntax outside the native compiler's implemented subset. Returns
-    /// [`Error::Bytecode`] if internal encoding or container invariants fail.
+    /// Returns [`Error::Unsupported`] for an unsupported target, an unbundled ES
+    /// module, or source syntax outside the native compiler's implemented subset.
+    /// Returns [`Error::Bytecode`] if internal encoding or container invariants fail.
     pub fn compile(&self, module: &SwcModule) -> Result<Vec<u8>, Error> {
-        if self.target_version != 96 {
+        if !matches!(self.target_version, 96 | 98) {
             return Err(Error::Unsupported(
-                "native compilation currently targets HBC 96".into(),
+                "native compilation currently targets HBC 96 and HBC 98".into(),
             ));
         }
         let program = module.javascript_program();
@@ -252,9 +256,9 @@ impl Visit for CallArityFinder {
     }
 
     fn visit_new_expr(&mut self, expression: &swc_core::ecma::ast::NewExpr) {
-        self.max_arguments = self.max_arguments.max(
-            expression.args.as_deref().unwrap_or_default().len() + 1,
-        );
+        self.max_arguments = self
+            .max_arguments
+            .max(expression.args.as_deref().unwrap_or_default().len() + 1);
         expression.visit_children_with(self);
     }
 
@@ -506,12 +510,14 @@ impl Compiler {
         if captures_this {
             self.initialize_lexical_this()?;
         }
+        if self.version == 96 {
         for name in lexical_names {
             let id = self.intern_identifier(&name)?;
             self.emit(
                 "ThrowIfHasRestrictedGlobalProperty",
                 vec![DecodedOperand::U32(id)],
             );
+        }
         }
 
         let mut declarations = Vec::new();
@@ -631,7 +637,21 @@ impl Compiler {
             .count() as u32;
         let environment = self.alloc_register()?;
         self.environment_register = Some(environment);
+        if self.version >= 98 {
+            if is_global {
+                self.emit(
+                    "CreateTopLevelEnvironment",
+                    vec![reg(environment), DecodedOperand::U32(environment_size)],
+                );
+            } else {
+                self.emit(
+                    "CreateFunctionEnvironment",
+                    vec![reg(environment), DecodedOperand::U8(environment_size as u8)],
+                );
+            }
+        } else {
         self.emit("CreateEnvironment", vec![reg(environment)]);
+        }
         self.scope = Some(Rc::new(FunctionScope {
             bindings: self.build_binding_map(first_bindings, &register_bindings)?,
             parent: parent_scope,
@@ -646,7 +666,7 @@ impl Compiler {
             // A closure's parent environment is immutable for its activation.
             // Cache only that identity, never the mutable values in its slots.
             let parent = self.alloc_register()?;
-            self.emit("GetEnvironment", vec![reg(parent), DecodedOperand::U8(0)]);
+            self.emit_get_environment(parent, 0)?;
             self.parent_environment_register = Some(parent);
         }
         self.base_registers = self.next_register;
@@ -736,10 +756,12 @@ impl Compiler {
         bindings
             .iter()
             .filter(|(name, _)| !self.captured_names.contains(name))
-            .take(MAX_REGISTER_BINDINGS_PER_SCOPE.min(
+            .take(
+                MAX_REGISTER_BINDINGS_PER_SCOPE.min(
                 self.register_binding_budget
                     .saturating_sub(usize::from(self.next_register)),
-            ))
+                ),
+            )
             .map(|(name, _)| name.clone())
             .collect()
     }
@@ -1164,7 +1186,8 @@ impl Compiler {
     fn initialize_implicit_arguments(&mut self) -> Result<(), Error> {
         let value = self.alloc_register()?;
         self.emit("LoadConstUndefined", vec![reg(value)]);
-        self.emit("ReifyArguments", vec![reg(value)]);
+        let opcode = self.strict_or_loose_opcode("ReifyArguments");
+        self.emit(&opcode, vec![reg(value)]);
         self.emit_binding_initialization(LEXICAL_ARGUMENTS_BINDING, value)?;
         self.release_register(value)
     }
@@ -1201,13 +1224,18 @@ impl Compiler {
                 "native compiler finished with an active exception context".into(),
             ));
         }
-        // Hermes reserves six caller registers plus the largest outgoing
-        // argument area (including `this`) at the end of a function frame.
+        // Reserve caller metadata plus the largest outgoing argument area
+        // (including `this`) at the end of a function frame.
+        let caller_extra_registers = if self.version >= 98 {
+            CALLER_EXTRA_REGISTERS_HBC98
+        } else {
+            CALLER_EXTRA_REGISTERS_HBC96
+        };
         let frame_size = if self.max_call_arguments == 0 {
             self.frame_size.max(1)
         } else {
             self.frame_size
-                .checked_add(6)
+                .checked_add(caller_extra_registers)
                 .and_then(|size| size.checked_add(self.max_call_arguments))
                 .ok_or_else(|| {
                     Error::Unsupported("script needs an HBC frame larger than u16".into())
@@ -1355,8 +1383,13 @@ impl Compiler {
             .filter(|(name, _)| !register_bindings.contains(name))
             .count() as u32;
         let environment = self.alloc_register()?;
+        let opcode = if self.version >= 98 {
+            "CreateEnvironment"
+        } else {
+            "CreateInnerEnvironment"
+        };
         self.emit(
-            "CreateInnerEnvironment",
+            opcode,
             vec![
                 reg(environment),
                 reg(previous_environment),
@@ -1814,7 +1847,7 @@ impl Compiler {
                     }
                     MemberProp::Computed(property) => {
                         let key = self.compile_expression(&property.expr)?;
-                        self.emit("PutByVal", vec![reg(object), reg(key), reg(value)]);
+                        self.emit_put_by_val(object, key, value);
                         self.release_register(key)?;
                     }
                     MemberProp::PrivateName(_) => {
@@ -2386,6 +2419,13 @@ impl Compiler {
     fn emit_builtin_call(&mut self, builtin: u8, arguments: &[u8]) -> Result<u8, Error> {
         let argument_count = u8::try_from(arguments.len() + 1)
             .map_err(|_| Error::Unsupported("too many builtin arguments".into()))?;
+        let builtin = if self.version >= 98 {
+            // applyArguments and applyWithNewTarget also precede exponentiation.
+            let late_builtin_offset = u8::from(builtin >= EXPONENTIATION_BUILTIN) * 2;
+            builtin + PRIVATE_BUILTIN_ID_OFFSET_HBC98 + late_builtin_offset
+        } else {
+            builtin
+        };
         self.max_call_arguments = self.max_call_arguments.max(u16::from(argument_count));
         for (index, argument) in arguments.iter().enumerate() {
             self.emit_frame_move(*argument, (index + 1) as u16);
@@ -2632,19 +2672,27 @@ impl Compiler {
             let value = self.compile_expression(&element.expr)?;
             let value_source = self.take_last_move(value).unwrap_or(value);
             if let Ok(index) = u8::try_from(index) {
+                let opcode = if self.version >= 98 {
+                    "DefineOwnInDenseArray"
+                } else {
+                    "PutOwnByIndex"
+                };
                 self.emit(
-                    "PutOwnByIndex",
+                    opcode,
                     vec![reg(output), reg(value_source), DecodedOperand::U8(index)],
                 );
             } else {
-                self.emit(
-                    "PutOwnByIndexL",
-                    vec![
-                        reg(output),
-                        reg(value_source),
-                        DecodedOperand::U32(index as u32),
-                    ],
-                );
+                let opcode = if self.version >= 98 {
+                    "DefineOwnInDenseArrayL"
+                } else {
+                    "PutOwnByIndexL"
+                };
+                let index = if self.version >= 98 {
+                    DecodedOperand::U16(index as u16)
+                } else {
+                    DecodedOperand::U32(index as u32)
+                };
+                self.emit(opcode, vec![reg(output), reg(value_source), index]);
             }
             self.release_register(value)?;
         }
@@ -2769,8 +2817,13 @@ impl Compiler {
     }
 
     fn emit_define_own(&mut self, object: u8, value: u8, key: u8) {
+        let opcode = if self.version >= 98 {
+            "DefineOwnByVal"
+        } else {
+            "PutOwnByVal"
+        };
         self.emit(
-            "PutOwnByVal",
+            opcode,
             vec![reg(object), reg(value), reg(key), DecodedOperand::U8(1)],
         );
     }
@@ -2784,8 +2837,13 @@ impl Compiler {
     ) -> Result<(), Error> {
         let missing = self.alloc_register()?;
         self.emit("LoadConstUndefined", vec![reg(missing)]);
+        let opcode = if self.version >= 98 {
+            "DefineOwnGetterSetterByVal"
+        } else {
+            "PutOwnGetterSetterByVal"
+        };
         self.emit(
-            "PutOwnGetterSetterByVal",
+            opcode,
             vec![
                 reg(object),
                 reg(key),
@@ -2946,10 +3004,7 @@ impl Compiler {
                 let environment = if let Some(environment) = self.cached_parent_environment(level) {
                     environment
                 } else {
-                    self.emit(
-                        "GetEnvironment",
-                        vec![reg(output), DecodedOperand::U8(level)],
-                    );
+                    self.emit_get_environment(output, level)?;
                     output
                 };
                 self.emit(
@@ -2986,10 +3041,7 @@ impl Compiler {
                     self.emit_checked_binding_store(name, environment, binding, value)?;
                 } else {
                     let environment = self.alloc_register()?;
-                    self.emit(
-                        "GetEnvironment",
-                        vec![reg(environment), DecodedOperand::U8(level)],
-                    );
+                    self.emit_get_environment(environment, level)?;
                     self.emit_checked_binding_store(name, environment, binding, value)?;
                     self.release_register(environment)?;
                 }
@@ -3077,11 +3129,7 @@ impl Compiler {
         self.emit_get_by_id(constructor, constructor, "TypeError", true)?;
 
         let receiver = self.alloc_register()?;
-        self.emit_get_by_id(receiver, constructor, "prototype", false)?;
-        self.emit(
-            "CreateThis",
-            vec![reg(receiver), reg(receiver), reg(constructor)],
-        );
+        self.emit_create_this(receiver, constructor)?;
         let message =
             self.compile_string_value(&format!("Assignment to constant variable `{name}`"))?;
         self.emit_frame_move(receiver, 0);
@@ -3130,10 +3178,7 @@ impl Compiler {
                     environment
                 } else {
                     let environment = self.alloc_register()?;
-                    self.emit(
-                        "GetEnvironment",
-                        vec![reg(environment), DecodedOperand::U8(level)],
-                    );
+                    self.emit_get_environment(environment, level)?;
                     environment
                 };
                 self.emit(
@@ -3214,6 +3259,21 @@ impl Compiler {
             .ok_or_else(|| Error::Bytecode("native compiler has no active environment".into()))
     }
 
+    fn emit_get_environment(&mut self, output: u8, level: u8) -> Result<(), Error> {
+        if self.version >= 98 {
+            self.emit(
+                "GetParentEnvironment",
+                vec![reg(output), DecodedOperand::U8(level)],
+            );
+        } else {
+            self.emit(
+                "GetEnvironment",
+                vec![reg(output), DecodedOperand::U8(level)],
+            );
+        }
+        Ok(())
+    }
+
     fn cached_parent_environment(&self, level: u8) -> Option<u8> {
         (level == 0)
             .then_some(self.parent_environment_register)
@@ -3266,6 +3326,11 @@ impl Compiler {
         let object = self.compile_expression(&member.obj)?;
         match &member.prop {
             MemberProp::Ident(property) => {
+                if self.version >= 98 {
+                    let key = self.compile_string_value(property.sym.as_ref())?;
+                    self.emit_delete_by_val(object, key);
+                    self.release_register(key)?;
+                } else {
                 let id = self.intern_identifier(property.sym.as_ref())?;
                 if let Ok(id) = u16::try_from(id) {
                     self.emit(
@@ -3279,9 +3344,10 @@ impl Compiler {
                     );
                 }
             }
+            }
             MemberProp::Computed(property) => {
                 let key = self.compile_expression(&property.expr)?;
-                self.emit("DelByVal", vec![reg(object), reg(object), reg(key)]);
+                self.emit_delete_by_val(object, key);
                 self.release_register(key)?;
             }
             MemberProp::PrivateName(_) => {
@@ -3291,6 +3357,14 @@ impl Compiler {
             }
         }
         Ok(object)
+    }
+
+    fn emit_delete_by_val(&mut self, object: u8, key: u8) {
+        let mut operands = vec![reg(object), reg(object), reg(key)];
+        if self.version >= 98 {
+            operands.push(DecodedOperand::U8(u8::from(self.current_function_strict)));
+        }
+        self.emit("DelByVal", operands);
     }
 
     fn compile_member_read(&mut self, member: &MemberExpr) -> Result<u8, Error> {
@@ -3458,7 +3532,7 @@ impl Compiler {
                 let end = self.new_label();
                 self.emit_logical_assignment_guard(operator, current, end)?;
                 let right = self.compile_expression(right)?;
-                self.emit("PutByVal", vec![reg(object), reg(key), reg(right)]);
+                self.emit_put_by_val(object, key, right);
                 self.emit("Mov", vec![reg(current), reg(right)]);
                 self.release_register(right)?;
                 self.mark_label(end)?;
@@ -3528,7 +3602,7 @@ impl Compiler {
                 let right = self.compile_expression(right)?;
                 self.emit_binary_operation(operator, current, right)?;
                 self.release_register(right)?;
-                self.emit("PutByVal", vec![reg(object), reg(key), reg(current)]);
+                self.emit_put_by_val(object, key, current);
                 self.emit("Mov", vec![reg(object), reg(current)]);
                 self.release_register(current)?;
                 self.release_register(key)?;
@@ -3611,7 +3685,7 @@ impl Compiler {
                 self.emit_postfix_old_value(current, prefix);
                 let updated = self.alloc_register()?;
                 self.emit(opcode, vec![reg(updated), reg(current)]);
-                self.emit("PutByVal", vec![reg(object), reg(key), reg(updated)]);
+                self.emit_put_by_val(object, key, updated);
                 self.emit(
                     "Mov",
                     vec![reg(object), reg(if prefix { updated } else { current })],
@@ -3656,7 +3730,7 @@ impl Compiler {
                     let key = self.compile_expression(&property.expr)?;
                     let value = self.compile_expression(value)?;
                     let source = self.take_last_move(value).unwrap_or(value);
-                    self.emit("PutByVal", vec![reg(object), reg(key), reg(source)]);
+                    self.emit_put_by_val(object, key, source);
                     self.emit("Mov", vec![reg(object), reg(source)]);
                     self.release_register(value)?;
                     self.release_register(key)?;
@@ -3709,7 +3783,9 @@ impl Compiler {
             (function, function, this_value)
         };
 
-        if call.args.iter().any(|argument| argument.spread.is_some()) {
+        let requires_apply = call.args.iter().any(|argument| argument.spread.is_some())
+            || (self.version >= 98 && call.args.len() > 254);
+        if requires_apply {
             let arguments = self.compile_spread_arguments(&call.args)?;
             let output =
                 self.emit_builtin_call(APPLY_BUILTIN, &[function, arguments, this_value])?;
@@ -3957,9 +4033,28 @@ impl Compiler {
         Ok(result)
     }
 
+    fn emit_create_this(&mut self, receiver: u8, constructor: u8) -> Result<(), Error> {
+        if self.version >= 98 {
+            let cache = self.alloc_cache()?;
+            self.emit(
+                "CreateThisForNew",
+                vec![reg(receiver), reg(constructor), DecodedOperand::U8(cache)],
+            );
+        } else {
+            self.emit_get_by_id(receiver, constructor, "prototype", false)?;
+            self.emit(
+                "CreateThis",
+                vec![reg(receiver), reg(receiver), reg(constructor)],
+            );
+        }
+        Ok(())
+    }
+
     fn compile_new(&mut self, expression: &swc_core::ecma::ast::NewExpr) -> Result<u8, Error> {
         let arguments = expression.args.as_deref().unwrap_or_default();
-        if arguments.iter().any(|argument| argument.spread.is_some()) {
+        let requires_apply = arguments.iter().any(|argument| argument.spread.is_some())
+            || (self.version >= 98 && arguments.len() > 254);
+        if requires_apply {
             let constructor = self.compile_expression(&expression.callee)?;
             let arguments = self.compile_spread_arguments(arguments)?;
             let output = self.emit_builtin_call(APPLY_BUILTIN, &[constructor, arguments])?;
@@ -3975,11 +4070,7 @@ impl Compiler {
 
         let constructor = self.compile_expression(&expression.callee)?;
         let receiver = self.alloc_register()?;
-        self.emit_get_by_id(receiver, constructor, "prototype", false)?;
-        self.emit(
-            "CreateThis",
-            vec![reg(receiver), reg(receiver), reg(constructor)],
-        );
+        self.emit_create_this(receiver, constructor)?;
 
         let mut values = Vec::with_capacity(arguments.len());
         for argument in arguments {
@@ -4094,12 +4185,25 @@ impl Compiler {
         Ok(())
     }
 
+    fn strict_or_loose_opcode(&self, base: &str) -> String {
+        if self.version < 98 {
+            return base.into();
+        }
+        let mode = if self.current_function_strict {
+            "Strict"
+        } else {
+            "Loose"
+        };
+        format!("{base}{mode}")
+    }
+
     fn emit_put_by_id(&mut self, object: u8, value: u8, name: &str) -> Result<(), Error> {
         let id = self.intern_identifier(name)?;
         let cache = self.alloc_cache()?;
+        let opcode = self.strict_or_loose_opcode("PutById");
         if let Ok(id) = u16::try_from(id) {
             self.emit(
-                "PutById",
+                &opcode,
                 vec![
                     reg(object),
                     reg(value),
@@ -4109,7 +4213,7 @@ impl Compiler {
             );
         } else {
             self.emit(
-                "PutByIdLong",
+                &format!("{opcode}Long"),
                 vec![
                     reg(object),
                     reg(value),
@@ -4119,6 +4223,11 @@ impl Compiler {
             );
         }
         Ok(())
+    }
+
+    fn emit_put_by_val(&mut self, object: u8, key: u8, value: u8) {
+        let opcode = self.strict_or_loose_opcode("PutByVal");
+        self.emit(&opcode, vec![reg(object), reg(key), reg(value)]);
     }
 
     fn emit_load_string(&mut self, output: u8, id: u32) {
@@ -4226,13 +4335,20 @@ impl Compiler {
     }
 
     fn alloc_cache(&mut self) -> Result<u8, Error> {
-        // HBC 96 (Hermes 0.12): 0 means "no cache"; slots are 1..=255.
-        const PROPERTY_CACHING_DISABLED: u8 = 0;
+        let property_caching_disabled = if self.version >= 98 { u8::MAX } else { 0 };
         if self.next_cache >= u16::from(u8::MAX) {
-            return Ok(PROPERTY_CACHING_DISABLED);
+            return Ok(property_caching_disabled);
         }
+        if self.version >= 98 {
+            // HBC 98: slots are 0..=254 and 255 means "no cache".
+            let cache = self.next_cache as u8;
+            self.next_cache += 1;
+            Ok(cache)
+        } else {
+            // HBC 96 (Hermes 0.12): slots are 1..=255 and 0 means "no cache".
         self.next_cache += 1;
         Ok(self.next_cache as u8)
+    }
     }
 
     fn emit(&mut self, name: &str, operands: Vec<DecodedOperand>) {
@@ -4323,7 +4439,12 @@ impl Compiler {
                 }
             }
         }
-        let block_starts = self.labels.iter().flatten().copied().collect::<HashSet<_>>();
+        let block_starts = self
+            .labels
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<HashSet<_>>();
         let frame_moves = self
             .frame_moves
             .iter()
@@ -4380,18 +4501,20 @@ impl Compiler {
                             && register(operand) == Some(destination)
                         {
                             *operand = match operand {
-                                DecodedOperand::U8(_) => DecodedOperand::U8(
-                                    u8::try_from(source).map_err(|_| {
-                                        Error::Bytecode("propagated register does not fit Reg8".into())
-                                    })?,
-                                ),
-                                DecodedOperand::U16(_) => DecodedOperand::U16(
-                                    u16::try_from(source).map_err(|_| {
+                                DecodedOperand::U8(_) => {
+                                    DecodedOperand::U8(u8::try_from(source).map_err(|_| {
+                                        Error::Bytecode(
+                                            "propagated register does not fit Reg8".into(),
+                                        )
+                                    })?)
+                                }
+                                DecodedOperand::U16(_) => {
+                                    DecodedOperand::U16(u16::try_from(source).map_err(|_| {
                                         Error::Bytecode(
                                             "propagated register does not fit Reg16".into(),
                                         )
-                                    })?,
-                                ),
+                                    })?)
+                                }
                                 DecodedOperand::U32(_) => DecodedOperand::U32(source),
                                 _ => unreachable!(),
                             };
@@ -4450,7 +4573,12 @@ impl Compiler {
             }
         }
 
-        let block_starts = self.labels.iter().flatten().copied().collect::<HashSet<_>>();
+        let block_starts = self
+            .labels
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<HashSet<_>>();
         let frame_moves = self
             .frame_moves
             .iter()
@@ -4469,8 +4597,10 @@ impl Compiler {
                 let instruction = &self.instructions[index];
                 if matches!(instruction.name.as_str(), "Mov" | "MovLong")
                     && !frame_moves.contains(&index)
-                    && let (Some(destination), Some(source)) =
-                        (register(&instruction.operands[0]), register(&instruction.operands[1]))
+                    && let (Some(destination), Some(source)) = (
+                        register(&instruction.operands[0]),
+                        register(&instruction.operands[1]),
+                    )
                     && destination != source
                     && source_uses.get(&source) == Some(&1)
                     && let Some(&producer) = last_assignment.get(&source)
@@ -4691,7 +4821,14 @@ impl Compiler {
         if self.frame_moves.is_empty() {
             return Ok(());
         }
-        let this_register = frame_size.checked_sub(7).ok_or_else(|| {
+        let caller_extra_registers = if self.version >= 98 {
+            CALLER_EXTRA_REGISTERS_HBC98
+        } else {
+            CALLER_EXTRA_REGISTERS_HBC96
+        };
+        let this_register = frame_size
+            .checked_sub(caller_extra_registers + 1)
+            .ok_or_else(|| {
             Error::Bytecode("native compiler produced an invalid outgoing frame".into())
         })?;
         for pending in &self.frame_moves {
@@ -5245,6 +5382,8 @@ fn defines_first_register(name: &str) -> bool {
                 | "CoerceThisNS"
                 | "DirectEval"
                 | "ReifyArguments"
+                | "ReifyArgumentsLoose"
+                | "ReifyArgumentsStrict"
                 | "SelectObject"
                 | "IteratorBegin"
                 | "IteratorNext"
@@ -5461,11 +5600,9 @@ mod tests {
         compiler.mark_label(target).unwrap();
         compiler.emit("Catch", vec![reg(4)]);
         compiler.emit("Ret", vec![reg(2)]);
-        compiler.exception_handlers.push(PendingExceptionHandler {
-            start,
-            end,
-            target,
-        });
+        compiler
+            .exception_handlers
+            .push(PendingExceptionHandler { start, end, target });
 
         coalesce(&mut compiler);
 
@@ -5488,11 +5625,9 @@ mod tests {
         compiler.mark_label(target).unwrap();
         compiler.emit("Catch", vec![reg(4)]);
         compiler.emit("Ret", vec![reg(4)]);
-        compiler.exception_handlers.push(PendingExceptionHandler {
-            start,
-            end,
-            target,
-        });
+        compiler
+            .exception_handlers
+            .push(PendingExceptionHandler { start, end, target });
 
         coalesce(&mut compiler);
 

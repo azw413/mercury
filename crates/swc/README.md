@@ -69,10 +69,10 @@ implemented.
 
 ### `HbcCompiler`
 
-`HbcCompiler::new(96).compile(&module)` lowers a script directly into a complete
-HBC file. Other target versions and unbundled ES modules return
-`Error::Unsupported`; unsupported source syntax is never silently delegated to an
-external compiler.
+`HbcCompiler::new(96).compile(&module)` or `HbcCompiler::new(98).compile(&module)`
+lowers a script directly into a complete HBC file. Other target versions and
+unbundled ES modules return `Error::Unsupported`; unsupported source syntax is
+never silently delegated to an external compiler.
 
 ### `decompile`
 
@@ -142,7 +142,7 @@ cargo run -p mercury-hbc --features cli --bin mercury -- decompile /tmp/example.
 
 ## Native source-compilation contract
 
-Native compilation currently targets HBC 96 scripts. Supported control flow
+Native compilation targets HBC 96 and HBC 98 scripts. Supported control flow
 includes blocks, `if`/`else`, `while`, `do…while`, `for`, `for…in`, `for…of`,
 `switch`, unlabeled `break` and `continue`, `return`, `throw`, and
 `try`/`catch`/`finally`. Function declarations are hoisted, and strict directive
@@ -234,11 +234,12 @@ Run the self-contained tests:
 cargo test -p mercury-hbc --all-features
 ```
 
-Execution tests require a Hermes runtime and, for fixtures authored from source,
-its compiler:
+Execution tests require Hermes runtimes and, for fixtures authored from source,
+the HBC 96 compiler. Set `HERMES98_BIN` to an HBC 98 runtime for the HBC 98 suite:
 
 ```sh
 HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
+HERMES98_BIN=/absolute/path/to/hermes98 \
   cargo test -p mercury-hbc --all-features -- --include-ignored
 ```
 

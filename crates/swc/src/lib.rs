@@ -6,8 +6,8 @@
 //!
 //! - Parse JavaScript or TypeScript into a [`SwcModule`], inspect or transform
 //!   its SWC AST, and print it again.
-//! - Compile a supported script directly to HBC 96 with [`HbcCompiler`], without
-//!   invoking `hermesc` or executing the input program.
+//! - Compile a supported script directly to HBC 96 or HBC 98 with [`HbcCompiler`],
+//!   without invoking `hermesc` or executing the input program.
 //! - Decompile supported HBC 96 bytecode into an executable SWC tree with
 //!   [`decompile`], optionally edit that tree, and compile it back to HBC.
 //!
@@ -46,11 +46,12 @@
 //!
 //! # Compatibility and limitations
 //!
-//! Native compilation and decompilation currently target **HBC 96**. Source
-//! compilation accepts scripts, not unbundled ES modules, and returns
-//! [`Error::Unsupported`] for syntax outside its implemented subset. TypeScript is
-//! transpiled, not type-checked. Decompilation preserves executable behavior rather
-//! than original formatting, comments, local names, or high-level control flow.
+//! Native compilation targets **HBC 96 and HBC 98**; decompilation targets
+//! **HBC 96**. Source compilation accepts scripts, not unbundled ES modules, and
+//! returns [`Error::Unsupported`] for syntax outside its implemented subset.
+//! TypeScript is transpiled, not type-checked. Decompilation preserves executable
+//! behavior rather than original formatting, comments, local names, or high-level
+//! control flow.
 //!
 //! [`HermesCompiler`] is a separate adapter for callers that explicitly configure
 //! an external `hermesc` executable; it is not used by [`HbcCompiler`].
