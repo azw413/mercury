@@ -103,6 +103,7 @@ fn build_test_module(strings: Vec<String>, functions: Vec<MinimalFunction>) -> V
             literal_value_buffer: vec![],
             object_key_buffer: vec![],
             object_value_buffer: vec![],
+            object_shape_table: vec![],
             reg_exps: Vec::new(),
             functions,
         },

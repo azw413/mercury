@@ -274,6 +274,7 @@ fn build_minimal_module_from_semantic(
         literal_value_buffer: module.literal_value_buffer.clone(),
         object_key_buffer: module.object_key_buffer.clone(),
         object_value_buffer: module.object_value_buffer.clone(),
+        object_shape_table: Vec::new(),
         reg_exps: Vec::new(),
         functions,
     }

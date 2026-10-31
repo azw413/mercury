@@ -1,24 +1,24 @@
 use crate::binary::encode::{HbcEncodeError, encode_instructions};
 use crate::binary::functions::{
-    ExceptionHandlerEntry, FunctionHeader, FunctionHeaderFlags, write_exception_handler_table,
-    write_large_function_header, write_small_function_header,
+    ExceptionHandlerEntry, FunctionHeader, FunctionHeaderFlags, small_function_header_size,
+    write_exception_handler_table, write_large_function_header_for_version,
+    write_small_function_header_for_version,
 };
 use crate::binary::header::{
     BytecodeOptions, FILE_HEADER_SIZE, HERMES_MAGIC, HbcVersionedFileHeader, write_file_header,
 };
 use crate::binary::tables::{
-    OverflowStringTableEntry, PairTableEntry, SmallStringTableEntry, StringKind, StringKindEntry,
-    write_overflow_string_table_entries, write_pair_table_entries,
-    write_small_string_table_entries, write_string_kind_entries,
+    OverflowStringTableEntry, PairTableEntry, ShapeTableEntry, SmallStringTableEntry, StringKind,
+    StringKindEntry, write_overflow_string_table_entries, write_pair_table_entries,
+    write_shape_table_entries, write_small_string_table_entries, write_string_kind_entries,
 };
 use crate::binary::{DecodedInstruction, DecodedOperand};
-use crate::spec::BytecodeSpec;
 use crate::spec as mercury_spec;
+use crate::spec::BytecodeSpec;
 use sha1::{Digest, Sha1};
 use std::borrow::Cow;
 use thiserror::Error;
 
-const SMALL_FUNCTION_HEADER_SIZE: usize = 16;
 const BYTECODE_ALIGNMENT: usize = 4;
 const INFO_ALIGNMENT: usize = 4;
 const FOOTER_SIZE: usize = 20;
@@ -35,6 +35,7 @@ pub struct MinimalModule {
     pub literal_value_buffer: Vec<u8>,
     pub object_key_buffer: Vec<u8>,
     pub object_value_buffer: Vec<u8>,
+    pub object_shape_table: Vec<ShapeTableEntry>,
     /// Compiled regex bytecode, indexed by `CreateRegExp`'s regexp operand.
     pub reg_exps: Vec<Vec<u8>>,
     pub functions: Vec<MinimalFunction>,
@@ -97,7 +98,9 @@ pub struct MinimalFunction {
 pub enum HbcBuildError {
     #[error("invalid semantic module: {reason}")]
     InvalidModule { reason: String },
-    #[error("only bytecode version 96 is currently supported for semantic module building")]
+    #[error(
+        "only bytecode versions 96 and 98 are currently supported for semantic module building"
+    )]
     UnsupportedVersion,
     #[error("instruction encoding failed")]
     Encode(#[from] HbcEncodeError),
@@ -116,8 +119,18 @@ pub fn build_minimal_module(
     module: &MinimalModule,
     bytecode_spec: &BytecodeSpec,
 ) -> Result<Vec<u8>, HbcBuildError> {
-    if module.version != 96 {
+    if !matches!(module.version, 96 | 98) {
         return Err(HbcBuildError::UnsupportedVersion);
+    }
+    if module.version >= 98 && !module.object_value_buffer.is_empty() {
+        return Err(HbcBuildError::InvalidModule {
+            reason: "HBC 98 stores object values in the literal value buffer, not an object value buffer".into(),
+        });
+    }
+    if module.version < 98 && !module.object_shape_table.is_empty() {
+        return Err(HbcBuildError::InvalidModule {
+            reason: "object shape tables require HBC 98".into(),
+        });
     }
 
     if module.functions.len() > u32::MAX as usize {
@@ -252,8 +265,8 @@ pub fn build_minimal_module(
     let string_table = build_string_tables(&string_pool);
 
     let function_headers_start = FILE_HEADER_SIZE;
-    let function_headers_end =
-        function_headers_start + module.functions.len() * SMALL_FUNCTION_HEADER_SIZE;
+    let function_headers_end = function_headers_start
+        + module.functions.len() * small_function_header_size(module.version);
     let string_kinds_start = align_up(function_headers_end, BYTECODE_ALIGNMENT);
     let string_kinds_bytes = write_string_kind_entries(&encode_string_kind_entries(&string_kinds));
     let identifier_hashes_start = align_up(
@@ -292,9 +305,14 @@ pub fn build_minimal_module(
         BYTECODE_ALIGNMENT,
     );
     let object_value_buffer_bytes = module.object_value_buffer.clone();
+    let object_shape_table_start = align_up(
+        object_value_buffer_start + object_value_buffer_bytes.len(),
+        BYTECODE_ALIGNMENT,
+    );
+    let object_shape_table_bytes = write_shape_table_entries(&module.object_shape_table);
     // The (empty) BigInt table and storage come next, then the regexps.
     let reg_exp_table_start = align_up(
-        object_value_buffer_start + object_value_buffer_bytes.len(),
+        object_shape_table_start + object_shape_table_bytes.len(),
         BYTECODE_ALIGNMENT,
     );
     let mut reg_exp_entries = Vec::with_capacity(module.reg_exps.len());
@@ -332,7 +350,7 @@ pub fn build_minimal_module(
     bytes.resize(FILE_HEADER_SIZE, 0);
 
     for header in &function_headers {
-        bytes.extend_from_slice(&write_function_header_entry(header));
+        bytes.extend_from_slice(&write_function_header_entry(header, module.version));
     }
 
     pad_to(&mut bytes, string_kinds_start);
@@ -351,6 +369,8 @@ pub fn build_minimal_module(
     bytes.extend_from_slice(&object_key_buffer_bytes);
     pad_to(&mut bytes, object_value_buffer_start);
     bytes.extend_from_slice(&object_value_buffer_bytes);
+    pad_to(&mut bytes, object_shape_table_start);
+    bytes.extend_from_slice(&object_shape_table_bytes);
     pad_to(&mut bytes, reg_exp_table_start);
     bytes.extend_from_slice(&reg_exp_table_bytes);
     pad_to(&mut bytes, reg_exp_storage_start);
@@ -371,7 +391,11 @@ pub fn build_minimal_module(
     bytes.resize(bytes.len() + FOOTER_SIZE, 0);
 
     let header = HbcVersionedFileHeader {
-        layout: crate::binary::header::HbcHeaderLayout::V96WithFunctionSources,
+        layout: if module.version >= 98 {
+            crate::binary::header::HbcHeaderLayout::V98
+        } else {
+            crate::binary::header::HbcHeaderLayout::V96WithFunctionSources
+        },
         magic: HERMES_MAGIC,
         version: module.version,
         source_hash: [0u8; 20],
@@ -390,6 +414,7 @@ pub fn build_minimal_module(
         literal_value_buffer_size: literal_value_buffer_bytes.len() as u32,
         obj_key_buffer_size: object_key_buffer_bytes.len() as u32,
         obj_value_buffer_size: object_value_buffer_bytes.len() as u32,
+        obj_shape_table_count: module.object_shape_table.len() as u32,
         num_string_switch_imms: 0,
         segment_id: 0,
         cjs_module_count: 0,
@@ -443,6 +468,11 @@ fn build_function_headers(
             environment_size: function.environment_size,
             highest_read_cache_index: read_cache,
             highest_write_cache_index: write_cache,
+            loop_depth: 0,
+            number_reg_count: 0,
+            non_ptr_reg_count: 0,
+            num_cache_new_object: 0,
+            private_name_cache_size: 0,
             flags: FunctionHeaderFlags {
                 raw: 0,
                 prohibit_invoke: function.prohibit_invoke,
@@ -450,6 +480,7 @@ fn build_function_headers(
                 has_exception_handler: !function.exception_handlers.is_empty(),
                 has_debug_info: false,
                 overflowed: false,
+                kind: 0,
             },
             overflowed_from_small_header: false,
         };
@@ -468,7 +499,7 @@ fn build_function_infos(
 ) -> Vec<u8> {
     let mut bytes = Vec::new();
     for (function, header) in module.functions.iter().zip(headers) {
-        let needs_large_header = ensure_small_header_fits(header).is_none();
+        let needs_large_header = ensure_small_header_fits(header, module.version).is_none();
         if function.exception_handlers.is_empty() && !needs_large_header {
             continue;
         }
@@ -478,36 +509,52 @@ fn build_function_infos(
         bytes.resize(bytes.len() + (aligned_offset - absolute_offset), 0);
         header.info_offset = aligned_offset as u32;
 
-        if needs_large_header || ensure_small_header_fits(header).is_none() {
+        if module.version >= 98
+            || needs_large_header
+            || ensure_small_header_fits(header, module.version).is_none()
+        {
             header.overflowed_from_small_header = true;
-            bytes.extend_from_slice(&write_large_function_header(header));
-            debug_assert_eq!(bytes.len() % INFO_ALIGNMENT, 0);
+            bytes.extend_from_slice(&write_large_function_header_for_version(
+                header,
+                module.version,
+            ));
         }
         if !function.exception_handlers.is_empty() {
+            let table_offset = align_up(function_infos_start + bytes.len(), INFO_ALIGNMENT);
+            bytes.resize(
+                bytes.len() + table_offset - function_infos_start - bytes.len(),
+                0,
+            );
             bytes.extend_from_slice(&write_exception_handler_table(&function.exception_handlers));
         }
     }
     bytes
 }
 
-fn write_function_header_entry(header: &FunctionHeader) -> [u8; SMALL_FUNCTION_HEADER_SIZE] {
+fn write_function_header_entry(header: &FunctionHeader, version: u32) -> Vec<u8> {
     if !header.overflowed_from_small_header {
-        return write_small_function_header(header);
+        return write_small_function_header_for_version(header, version);
     }
 
     let large_header_offset = header.info_offset;
     let mut stub = header.clone();
-    stub.offset = large_header_offset & 0xffff;
+    if version >= 98 {
+        stub.offset = large_header_offset & 0xff_ffff;
+        stub.function_name = large_header_offset >> 24;
+        stub.info_offset = 0;
+    } else {
+        stub.offset = large_header_offset & 0xffff;
+        stub.function_name = 0;
+        stub.info_offset = large_header_offset >> 16;
+    }
     stub.param_count = 0;
     stub.bytecode_size_in_bytes = 0;
-    stub.function_name = 0;
-    stub.info_offset = large_header_offset >> 16;
     stub.frame_size = 0;
     stub.environment_size = 0;
     stub.highest_read_cache_index = 0;
     stub.highest_write_cache_index = 0;
     stub.flags.overflowed = true;
-    write_small_function_header(&stub)
+    write_small_function_header_for_version(&stub, version)
 }
 
 fn highest_cache_index(_body: &[u8], instructions: &[DecodedInstruction], read: bool) -> u8 {
@@ -537,19 +584,29 @@ fn operand_as_u8(operand: Option<&DecodedOperand>) -> Option<u8> {
     }
 }
 
-fn ensure_small_header_fits(header: &FunctionHeader) -> Option<()> {
-    if header.offset >= (1 << 25)
-        || header.param_count >= (1 << 7)
-        || header.bytecode_size_in_bytes >= (1 << 15)
-        || header.function_name >= (1 << 17)
-        || header.info_offset >= (1 << 25)
-        || header.frame_size >= (1 << 7)
-        || header.environment_size >= (1 << 8)
-    {
-        None
+fn ensure_small_header_fits(header: &FunctionHeader, version: u32) -> Option<()> {
+    let fits = if version >= 98 {
+        header.offset < (1 << 25)
+            && header.param_count < (1 << 5)
+            && header.loop_depth < (1 << 2)
+            && header.bytecode_size_in_bytes < (1 << 14)
+            && header.function_name < (1 << 8)
+            && header.number_reg_count < (1 << 5)
+            && header.non_ptr_reg_count < (1 << 5)
+            && header.frame_size < (1 << 8)
+            && header.highest_write_cache_index < (1 << 6)
+            && header.num_cache_new_object <= 1
+            && header.private_name_cache_size <= 1
     } else {
-        Some(())
-    }
+        header.offset < (1 << 25)
+            && header.param_count < (1 << 7)
+            && header.bytecode_size_in_bytes < (1 << 15)
+            && header.function_name < (1 << 17)
+            && header.info_offset < (1 << 25)
+            && header.frame_size < (1 << 7)
+            && header.environment_size < (1 << 8)
+    };
+    fits.then_some(())
 }
 
 fn build_string_tables(strings: &[HbcString]) -> BuiltStringTable {
@@ -739,7 +796,7 @@ fn compute_sha1(bytes: &[u8]) -> [u8; FOOTER_SIZE] {
 }
 
 fn empty_debug_info_section(version: u32) -> Vec<u8> {
-    if version >= 91 {
+    if (91..98).contains(&version) {
         vec![0u8; 7 * 4]
     } else {
         vec![0u8; 4 * 4]
@@ -781,6 +838,7 @@ mod tests {
             literal_value_buffer: vec![0xaa],
             object_key_buffer: vec![0xbb, 0xcc],
             object_value_buffer: vec![0xdd, 0xee, 0xff, 1],
+            object_shape_table: Vec::new(),
             reg_exps: Vec::new(),
             functions: vec![
                 MinimalFunction {
@@ -879,6 +937,92 @@ mod tests {
     }
 
     #[test]
+    fn builds_and_reparses_minimal_hbc98_module_with_shape_table_and_large_header() {
+        let spec = load_spec(98).expect("embedded hbc98 spec");
+        let shape_table = vec![
+            ShapeTableEntry {
+                key_buffer_offset: 0,
+                num_props: 2,
+            },
+            ShapeTableEntry {
+                key_buffer_offset: 16,
+                num_props: 3,
+            },
+        ];
+        let module = MinimalModule {
+            version: 98,
+            global_code_index: 0,
+            strings: vec![],
+            string_kinds: vec![],
+            literal_value_buffer: vec![0xaa],
+            object_key_buffer: vec![0xbb, 0xcc],
+            object_value_buffer: vec![],
+            object_shape_table: shape_table.clone(),
+            reg_exps: Vec::new(),
+            functions: vec![MinimalFunction {
+                name: "global".into(),
+                param_count: 32,
+                frame_size: 1,
+                environment_size: 0,
+                prohibit_invoke: 2,
+                strict_mode: false,
+                exception_handlers: vec![],
+                instructions: vec![
+                    DecodedInstruction {
+                        offset: 0,
+                        opcode: 147,
+                        name: "LoadConstUndefined".into(),
+                        operands: vec![DecodedOperand::U8(0)],
+                        size: 2,
+                    },
+                    DecodedInstruction {
+                        offset: 2,
+                        opcode: 118,
+                        name: "Ret".into(),
+                        operands: vec![DecodedOperand::U8(0)],
+                        size: 2,
+                    },
+                ],
+            }],
+        };
+
+        let bytes = build_minimal_module(&module, &spec.bytecode).expect("builds HBC 98");
+        let with_spec = parse_hbc_container_with_spec(&bytes, &spec.container)
+            .expect("reparses with the HBC 98 spec");
+        let built_in = crate::binary::parse_hbc_container(&bytes)
+            .expect("reparses with built-in HBC 98 layout rules");
+        assert_eq!(with_spec, built_in);
+
+        assert_eq!(with_spec.header.version, 98);
+        assert_eq!(with_spec.header.obj_shape_table_count, 2);
+        assert_eq!(with_spec.header.obj_value_buffer_size, 0);
+        assert_eq!(with_spec.section_boundaries.function_headers.len(), 12);
+        assert_eq!(with_spec.object_shape_table, shape_table);
+        assert!(with_spec.object_value_buffer.is_empty());
+        assert!(with_spec.function_headers[0].overflowed_from_small_header);
+        assert_eq!(with_spec.function_headers[0].param_count, 32);
+        assert_eq!(
+            with_spec.function_infos[0]
+                .large_header_range
+                .as_ref()
+                .map(|range| range.len()),
+            Some(37)
+        );
+        assert_eq!(
+            with_spec.header.debug_info_offset as usize
+                + empty_debug_info_section(98).len()
+                + FOOTER_SIZE,
+            bytes.len()
+        );
+
+        let raw = decode_raw_module(&with_spec, &bytes, &spec.bytecode).expect("decodes HBC 98");
+        assert_eq!(raw.functions.len(), 1);
+        assert_eq!(raw.functions[0].param_count, 32);
+        assert_eq!(raw.functions[0].instructions[0].name, "LoadConstUndefined");
+        assert_eq!(raw.functions[0].instructions[1].name, "Ret");
+    }
+
+    #[test]
     fn builds_and_reparses_exception_handler_tables() {
         let spec = load_spec(96).expect("embedded hbc96 spec");
         let handler = ExceptionHandlerEntry {
@@ -894,6 +1038,7 @@ mod tests {
             literal_value_buffer: vec![],
             object_key_buffer: vec![],
             object_value_buffer: vec![],
+            object_shape_table: Vec::new(),
             reg_exps: Vec::new(),
             functions: vec![MinimalFunction {
                 name: "global".into(),
@@ -963,6 +1108,7 @@ mod tests {
             literal_value_buffer: vec![],
             object_key_buffer: vec![],
             object_value_buffer: vec![],
+            object_shape_table: Vec::new(),
             reg_exps: Vec::new(),
             functions: vec![MinimalFunction {
                 name: "global".into(),
@@ -1003,6 +1149,7 @@ mod tests {
             literal_value_buffer: vec![],
             object_key_buffer: vec![],
             object_value_buffer: vec![],
+            object_shape_table: Vec::new(),
             reg_exps: Vec::new(),
             functions: vec![MinimalFunction {
                 name: "global".into(),

@@ -559,6 +559,7 @@ impl Compiler {
             literal_value_buffer: Vec::new(),
             object_key_buffer: Vec::new(),
             object_value_buffer: Vec::new(),
+            object_shape_table: Vec::new(),
             reg_exps: self
                 .reg_exps
                 .into_iter()

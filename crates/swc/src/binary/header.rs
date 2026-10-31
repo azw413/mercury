@@ -10,6 +10,7 @@ pub enum HbcHeaderLayout {
     Pre96,
     V96,
     V96WithFunctionSources,
+    V98,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub struct HbcVersionedFileHeader {
     pub literal_value_buffer_size: u32,
     pub obj_key_buffer_size: u32,
     pub obj_value_buffer_size: u32,
+    pub obj_shape_table_count: u32,
     pub num_string_switch_imms: u32,
     pub segment_id: u32,
     pub cjs_module_count: u32,
@@ -68,7 +70,9 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
     let field_108 = read_u32(bytes, 108);
     // In the compact layout word 108 holds option bits and padding, not a
     // debug offset. A debug section cannot begin inside the fixed header.
-    let layout = if version < 96 {
+    let layout = if version >= 98 {
+        HbcHeaderLayout::V98
+    } else if version < 96 {
         HbcHeaderLayout::Pre96
     } else if field_108 >= FILE_HEADER_SIZE as u32 && field_108 <= file_length {
         HbcHeaderLayout::V96WithFunctionSources
@@ -76,17 +80,29 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
         HbcHeaderLayout::V96
     };
 
+    let uses_function_sources_tail = matches!(
+        layout,
+        HbcHeaderLayout::V96WithFunctionSources | HbcHeaderLayout::V98
+    );
+    let obj_value_buffer_size = if layout == HbcHeaderLayout::V98 {
+        0
+    } else {
+        read_u32(bytes, 88)
+    };
+    let obj_shape_table_count = if layout == HbcHeaderLayout::V98 {
+        read_u32(bytes, 88)
+    } else {
+        0
+    };
     let (
-        obj_value_buffer_size,
         num_string_switch_imms,
         segment_id,
         cjs_module_count,
         function_source_count,
         debug_info_offset,
         options_raw,
-    ) = if layout == HbcHeaderLayout::V96WithFunctionSources {
+    ) = if uses_function_sources_tail {
         (
-            read_u32(bytes, 88),
             read_u32(bytes, 92),
             read_u32(bytes, 96),
             read_u32(bytes, 100),
@@ -96,7 +112,6 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
         )
     } else {
         (
-            read_u32(bytes, 88),
             0,
             read_u32(bytes, 92),
             read_u32(bytes, 96),
@@ -111,7 +126,7 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
         magic,
         version,
         source_hash,
-        file_length: read_u32(bytes, 32),
+        file_length,
         global_code_index: read_u32(bytes, 36),
         function_count: read_u32(bytes, 40),
         string_kind_count: read_u32(bytes, 44),
@@ -126,6 +141,7 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
         literal_value_buffer_size: read_u32(bytes, 80),
         obj_key_buffer_size: read_u32(bytes, 84),
         obj_value_buffer_size,
+        obj_shape_table_count,
         num_string_switch_imms,
         segment_id,
         cjs_module_count,
@@ -135,7 +151,7 @@ pub(crate) fn parse_file_header(bytes: &[u8]) -> Result<HbcVersionedFileHeader, 
             raw: options_raw,
             static_builtins: (options_raw & 0b001) != 0,
             cjs_modules_statically_resolved: (options_raw & 0b010) != 0,
-            has_async: (options_raw & 0b100) != 0,
+            has_async: version < 98 && (options_raw & 0b100) != 0,
         },
     })
 }
@@ -160,8 +176,15 @@ pub fn write_file_header(header: &HbcVersionedFileHeader) -> [u8; FILE_HEADER_SI
     bytes[76..80].copy_from_slice(&header.reg_exp_storage_size.to_le_bytes());
     bytes[80..84].copy_from_slice(&header.literal_value_buffer_size.to_le_bytes());
     bytes[84..88].copy_from_slice(&header.obj_key_buffer_size.to_le_bytes());
-    if header.layout == HbcHeaderLayout::V96WithFunctionSources {
+    if header.layout == HbcHeaderLayout::V98 {
+        bytes[88..92].copy_from_slice(&header.obj_shape_table_count.to_le_bytes());
+    } else {
         bytes[88..92].copy_from_slice(&header.obj_value_buffer_size.to_le_bytes());
+    }
+    if matches!(
+        header.layout,
+        HbcHeaderLayout::V96WithFunctionSources | HbcHeaderLayout::V98
+    ) {
         bytes[92..96].copy_from_slice(&header.num_string_switch_imms.to_le_bytes());
         bytes[96..100].copy_from_slice(&header.segment_id.to_le_bytes());
         bytes[100..104].copy_from_slice(&header.cjs_module_count.to_le_bytes());
@@ -169,7 +192,6 @@ pub fn write_file_header(header: &HbcVersionedFileHeader) -> [u8; FILE_HEADER_SI
         bytes[108..112].copy_from_slice(&header.debug_info_offset.to_le_bytes());
         bytes[112] = header.options.raw;
     } else {
-        bytes[88..92].copy_from_slice(&header.obj_value_buffer_size.to_le_bytes());
         bytes[92..96].copy_from_slice(&header.segment_id.to_le_bytes());
         bytes[96..100].copy_from_slice(&header.cjs_module_count.to_le_bytes());
         bytes[100..104].copy_from_slice(&header.function_source_count.to_le_bytes());
@@ -245,6 +267,7 @@ mod tests {
             literal_value_buffer_size: 20,
             obj_key_buffer_size: 30,
             obj_value_buffer_size: 5,
+            obj_shape_table_count: 0,
             num_string_switch_imms: 11,
             segment_id: 7,
             cjs_module_count: 3,
@@ -262,5 +285,27 @@ mod tests {
         let reparsed = parse_file_header(&bytes).expect("header parses");
         assert_eq!(reparsed, header);
         assert_eq!(write_file_header(&reparsed), bytes);
+    }
+
+    #[test]
+    fn roundtrips_v98_file_header_bytes() {
+        let mut bytes = [0u8; FILE_HEADER_SIZE];
+        bytes[0..8].copy_from_slice(&HERMES_MAGIC.to_le_bytes());
+        bytes[8..12].copy_from_slice(&98u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&1_000u32.to_le_bytes());
+        bytes[88..92].copy_from_slice(&3u32.to_le_bytes());
+        bytes[92..96].copy_from_slice(&11u32.to_le_bytes());
+        bytes[108..112].copy_from_slice(&900u32.to_le_bytes());
+        bytes[112] = 0b111;
+
+        let parsed = parse_file_header(&bytes).expect("HBC 98 header parses");
+        assert_eq!(parsed.layout, HbcHeaderLayout::V98);
+        assert_eq!(parsed.obj_shape_table_count, 3);
+        assert_eq!(parsed.obj_value_buffer_size, 0);
+        assert_eq!(parsed.num_string_switch_imms, 11);
+        assert_eq!(parsed.debug_info_offset, 900);
+        assert_eq!(parsed.options.raw, 0b111);
+        assert!(!parsed.options.has_async);
+        assert_eq!(write_file_header(&parsed), bytes);
     }
 }

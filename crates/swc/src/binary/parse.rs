@@ -1,16 +1,16 @@
 use crate::binary::functions::{
     FunctionBody, FunctionHeader, FunctionInfo, compute_function_bodies, parse_function_infos,
-    parse_small_function_header, resolve_overflowed_function_headers,
+    parse_small_function_header, resolve_overflowed_function_headers, small_function_header_size,
 };
 use crate::binary::header::{FILE_HEADER_SIZE, HbcVersionedFileHeader, parse_file_header};
 use crate::binary::sections::{
-    HbcSectionBoundaries, SMALL_FUNCTION_HEADER_SIZE, compute_section_boundaries,
-    compute_section_boundaries_with_spec,
+    HbcSectionBoundaries, compute_section_boundaries, compute_section_boundaries_with_spec,
 };
 use crate::binary::tables::{
-    OverflowStringTableEntry, PairTableEntry, SmallStringTableEntry, StringKindEntry,
-    parse_overflow_string_table_entries, parse_pair_table_entries, parse_small_string_table_entries,
-    parse_string_kind_entries, parse_u32_array,
+    OverflowStringTableEntry, PairTableEntry, ShapeTableEntry, SmallStringTableEntry,
+    StringKindEntry, parse_overflow_string_table_entries, parse_pair_table_entries,
+    parse_shape_table_entries, parse_small_string_table_entries, parse_string_kind_entries,
+    parse_u32_array,
 };
 use crate::spec::ContainerSpec;
 use thiserror::Error;
@@ -30,6 +30,7 @@ pub struct HbcContainer {
     pub literal_value_buffer: Vec<u8>,
     pub object_key_buffer: Vec<u8>,
     pub object_value_buffer: Vec<u8>,
+    pub object_shape_table: Vec<ShapeTableEntry>,
     pub big_int_entries: Vec<PairTableEntry>,
     pub big_int_storage: Vec<u8>,
     pub reg_exp_entries: Vec<PairTableEntry>,
@@ -98,7 +99,8 @@ fn parse_hbc_container_impl(
     }
 
     let function_headers_start = FILE_HEADER_SIZE;
-    let function_headers_len = header.function_count as usize * SMALL_FUNCTION_HEADER_SIZE;
+    let function_header_size = small_function_header_size(header.version);
+    let function_headers_len = header.function_count as usize * function_header_size;
     let function_headers_end = function_headers_start + function_headers_len;
     if function_headers_end > bytes.len() {
         return Err(HbcParseError::FunctionHeaderTableOutOfRange);
@@ -106,11 +108,14 @@ fn parse_hbc_container_impl(
 
     let mut function_headers = Vec::with_capacity(header.function_count as usize);
     for index in 0..header.function_count as usize {
-        let start = function_headers_start + (index * SMALL_FUNCTION_HEADER_SIZE);
-        let end = start + SMALL_FUNCTION_HEADER_SIZE;
-        function_headers.push(parse_small_function_header(&bytes[start..end]));
+        let start = function_headers_start + (index * function_header_size);
+        let end = start + function_header_size;
+        function_headers.push(parse_small_function_header(
+            &bytes[start..end],
+            header.version,
+        ));
     }
-    resolve_overflowed_function_headers(bytes, &mut function_headers)?;
+    resolve_overflowed_function_headers(bytes, &mut function_headers, header.version)?;
 
     let section_boundaries = if let Some(spec) = container_spec {
         compute_section_boundaries_with_spec(&header, spec)?
@@ -134,6 +139,8 @@ fn parse_hbc_container_impl(
     let literal_value_buffer = bytes[section_boundaries.literal_value_buffer.clone()].to_vec();
     let object_key_buffer = bytes[section_boundaries.obj_key_buffer.clone()].to_vec();
     let object_value_buffer = bytes[section_boundaries.obj_value_buffer.clone()].to_vec();
+    let object_shape_table =
+        parse_shape_table_entries(bytes, section_boundaries.object_shape_table.clone())?;
     let big_int_entries =
         parse_pair_table_entries(bytes, section_boundaries.big_int_table.clone())?;
     let big_int_storage = bytes[section_boundaries.big_int_storage.clone()].to_vec();
@@ -145,7 +152,7 @@ fn parse_hbc_container_impl(
     let function_source_entries =
         parse_pair_table_entries(bytes, section_boundaries.function_source_table.clone())?;
     let function_bodies = compute_function_bodies(&function_headers, bytes.len())?;
-    let function_infos = parse_function_infos(&function_headers, bytes)?;
+    let function_infos = parse_function_infos(&function_headers, bytes, header.version)?;
 
     Ok(HbcContainer {
         header,
@@ -160,6 +167,7 @@ fn parse_hbc_container_impl(
         literal_value_buffer,
         object_key_buffer,
         object_value_buffer,
+        object_shape_table,
         big_int_entries,
         big_int_storage,
         reg_exp_entries,
@@ -190,7 +198,9 @@ impl HbcContainer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::binary::decode::{DecodedOperand, decode_function_instructions, decode_raw_function};
+    use crate::binary::decode::{
+        DecodedOperand, decode_function_instructions, decode_raw_function,
+    };
     use crate::binary::header::HERMES_MAGIC;
     use crate::binary::tables::StringKind;
     use crate::ir::RawOperand;

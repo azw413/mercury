@@ -1,10 +1,9 @@
 use std::ops::Range;
 
+use crate::binary::functions::small_function_header_size;
 use crate::binary::header::{HbcVersionedFileHeader, FILE_HEADER_SIZE};
 use crate::binary::parse::HbcParseError;
 use crate::spec::{ContainerSpec, RawTableSpec};
-
-pub const SMALL_FUNCTION_HEADER_SIZE: usize = 16;
 const BYTECODE_ALIGNMENT: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +19,7 @@ pub struct HbcSectionBoundaries {
     pub literal_value_buffer: Range<usize>,
     pub obj_key_buffer: Range<usize>,
     pub obj_value_buffer: Range<usize>,
+    pub object_shape_table: Range<usize>,
     pub big_int_table: Range<usize>,
     pub big_int_storage: Range<usize>,
     pub reg_exp_table: Range<usize>,
@@ -34,7 +34,7 @@ pub(crate) fn compute_section_boundaries(
 ) -> Result<HbcSectionBoundaries, HbcParseError> {
     let mut offset = FILE_HEADER_SIZE;
 
-    let function_headers = offset..offset + (header.function_count as usize * SMALL_FUNCTION_HEADER_SIZE);
+    let function_headers = offset..offset + (header.function_count as usize * small_function_header_size(header.version));
     offset = align_up(function_headers.end, BYTECODE_ALIGNMENT);
 
     let string_kinds = offset..offset + (header.string_kind_count as usize * 4);
@@ -58,8 +58,15 @@ pub(crate) fn compute_section_boundaries(
     let obj_key_buffer = offset..offset + header.obj_key_buffer_size as usize;
     offset = align_up(obj_key_buffer.end, BYTECODE_ALIGNMENT);
 
-    let obj_value_buffer = offset..offset + header.obj_value_buffer_size as usize;
-    offset = align_up(obj_value_buffer.end, BYTECODE_ALIGNMENT);
+    let (obj_value_buffer, object_shape_table) = if header.version >= 98 {
+        let object_shape_table = offset..offset + (header.obj_shape_table_count as usize * 8);
+        offset = align_up(object_shape_table.end, BYTECODE_ALIGNMENT);
+        (0..0, object_shape_table)
+    } else {
+        let obj_value_buffer = offset..offset + header.obj_value_buffer_size as usize;
+        offset = align_up(obj_value_buffer.end, BYTECODE_ALIGNMENT);
+        (obj_value_buffer, 0..0)
+    };
 
     let big_int_table = offset..offset + (header.big_int_count as usize * 8);
     offset = align_up(big_int_table.end, BYTECODE_ALIGNMENT);
@@ -94,6 +101,7 @@ pub(crate) fn compute_section_boundaries(
         literal_value_buffer,
         obj_key_buffer,
         obj_value_buffer,
+        object_shape_table,
         big_int_table,
         big_int_storage,
         reg_exp_table,
@@ -109,7 +117,7 @@ pub(crate) fn compute_section_boundaries_with_spec(
     container_spec: &ContainerSpec,
 ) -> Result<HbcSectionBoundaries, HbcParseError> {
     let function_headers = FILE_HEADER_SIZE
-        ..FILE_HEADER_SIZE + (header.function_count as usize * SMALL_FUNCTION_HEADER_SIZE);
+        ..FILE_HEADER_SIZE + (header.function_count as usize * small_function_header_size(header.version));
     let mut boundaries = HbcSectionBoundaries {
         file_header: 0..FILE_HEADER_SIZE,
         function_headers: function_headers.clone(),
@@ -121,6 +129,7 @@ pub(crate) fn compute_section_boundaries_with_spec(
         literal_value_buffer: 0..0,
         obj_key_buffer: 0..0,
         obj_value_buffer: 0..0,
+        object_shape_table: 0..0,
         big_int_table: 0..0,
         big_int_storage: 0..0,
         reg_exp_table: 0..0,
@@ -169,6 +178,7 @@ fn resolve_section_size(
         "array_buffer" | "literal_value_buffer" => Ok(header.literal_value_buffer_size as usize),
         "object_key_buffer" => Ok(header.obj_key_buffer_size as usize),
         "object_value_buffer" => Ok(header.obj_value_buffer_size as usize),
+        "object_shape_table" => Ok(header.obj_shape_table_count as usize * 8),
         "bigint_table" => Ok(
             header.big_int_count as usize
                 * table_entry_size("bigint_table", &container_spec.raw_module.bigint_table)?,
@@ -198,7 +208,7 @@ fn resolve_section_size(
 
 fn table_entry_size(table_name: &str, table_spec: &RawTableSpec) -> Result<usize, HbcParseError> {
     match table_spec.entry_type.as_str() {
-        "BigIntTableEntry" | "RegExpTableEntry" => Ok(8),
+        "BigIntTableEntry" | "RegExpTableEntry" | "ShapeTableEntry" => Ok(8),
         "uint32_t" => Ok(4),
         "pair<uint32_t, uint32_t>" => Ok(8),
         other if other.contains("pair<uint32_t, uint32_t>") => Ok(8),
@@ -222,6 +232,7 @@ fn apply_section_range(
         "array_buffer" | "literal_value_buffer" => boundaries.literal_value_buffer = range,
         "object_key_buffer" => boundaries.obj_key_buffer = range,
         "object_value_buffer" => boundaries.obj_value_buffer = range,
+        "object_shape_table" => boundaries.object_shape_table = range,
         "bigint_table" => boundaries.big_int_table = range,
         "bigint_storage" => boundaries.big_int_storage = range,
         "regexp_table" => boundaries.reg_exp_table = range,
@@ -273,6 +284,7 @@ mod tests {
             literal_value_buffer_size: 0,
             obj_key_buffer_size: 0,
             obj_value_buffer_size: 0,
+            obj_shape_table_count: 0,
             num_string_switch_imms: 0,
             segment_id: 0,
             cjs_module_count: 0,

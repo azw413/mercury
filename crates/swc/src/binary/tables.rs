@@ -41,6 +41,13 @@ pub struct PairTableEntry {
     pub second: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// HBC 98 object-shape entry referencing a key sequence in the object key buffer.
+pub struct ShapeTableEntry {
+    pub key_buffer_offset: u32,
+    pub num_props: u32,
+}
+
 pub(crate) fn parse_string_kind_entries(
     bytes: &[u8],
     range: Range<usize>,
@@ -99,7 +106,10 @@ pub(crate) fn parse_overflow_string_table_entries(
     Ok(entries)
 }
 
-pub(crate) fn parse_u32_array(bytes: &[u8], range: Range<usize>) -> Result<Vec<u32>, HbcParseError> {
+pub(crate) fn parse_u32_array(
+    bytes: &[u8],
+    range: Range<usize>,
+) -> Result<Vec<u32>, HbcParseError> {
     if range.end > bytes.len() {
         return Err(HbcParseError::SectionOutOfRange);
     }
@@ -129,6 +139,19 @@ pub(crate) fn parse_pair_table_entries(
         offset += 8;
     }
     Ok(entries)
+}
+
+pub(crate) fn parse_shape_table_entries(
+    bytes: &[u8],
+    range: Range<usize>,
+) -> Result<Vec<ShapeTableEntry>, HbcParseError> {
+    Ok(parse_pair_table_entries(bytes, range)?
+        .into_iter()
+        .map(|entry| ShapeTableEntry {
+            key_buffer_offset: entry.first,
+            num_props: entry.second,
+        })
+        .collect())
 }
 
 /// Serializes string-kind run entries.
@@ -165,6 +188,16 @@ pub fn write_pair_table_entries(entries: &[PairTableEntry]) -> Vec<u8> {
     for entry in entries {
         bytes.extend_from_slice(&entry.first.to_le_bytes());
         bytes.extend_from_slice(&entry.second.to_le_bytes());
+    }
+    bytes
+}
+
+/// Serializes an HBC 98 object-shape table.
+pub fn write_shape_table_entries(entries: &[ShapeTableEntry]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(entries.len() * 8);
+    for entry in entries {
+        bytes.extend_from_slice(&entry.key_buffer_offset.to_le_bytes());
+        bytes.extend_from_slice(&entry.num_props.to_le_bytes());
     }
     bytes
 }
@@ -218,8 +251,7 @@ mod tests {
             },
         ];
         let bytes = write_small_string_table_entries(&entries);
-        let reparsed =
-            parse_small_string_table_entries(&bytes, 0..bytes.len()).expect("parses");
+        let reparsed = parse_small_string_table_entries(&bytes, 0..bytes.len()).expect("parses");
         assert_eq!(reparsed, entries);
         assert_eq!(write_small_string_table_entries(&reparsed), bytes);
     }
@@ -237,8 +269,7 @@ mod tests {
             },
         ];
         let bytes = write_overflow_string_table_entries(&entries);
-        let reparsed =
-            parse_overflow_string_table_entries(&bytes, 0..bytes.len()).expect("parses");
+        let reparsed = parse_overflow_string_table_entries(&bytes, 0..bytes.len()).expect("parses");
         assert_eq!(reparsed, entries);
         assert_eq!(write_overflow_string_table_entries(&reparsed), bytes);
     }
@@ -246,7 +277,10 @@ mod tests {
     #[test]
     fn roundtrips_pair_table_entries_bytes() {
         let entries = vec![
-            PairTableEntry { first: 3, second: 0 },
+            PairTableEntry {
+                first: 3,
+                second: 0,
+            },
             PairTableEntry {
                 first: 5,
                 second: 99,
@@ -258,4 +292,21 @@ mod tests {
         assert_eq!(write_pair_table_entries(&reparsed), bytes);
     }
 
+    #[test]
+    fn roundtrips_shape_table_entries_bytes() {
+        let entries = vec![
+            ShapeTableEntry {
+                key_buffer_offset: 16,
+                num_props: 3,
+            },
+            ShapeTableEntry {
+                key_buffer_offset: 128,
+                num_props: 7,
+            },
+        ];
+        let bytes = write_shape_table_entries(&entries);
+        let reparsed = parse_shape_table_entries(&bytes, 0..bytes.len()).expect("parses");
+        assert_eq!(reparsed, entries);
+        assert_eq!(write_shape_table_entries(&reparsed), bytes);
+    }
 }
