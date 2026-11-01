@@ -1,4 +1,4 @@
-//! Decompile an HBC-96 file through Mercury's SWC AST and emit JavaScript.
+//! Decompile an HBC 96 or HBC 98 file through Mercury's SWC AST and emit JavaScript.
 //!
 //! Run with:
 //! cargo run -p mercury-hbc --example decompile -- input.hbc [output.js]

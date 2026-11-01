@@ -249,14 +249,27 @@ pub fn object(entries: Vec<(Expr, Expr)>) -> Box<Expr> {
     }))
 }
 pub fn object_with_parent(parent: Box<Expr>) -> Box<Expr> {
+    object_with_parent_and_entries(parent, vec![])
+}
+pub fn object_with_parent_and_entries(parent: Box<Expr>, entries: Vec<(Expr, Expr)>) -> Box<Expr> {
+    let mut props = vec![PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+        // A non-computed __proto__ entry uses the object-literal prototype
+        // setter, whose null/object/primitive behavior matches Hermes.
+        key: PropName::Ident(ident("__proto__").into()),
+        value: parent,
+    })))];
+    props.extend(entries.into_iter().map(|(key, value)| {
+        PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+            key: PropName::Computed(ComputedPropName {
+                span: DUMMY_SP,
+                expr: Box::new(key),
+            }),
+            value: Box::new(value),
+        })))
+    }));
     Box::new(Expr::Object(ObjectLit {
         span: DUMMY_SP,
-        props: vec![PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-            // A non-computed __proto__ entry uses the object-literal prototype
-            // setter, whose null/object/primitive behavior matches HBC 96.
-            key: PropName::Ident(ident("__proto__").into()),
-            value: parent,
-        })))],
+        props,
     }))
 }
 pub fn this() -> Box<Expr> {

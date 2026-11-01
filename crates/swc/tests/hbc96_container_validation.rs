@@ -75,7 +75,10 @@ fn generated_hbc96_json_contains_full_function_and_container_layout() {
         ]
     );
 
-    assert_eq!(spec.container.raw_module.function_info.info_alignment, Some(4));
+    assert_eq!(
+        spec.container.raw_module.function_info.info_alignment,
+        Some(4)
+    );
     assert_eq!(spec.container.raw_module.debug_offsets.alignment, Some(4));
 
     let subsection_alignments = spec

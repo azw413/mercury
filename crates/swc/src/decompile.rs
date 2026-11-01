@@ -1,7 +1,7 @@
-use crate::{Error, SwcModule, ast_builder as b, cfg, literal};
 use crate::binary::{HbcContainer, decode_raw_module, parse_hbc_container_with_spec};
 use crate::ir::{RawFunction, RawInstruction, RawModule, RawOperand};
 use crate::spec_builtin as mercury_spec_builtin;
+use crate::{Error, SwcModule, ast_builder as b, cfg, literal};
 use num_bigint::BigInt;
 use std::collections::HashSet;
 use swc_core::{
@@ -14,7 +14,7 @@ use swc_core::{
     },
 };
 
-/// Decompiles supported HBC 96 bytecode into an executable [`SwcModule`].
+/// Decompiles supported HBC 96 or HBC 98 bytecode into an executable [`SwcModule`].
 ///
 /// The result is a behavioral reconstruction, not the original source. Register
 /// temporaries and a basic-block dispatcher preserve evaluation order, while
@@ -28,15 +28,15 @@ use swc_core::{
 ///
 /// # Errors
 ///
-/// Returns [`Error::Version`] for non-96 input, [`Error::Bytecode`] for malformed
-/// containers or instruction streams, and [`Error::Unsupported`] for container
-/// features outside the decompiler's contract.
+/// Returns [`Error::Version`] for input other than HBC 96 or HBC 98,
+/// [`Error::Bytecode`] for malformed containers or instruction streams, and
+/// [`Error::Unsupported`] for container features outside the decompiler's contract.
 pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let version = bytes
         .get(8..12)
         .map(|v| u32::from_le_bytes(v.try_into().unwrap()))
         .ok_or_else(|| Error::Bytecode("missing header".into()))?;
-    if version != 96 {
+    if !matches!(version, 96 | 98) {
         return Err(Error::Version {
             expected: 96,
             actual: version,
@@ -64,19 +64,20 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         return Err(Error::Bytecode("invalid entry function".into()));
     }
     // Some HBC-96 producers inserted five builtins before the private range
-    // without changing the bytecode version. Delegated generators provide a
-    // direct sentinel; ensureObject and copyRestArgs are also distinguishable
-    // from their legacy index occupants by argument count.
-    let modern_private_builtins = raw.functions.iter().any(|function| {
-        (has_function_opcode(function, "StartGenerator")
-            && function
-                .instructions
-                .iter()
-                .any(|op| call_builtin_signature(op, 48, None)))
-            || function.instructions.iter().any(|op| {
-                call_builtin_signature(op, 45, Some(3)) || call_builtin_signature(op, 50, Some(2))
-            })
-    });
+    // without changing the bytecode version. HBC 98 instead shifts the legacy
+    // range by two public builtins.
+    let modern_private_builtins = version == 96
+        && raw.functions.iter().any(|function| {
+            (has_function_opcode(function, "StartGenerator")
+                && function
+                    .instructions
+                    .iter()
+                    .any(|op| call_builtin_signature(op, 48, None)))
+                || function.instructions.iter().any(|op| {
+                    call_builtin_signature(op, 45, Some(3))
+                        || call_builtin_signature(op, 50, Some(2))
+                })
+        });
     let closure_targets = |names: [&str; 2]| -> HashSet<usize> {
         raw.functions
             .iter()
@@ -88,18 +89,24 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     };
     let generator_closures =
         closure_targets(["CreateGeneratorClosure", "CreateGeneratorClosureLongIndex"]);
+    let generator_bodies = closure_targets(["CreateGenerator", "CreateGeneratorLongIndex"]);
     let async_closures = closure_targets(["CreateAsyncClosure", "CreateAsyncClosureLongIndex"]);
     let mut needs_define = raw
         .functions
         .iter()
         .flat_map(|function| &function.instructions)
         .any(|op| is_define_own(&op.name));
-    let copy_data_properties_builtin = if modern_private_builtins { 49 } else { 44 };
+    let copy_rest_args_builtin = match (version, modern_private_builtins) {
+        (98, _) => 47,
+        (96, true) => 50,
+        _ => 45,
+    };
+    let copy_data_properties_builtin = copy_rest_args_builtin - 1;
     let needs_copy_data_runtime = has_builtin(&raw, copy_data_properties_builtin);
-    let array_spread_builtin = if modern_private_builtins { 51 } else { 46 };
-    let apply_builtin = if modern_private_builtins { 52 } else { 47 };
+    let array_spread_builtin = copy_rest_args_builtin + 1;
+    let apply_builtin = copy_rest_args_builtin + 2;
     let needs_array_spread_runtime = has_builtin(&raw, array_spread_builtin);
-    let get_template_object_builtin = if modern_private_builtins { 44 } else { 39 };
+    let get_template_object_builtin = copy_rest_args_builtin - 6;
     let needs_template_runtime = has_builtin(&raw, get_template_object_builtin);
     needs_define |= needs_copy_data_runtime;
     needs_define |= needs_array_spread_runtime;
@@ -116,14 +123,41 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let needs_direct_eval = has_opcode(&raw, "DirectEval");
     let needs_restricted_global = has_opcode(&raw, "ThrowIfHasRestrictedGlobalProperty");
     let needs_unreachable = has_opcode(&raw, "Unreachable");
-    let needs_empty = ["LoadConstEmpty", "ThrowIfEmpty"]
+    let needs_empty = ["LoadConstEmpty", "ThrowIfEmpty", "ThrowIfThisInitialized"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
     let needs_coerce_this = has_opcode(&raw, "CoerceThisNS");
+    let needs_class = [
+        "CreateBaseClass",
+        "CreateBaseClassLongIndex",
+        "CreateDerivedClass",
+        "CreateDerivedClassLongIndex",
+    ]
+    .into_iter()
+    .any(|name| has_opcode(&raw, name));
+    let needs_shape_runtime = version == 98
+        && raw.functions.iter().any(|function| {
+            function.instructions.iter().any(|op| {
+                matches!(
+                    op.name.as_str(),
+                    "NewObjectWithBuffer"
+                        | "NewObjectWithBufferLong"
+                        | "NewObjectWithBufferAndParent"
+                        | "PutOwnBySlotIdx"
+                        | "PutOwnBySlotIdxLong"
+                        | "GetOwnBySlotIdx"
+                        | "GetOwnBySlotIdxLong"
+                )
+            })
+        });
+    needs_define |= needs_class;
     let resumable_functions = raw
         .functions
         .iter()
-        .map(|function| has_function_opcode(function, "StartGenerator"))
+        .map(|function| {
+            has_function_opcode(function, "StartGenerator")
+                || generator_bodies.contains(&function.function_index)
+        })
         .collect::<Vec<_>>();
     let argument_functions = raw
         .functions
@@ -132,9 +166,14 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
             function.instructions.iter().any(|op| {
                 matches!(
                     op.name.as_str(),
-                    "ReifyArguments" | "GetArgumentsPropByVal" | "GetArgumentsLength"
-                ) || (modern_private_builtins && call_builtin_signature(op, 50, Some(2)))
-                    || (!modern_private_builtins && call_builtin_signature(op, 45, Some(2)))
+                    "ReifyArguments"
+                        | "ReifyArgumentsStrict"
+                        | "ReifyArgumentsLoose"
+                        | "GetArgumentsPropByVal"
+                        | "GetArgumentsPropByValStrict"
+                        | "GetArgumentsPropByValLoose"
+                        | "GetArgumentsLength"
+                ) || call_builtin_signature(op, copy_rest_args_builtin, Some(2))
             })
         })
         .collect::<Vec<_>>();
@@ -178,21 +217,33 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let needs_iterator_runtime = ["IteratorBegin", "IteratorNext", "IteratorClose"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
-    let ensure_object_builtin = if modern_private_builtins { 45 } else { 40 };
+    let ensure_object_builtin = copy_rest_args_builtin - 5;
     let silent_set_prototype_builtin = ensure_object_builtin - 3;
-    let needs_prototype_runtime = has_builtin(&raw, silent_set_prototype_builtin);
+    let needs_prototype_runtime = has_builtin(&raw, silent_set_prototype_builtin)
+        || needs_class
+        || has_opcode(&raw, "LoadParentNoTraps");
     let needs_private_builtin_runtime =
         (0..=2).any(|offset| has_builtin(&raw, ensure_object_builtin + offset));
-    let needs_construction = raw.functions.iter().any(|function| {
-        function.flags.prohibit_invoke != 2
-            || function.instructions.iter().any(|op| {
-                matches!(
-                    op.name.as_str(),
-                    "Construct" | "ConstructLong" | "CreateThis" | "SelectObject" | "GetNewTarget"
-                ) || call_builtin_signature(op, apply_builtin, Some(3))
-            })
-    });
+    let needs_construction = needs_class
+        || raw.functions.iter().any(|function| {
+            function.flags.prohibit_invoke != 2
+                || function.instructions.iter().any(|op| {
+                    matches!(
+                        op.name.as_str(),
+                        "Construct"
+                            | "ConstructLong"
+                            | "CreateThis"
+                            | "CreateThisForNew"
+                            | "CreateThisForSuper"
+                            | "CallWithNewTarget"
+                            | "CallWithNewTargetLong"
+                            | "SelectObject"
+                            | "GetNewTarget"
+                    ) || call_builtin_signature(op, apply_builtin, Some(3))
+                })
+        });
     let lower = Lower {
+        version,
         container: &container,
         raw: &raw,
         modern_private_builtins,
@@ -275,6 +326,12 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     }
     if needs_construction {
         wrapper_body.extend(construction_runtime());
+    }
+    if needs_class {
+        wrapper_body.extend(class_runtime());
+    }
+    if needs_shape_runtime {
+        wrapper_body.extend(shape_runtime());
     }
     if needs_suspension {
         wrapper_body.extend(suspension_runtime());
@@ -391,6 +448,10 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                         op.name.as_str(),
                         "CreateClosure"
                             | "CreateClosureLongIndex"
+                            | "CreateBaseClass"
+                            | "CreateBaseClassLongIndex"
+                            | "CreateDerivedClass"
+                            | "CreateDerivedClassLongIndex"
                             | "CreateGenerator"
                             | "CreateGeneratorLongIndex"
                             | "CreateGeneratorClosure"
@@ -399,7 +460,16 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                             | "CreateAsyncClosureLongIndex"
                     )
                 })
-                .map(|op| uint(op, 2).map(|target| target as usize))
+                .map(|op| {
+                    let operand = if op.name.starts_with("CreateDerivedClass") {
+                        4
+                    } else if op.name.starts_with("CreateBaseClass") {
+                        3
+                    } else {
+                        2
+                    };
+                    uint(op, operand).map(|target| target as usize)
+                })
                 .collect::<Result<Vec<_>, _>>()
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -411,10 +481,12 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                 && !async_closures.contains(&function.function_index)
                 && !resumable_functions[function.function_index]
                 && dependencies[function.function_index].is_empty()
-                && function
-                    .instructions
-                    .iter()
-                    .all(|op| op.name != "GetEnvironment")
+                && function.instructions.iter().all(|op| {
+                    !matches!(
+                        op.name.as_str(),
+                        "GetEnvironment" | "GetParentEnvironment" | "CreateFunctionEnvironment"
+                    )
+                })
         })
         .collect::<Vec<_>>();
     mark_closure_cycles(&dependencies, &mut inlineable);
@@ -570,11 +642,20 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         ));
     }
     if needs_prototype_runtime {
-        wrapper_params.push("_set_prototype_of".into());
-        wrapper_args.push(b::member(
-            b::member(b::this(), b::string("Object")),
-            b::string("setPrototypeOf"),
-        ));
+        for (name, intrinsic) in [
+            ("_set_prototype_of", "setPrototypeOf"),
+            ("_get_prototype_of", "getPrototypeOf"),
+        ] {
+            wrapper_params.push(name.into());
+            wrapper_args.push(b::member(
+                b::member(b::this(), b::string("Object")),
+                b::string(intrinsic),
+            ));
+        }
+    }
+    if needs_shape_runtime {
+        wrapper_params.push("_shape_map".into());
+        wrapper_args.push(b::member(b::this(), b::string("WeakMap")));
     }
     if needs_construction {
         for (name, value) in [
@@ -843,6 +924,7 @@ impl VisitMut for Namespace {
 }
 
 struct Lower<'a> {
+    version: u32,
     container: &'a HbcContainer,
     raw: &'a RawModule,
     modern_private_builtins: bool,
@@ -850,6 +932,10 @@ struct Lower<'a> {
     generator_closures: &'a HashSet<usize>,
 }
 impl Lower<'_> {
+    fn call_extra_registers(&self) -> u32 {
+        if self.version == 98 { 7 } else { 6 }
+    }
+
     fn string(&self, id: u32) -> Result<Wtf8Atom, Error> {
         let error = || Error::Bytecode(format!("invalid string {id}"));
         let entry = self
@@ -954,6 +1040,17 @@ impl Lower<'_> {
         for r in 0..f.frame_size {
             body.push(b::var(&format!("_r{r}"), None));
         }
+        if f.instructions.iter().any(|op| {
+            matches!(
+                op.name.as_str(),
+                "CreateBaseClass"
+                    | "CreateBaseClassLongIndex"
+                    | "CreateDerivedClass"
+                    | "CreateDerivedClassLongIndex"
+            )
+        }) {
+            body.push(b::var("_class", None));
+        }
         if f.instructions.iter().any(|op| is_define_own(&op.name)) {
             body.push(b::var("_desc", None));
         }
@@ -1003,7 +1100,7 @@ impl Lower<'_> {
             let mut stmts = Vec::new();
             let mut terminated = false;
             for op in block.instructions {
-                if op.name == "SwitchImm" {
+                if matches!(op.name.as_str(), "SwitchImm" | "UIntSwitchImm") {
                     let table = f
                         .switch_tables
                         .iter()
@@ -1077,7 +1174,8 @@ impl Lower<'_> {
                         uses_arguments,
                         deferred_constructor_prototypes.contains(&op.offset),
                     )?);
-                    terminated = matches!(op.name.as_str(), "Ret" | "Throw" | "Unreachable");
+                    terminated = matches!(op.name.as_str(), "Ret" | "Throw" | "Unreachable")
+                        || (self.version == 98 && call_builtin_signature(op, 44, None));
                 }
             }
             if !terminated {
@@ -1165,10 +1263,15 @@ impl Lower<'_> {
             body: Box::new(Stmt::Block(b::block(loop_body))),
         });
         if resumable {
+            let step_body = if self.version == 98 {
+                vec![set_pc(0), dispatch_loop]
+            } else {
+                vec![dispatch_loop]
+            };
             body.push(b::ret(b::function(
                 None,
                 vec!["_action".into(), "_resume".into()],
-                vec![dispatch_loop],
+                step_body,
             )));
         } else {
             body.push(dispatch_loop);
@@ -1196,13 +1299,13 @@ impl Lower<'_> {
             // Environment arrays store their parent at index 0 and bytecode
             // slots at index + 1. Passing the exact same array to each child
             // preserves shared mutation between sibling closures.
-            "CreateEnvironment" => {
+            "CreateEnvironment" if self.version == 96 => {
                 let mut values = Vec::with_capacity(f.environment_size as usize + 1);
                 values.push(b::id("_env"));
                 values.extend((0..f.environment_size).map(|_| b::undefined()));
                 b::array(values)
             }
-            "CreateInnerEnvironment" => {
+            "CreateEnvironment" | "CreateInnerEnvironment" => {
                 let slots = uint(op, 2)?;
                 if slots > 65_536 {
                     return Err(unsupported(f, op, "environment slot budget exceeded"));
@@ -1214,6 +1317,46 @@ impl Lower<'_> {
                 values.push(r(1)?);
                 values.extend((0..slots).map(|_| b::undefined()));
                 b::array(values)
+            }
+            "CreateFunctionEnvironment" | "CreateTopLevelEnvironment" => {
+                let slots = uint(op, 1)?;
+                let mut values = Vec::with_capacity(slots as usize + 1);
+                values.push(if op.name == "CreateTopLevelEnvironment" {
+                    b::null()
+                } else {
+                    b::id("_env")
+                });
+                values.extend((0..slots).map(|_| b::undefined()));
+                b::array(values)
+            }
+            "CreateBaseClass"
+            | "CreateBaseClassLongIndex"
+            | "CreateDerivedClass"
+            | "CreateDerivedClassLongIndex" => {
+                let derived = op.name.starts_with("CreateDerivedClass");
+                let target = uint(op, if derived { 4 } else { 3 })?;
+                if target as usize >= self.raw.functions.len() {
+                    return Err(Error::Bytecode("invalid class target".into()));
+                }
+                let constructor = b::call(
+                    b::member(b::id("_make"), b::number(f64::from(target))),
+                    vec![r(2)?],
+                );
+                return Ok(vec![
+                    b::assign(
+                        b::id("_class"),
+                        b::call(
+                            b::id("_create_class"),
+                            vec![
+                                constructor,
+                                if derived { r(3)? } else { b::undefined() },
+                                b::boolean(derived),
+                            ],
+                        ),
+                    ),
+                    b::assign(r(1)?, b::member(b::id("_class"), b::string("prototype"))),
+                    b::assign(r(0)?, b::id("_class")),
+                ]);
             }
             "CreateClosure"
             | "CreateClosureLongIndex"
@@ -1230,9 +1373,13 @@ impl Lower<'_> {
                     vec![r(1)?],
                 )
             }
-            "GetEnvironment" => {
-                let mut environment = b::id("_env");
-                for _ in 0..uint(op, 1)? {
+            "GetEnvironment" | "GetParentEnvironment" => {
+                let (mut environment, levels) = match op.name.as_str() {
+                    "GetParentEnvironment" => (b::id("_env"), uint(op, 1)?),
+                    _ if self.version == 98 => (r(1)?, uint(op, 2)?),
+                    _ => (b::id("_env"), uint(op, 1)?),
+                };
+                for _ in 0..levels {
                     environment = b::member(environment, b::number(0.0));
                 }
                 environment
@@ -1251,10 +1398,19 @@ impl Lower<'_> {
             }
             "GetGlobalObject" => b::id("_g"),
             "GetNewTarget" => b::id("_function_new_target"),
+            "LoadParentNoTraps" | "TypedLoadParent" => {
+                b::call(b::id("_get_prototype_of"), vec![r(1)?])
+            }
             "LoadParam" | "LoadParamLong" => {
                 let index = uint(op, 1)?;
                 if index == 0 {
                     if resumable { b::id("_this") } else { b::this() }
+                } else if resumable && self.version == 98 {
+                    match index {
+                        1 => b::id("_action"),
+                        2 => b::id("_resume"),
+                        _ => return Err(unsupported(f, op, "invalid generator resume parameter")),
+                    }
                 } else if self.arrow_functions[f.function_index] {
                     b::id(&format!("_a{index}"))
                 } else {
@@ -1331,7 +1487,21 @@ impl Lower<'_> {
                     b::assign(r(0)?, r(1)?),
                 ]);
             }
-            "Ret" if resumable => {
+            "ThrowIfThisInitialized" => {
+                return Ok(vec![Stmt::If(IfStmt {
+                    span: DUMMY_SP,
+                    test: b::binary(BinaryOp::NotEqEq, r(0)?, b::id("_empty")),
+                    cons: Box::new(Stmt::Throw(ThrowStmt {
+                        span: DUMMY_SP,
+                        arg: b::new(
+                            b::member(b::id("_g"), b::string("ReferenceError")),
+                            vec![b::string("this has already been initialized")],
+                        ),
+                    })),
+                    alt: None,
+                })]);
+            }
+            "Ret" if resumable && self.version == 96 => {
                 return Ok(vec![Stmt::If(IfStmt {
                     span: DUMMY_SP,
                     test: b::id("_suspended"),
@@ -1364,13 +1534,19 @@ impl Lower<'_> {
                     arg: b::id("_unreachable"),
                 })]);
             }
-            "PutById" | "PutByIdLong" => {
+            "PutById" | "PutByIdLong" | "PutByIdLoose" | "PutByIdLooseLong" | "PutByIdStrict"
+            | "PutByIdStrictLong" => {
                 return Ok(vec![b::assign(
                     b::member(r(0)?, b::wtf8_string(self.string(uint(op, 3)?)?)),
                     r(1)?,
                 )]);
             }
-            "TryPutById" | "TryPutByIdLong" => {
+            "TryPutById"
+            | "TryPutByIdLong"
+            | "TryPutByIdLoose"
+            | "TryPutByIdLooseLong"
+            | "TryPutByIdStrict"
+            | "TryPutByIdStrictLong" => {
                 let key = self.string(uint(op, 3)?)?;
                 return Ok(vec![
                     Stmt::If(IfStmt {
@@ -1383,11 +1559,23 @@ impl Lower<'_> {
                             span: DUMMY_SP,
                             arg: b::new(
                                 b::member(b::id("_g"), b::string("ReferenceError")),
-                                vec![b::binary(
-                                    BinaryOp::Add,
-                                    b::wtf8_string(key.clone()),
-                                    b::string(" is not defined"),
-                                )],
+                                vec![if self.version == 98 {
+                                    b::binary(
+                                        BinaryOp::Add,
+                                        b::binary(
+                                            BinaryOp::Add,
+                                            b::string("Property '"),
+                                            b::wtf8_string(key.clone()),
+                                        ),
+                                        b::string("' doesn't exist"),
+                                    )
+                                } else {
+                                    b::binary(
+                                        BinaryOp::Add,
+                                        b::wtf8_string(key.clone()),
+                                        b::string(" is not defined"),
+                                    )
+                                }],
                             ),
                         })),
                         alt: None,
@@ -1418,11 +1606,23 @@ impl Lower<'_> {
                                     callee: b::member(b::id("_g"), b::string("ReferenceError")),
                                     args: Some(vec![ExprOrSpread {
                                         spread: None,
-                                        expr: b::binary(
-                                            BinaryOp::Add,
-                                            b::wtf8_string(key),
-                                            b::string(" is not defined"),
-                                        ),
+                                        expr: if self.version == 98 {
+                                            b::binary(
+                                                BinaryOp::Add,
+                                                b::binary(
+                                                    BinaryOp::Add,
+                                                    b::string("Property '"),
+                                                    b::wtf8_string(key),
+                                                ),
+                                                b::string("' doesn't exist"),
+                                            )
+                                        } else {
+                                            b::binary(
+                                                BinaryOp::Add,
+                                                b::wtf8_string(key),
+                                                b::string(" is not defined"),
+                                            )
+                                        },
                                     }]),
                                     type_args: None,
                                 })),
@@ -1434,7 +1634,22 @@ impl Lower<'_> {
                 }
                 value
             }
-            "GetByVal" => b::member(r(1)?, r(2)?),
+            "GetByVal" | "FastArrayLoad" => b::member(r(1)?, r(2)?),
+            "GetByIndex" => b::member(r(1)?, b::number(f64::from(uint(op, 2)?))),
+            "GetByIdWithReceiverLong" => b::call(
+                b::member(
+                    b::member(b::id("_g"), b::string("Reflect")),
+                    b::string("get"),
+                ),
+                vec![r(1)?, b::wtf8_string(self.string(uint(op, 4)?)?), r(3)?],
+            ),
+            "GetByValWithReceiver" => b::call(
+                b::member(
+                    b::member(b::id("_g"), b::string("Reflect")),
+                    b::string("get"),
+                ),
+                vec![r(1)?, r(2)?, r(3)?],
+            ),
             "GetPNameList" => {
                 let list = b::member(b::id("_iteration_result"), b::number(0.0));
                 return Ok(vec![
@@ -1488,7 +1703,9 @@ impl Lower<'_> {
                 b::member(r(1)?, b::wtf8_string(self.string(uint(op, 2)?)?)),
             ),
             "DelByVal" => b::unary(UnaryOp::Delete, b::member(r(1)?, r(2)?)),
-            "PutByVal" => return Ok(vec![b::assign(b::member(r(0)?, r(1)?), r(2)?)]),
+            "PutByVal" | "PutByValLoose" | "PutByValStrict" | "FastArrayStore" => {
+                return Ok(vec![b::assign(b::member(r(0)?, r(1)?), r(2)?)]);
+            }
             "DirectEval" => b::call(
                 b::id("_direct_eval"),
                 vec![r(1)?, b::boolean(uint(op, 2)? != 0)],
@@ -1510,10 +1727,10 @@ impl Lower<'_> {
                 }
                 // HBC 96 reserves six VM registers after the reverse-ordered
                 // argument area at the end of the frame.
-                const CALL_EXTRA_REGISTERS: u32 = 6;
+                let call_extra_registers = self.call_extra_registers();
                 let first = f
                     .frame_size
-                    .checked_sub(CALL_EXTRA_REGISTERS + 1)
+                    .checked_sub(call_extra_registers + 1)
                     .ok_or_else(|| unsupported(f, op, "frame is too small for call arguments"))?;
                 let last = first.checked_sub(argument_count - 1).ok_or_else(|| {
                     unsupported(f, op, "argument count exceeds the function frame")
@@ -1534,10 +1751,10 @@ impl Lower<'_> {
                 if target as usize >= self.raw.functions.len() {
                     return Err(unsupported(f, op, "invalid direct-call target"));
                 }
-                const CALL_EXTRA_REGISTERS: u32 = 6;
+                let call_extra_registers = self.call_extra_registers();
                 let first = f
                     .frame_size
-                    .checked_sub(CALL_EXTRA_REGISTERS + 1)
+                    .checked_sub(call_extra_registers + 1)
                     .ok_or_else(|| {
                         unsupported(f, op, "frame is too small for direct-call arguments")
                     })?;
@@ -1565,15 +1782,38 @@ impl Lower<'_> {
                     ],
                 )
             }
+            "CallWithNewTarget" => {
+                let argument_count = uint(op, 3)?;
+                if argument_count == 0 {
+                    return Err(unsupported(f, op, "super call has no this argument"));
+                }
+                let call_extra_registers = self.call_extra_registers();
+                let first = f
+                    .frame_size
+                    .checked_sub(call_extra_registers + 1)
+                    .ok_or_else(|| unsupported(f, op, "frame is too small for super arguments"))?;
+                let last = first.checked_sub(argument_count - 1).ok_or_else(|| {
+                    unsupported(f, op, "argument count exceeds the function frame")
+                })?;
+                let this_arg = register_number(f, first)?;
+                let args = (last..first)
+                    .rev()
+                    .map(|register| register_number(f, register))
+                    .collect::<Result<Vec<_>, _>>()?;
+                b::call(
+                    b::id("_call_with_new_target"),
+                    vec![r(1)?, r(2)?, this_arg, b::array(args)],
+                )
+            }
             "Construct" | "ConstructLong" => {
                 let argument_count = uint(op, 2)?;
                 if argument_count == 0 {
                     return Err(unsupported(f, op, "construct has no this argument"));
                 }
-                const CALL_EXTRA_REGISTERS: u32 = 6;
+                let call_extra_registers = self.call_extra_registers();
                 let first = f
                     .frame_size
-                    .checked_sub(CALL_EXTRA_REGISTERS + 1)
+                    .checked_sub(call_extra_registers + 1)
                     .ok_or_else(|| {
                         unsupported(f, op, "frame is too small for construct arguments")
                     })?;
@@ -1598,10 +1838,10 @@ impl Lower<'_> {
                 if argument_count == 0 {
                     return Err(unsupported(f, op, "builtin call has no this argument"));
                 }
-                const CALL_EXTRA_REGISTERS: u32 = 6;
+                let call_extra_registers = self.call_extra_registers();
                 let first = f
                     .frame_size
-                    .checked_sub(CALL_EXTRA_REGISTERS + 1)
+                    .checked_sub(call_extra_registers + 1)
                     .ok_or_else(|| {
                         unsupported(f, op, "frame is too small for builtin arguments")
                     })?;
@@ -1612,13 +1852,17 @@ impl Lower<'_> {
                     .rev()
                     .map(|register| register_number(f, register))
                     .collect::<Result<Vec<_>, _>>()?;
-                let ensure_object = if self.modern_private_builtins { 45 } else { 40 };
-                let copy_data_properties = ensure_object + 4;
-                let copy_rest_args = ensure_object + 5;
-                let array_spread = ensure_object + 6;
-                let apply = ensure_object + 7;
-                let get_template_object = ensure_object - 1;
-                let exponentiation = if self.modern_private_builtins { 54 } else { 49 };
+                let copy_rest_args = match (self.version, self.modern_private_builtins) {
+                    (98, _) => 47,
+                    (96, true) => 50,
+                    _ => 45,
+                };
+                let ensure_object = copy_rest_args - 5;
+                let copy_data_properties = copy_rest_args - 1;
+                let array_spread = copy_rest_args + 1;
+                let apply = copy_rest_args + 2;
+                let get_template_object = copy_rest_args - 6;
+                let exponentiation = copy_rest_args + if self.version == 98 { 6 } else { 4 };
                 let init_regex_named_groups = exponentiation + 1;
                 match builtin {
                     value if value == ensure_object - 3 && args.len() == 2 => {
@@ -1701,29 +1945,40 @@ impl Lower<'_> {
                 }
             }
             "GetBuiltinClosure" => {
-                let async_driver = f
-                    .instructions
-                    .iter()
-                    .any(|instruction| instruction.name == "ReifyArguments")
-                    && f.instructions.iter().any(|instruction| {
-                        matches!(
-                            instruction.name.as_str(),
-                            "CreateGeneratorClosure" | "CreateGeneratorClosureLongIndex"
-                        )
-                    });
-                if !async_driver {
-                    return Err(unsupported(f, op, "unsupported builtin closure"));
+                let builtin = uint(op, 1)?;
+                if self.version == 98 && builtin == 0 {
+                    b::id("_symbol")
+                } else if self.version == 98 && builtin == 57 {
+                    b::id("_spawn_async")
+                } else if builtin == 1 && has_function_opcode(f, "DirectEval") {
+                    b::id("_eval")
+                } else {
+                    let async_driver = f
+                        .instructions
+                        .iter()
+                        .any(|instruction| instruction.name == "ReifyArguments")
+                        && f.instructions.iter().any(|instruction| {
+                            matches!(
+                                instruction.name.as_str(),
+                                "CreateGeneratorClosure" | "CreateGeneratorClosureLongIndex"
+                            )
+                        });
+                    if !async_driver {
+                        return Err(unsupported(f, op, "unsupported builtin closure"));
+                    }
+                    b::id("_spawn_async")
                 }
-                b::id("_spawn_async")
             }
-            "ReifyArguments" => {
+            "ReifyArguments" | "ReifyArgumentsStrict" | "ReifyArgumentsLoose" => {
                 if resumable {
                     b::id("_args")
                 } else {
                     b::id("arguments")
                 }
             }
-            "GetArgumentsPropByVal" => b::member(
+            "GetArgumentsPropByVal"
+            | "GetArgumentsPropByValStrict"
+            | "GetArgumentsPropByValLoose" => b::member(
                 if resumable {
                     b::id("_args")
                 } else {
@@ -1790,9 +2045,20 @@ impl Lower<'_> {
                 if self.generator_closures.contains(&f.function_index) {
                     arguments.push(b::id("_callee"));
                 }
+                if self.version == 98 {
+                    if !self.generator_closures.contains(&f.function_index) {
+                        arguments.push(b::undefined());
+                    }
+                    arguments.push(b::boolean(true));
+                }
                 b::call(b::id("_generator"), arguments)
             }
             "CreateThis" => b::call(b::id("_create_this"), vec![r(1)?]),
+            "CreateThisForNew" => b::call(b::id("_create_this_for_new"), vec![r(1)?]),
+            "CreateThisForSuper" => b::call(
+                b::id("_create_this"),
+                vec![b::member(r(2)?, b::string("prototype"))],
+            ),
             "SelectObject" => b::call(b::id("_select_object"), vec![r(1)?, r(2)?]),
             "StartGenerator" | "CompleteGenerator" => return Ok(vec![]),
             "ResumeGenerator" => {
@@ -1827,10 +2093,11 @@ impl Lower<'_> {
             }
             // Array literals create intrinsic arrays without consulting a
             // replaceable global Array constructor.
-            "NewArray" => b::sparse_array(
+            "NewArray" | "NewFastArray" => b::sparse_array(
                 usize::try_from(uint(op, 1)?)
                     .map_err(|_| unsupported(f, op, "array length does not fit this platform"))?,
             ),
+            "FastArrayLength" => b::member(r(1)?, b::string("length")),
             "NewArrayWithBuffer" | "NewArrayWithBufferLong" => {
                 let length = uint(op, 1)?;
                 let literal_count = uint(op, 2)?;
@@ -1846,11 +2113,54 @@ impl Lower<'_> {
                 )
             }
             "NewObjectWithBuffer" | "NewObjectWithBufferLong" => {
-                // Operand 1 is only a preallocation hint. The static property
-                // count and the two serialized-buffer offsets are authoritative.
-                b::object(self.object_entries(f, op, uint(op, 2)?, uint(op, 3)?, uint(op, 4)?)?)
+                if self.version == 98 {
+                    let entries = self.shaped_object_entries(f, op, uint(op, 1)?, uint(op, 2)?)?;
+                    let keys = self.shaped_object_keys(f, op, uint(op, 1)?)?;
+                    b::call(
+                        b::id("_shaped_object"),
+                        vec![b::object(entries), b::array(keys)],
+                    )
+                } else {
+                    b::object(self.object_entries(
+                        f,
+                        op,
+                        uint(op, 2)?,
+                        uint(op, 3)?,
+                        uint(op, 4)?,
+                    )?)
+                }
+            }
+            "NewObjectWithBufferAndParent" => {
+                let entries = self.shaped_object_entries(f, op, uint(op, 2)?, uint(op, 3)?)?;
+                let keys = self.shaped_object_keys(f, op, uint(op, 2)?)?;
+                b::call(
+                    b::id("_shaped_object"),
+                    vec![
+                        b::object_with_parent_and_entries(r(1)?, entries),
+                        b::array(keys),
+                    ],
+                )
             }
             "NewObjectWithParent" => b::object_with_parent(r(1)?),
+            "GetOwnBySlotIdx" | "GetOwnBySlotIdxLong" => b::member(
+                r(1)?,
+                b::call(
+                    b::id("_own_slot_key"),
+                    vec![r(1)?, b::number(f64::from(uint(op, 2)?))],
+                ),
+            ),
+            "PutOwnBySlotIdx" | "PutOwnBySlotIdxLong" => {
+                return Ok(vec![b::assign(
+                    b::member(
+                        r(0)?,
+                        b::call(
+                            b::id("_own_slot_key"),
+                            vec![r(0)?, b::number(f64::from(uint(op, 2)?))],
+                        ),
+                    ),
+                    r(1)?,
+                )]);
+            }
             "PutOwnByIndex"
             | "PutOwnByIndexL"
             | "DefineOwnByIndex"
@@ -1876,7 +2186,15 @@ impl Lower<'_> {
                     !op.name.starts_with("PutNewOwnNE"),
                 ));
             }
-            "PutOwnByVal" => {
+            "DefineOwnById" | "DefineOwnByIdLong" => {
+                return Ok(define_own(
+                    r(0)?,
+                    b::wtf8_string(self.string(uint(op, 3)?)?),
+                    r(1)?,
+                    true,
+                ));
+            }
+            "PutOwnByVal" | "DefineOwnByVal" => {
                 let enumerable = match uint(op, 3)? {
                     0 => false,
                     1 => true,
@@ -1884,7 +2202,10 @@ impl Lower<'_> {
                 };
                 return Ok(define_own(r(0)?, r(2)?, r(1)?, enumerable));
             }
-            "PutOwnGetterSetterByVal" => {
+            "AddOwnPrivateBySym" => {
+                return Ok(define_own(r(0)?, r(1)?, r(2)?, false));
+            }
+            "PutOwnGetterSetterByVal" | "DefineOwnGetterSetterByVal" => {
                 let enumerable = match uint(op, 4)? {
                     0 => false,
                     1 => true,
@@ -1893,6 +2214,10 @@ impl Lower<'_> {
                 return Ok(define_accessor(r(0)?, r(1)?, r(2)?, r(3)?, enumerable));
             }
             "NewObject" => b::empty_object(),
+            "CacheNewObject" => {
+                let _ = (r(0)?, r(1)?, uint(op, 2)?, uint(op, 3)?);
+                return Ok(vec![]);
+            }
             "CoerceThisNS" => b::call(b::id("_coerce_this"), vec![r(1)?]),
             "Inc" => b::call(b::id("_increment"), vec![r(1)?]),
             "Dec" => b::call(b::id("_decrement"), vec![r(1)?]),
@@ -1977,13 +2302,86 @@ impl Lower<'_> {
         offset: u32,
         count: u32,
     ) -> Result<Vec<Expr>, Error> {
-        literal::decode_buffer(buffer, offset, count)?
+        literal::decode_buffer_for_version(buffer, offset, count, self.version)?
             .into_iter()
             .map(|value| match value {
                 literal::LiteralValue::Null => Ok(*b::null()),
+                literal::LiteralValue::Undefined => Ok(*b::undefined()),
                 literal::LiteralValue::Bool(value) => Ok(*b::boolean(value)),
                 literal::LiteralValue::Number(value) => Ok(*double(value)),
                 literal::LiteralValue::String(id) => Ok(*b::wtf8_string(self.string(id)?)),
+            })
+            .collect()
+    }
+
+    fn shaped_object_keys(
+        &self,
+        f: &RawFunction,
+        op: &RawInstruction,
+        shape_index: u32,
+    ) -> Result<Vec<Box<Expr>>, Error> {
+        let shape = self
+            .container
+            .object_shape_table
+            .get(shape_index as usize)
+            .ok_or_else(|| unsupported(f, op, "invalid object shape index"))?;
+        literal::decode_buffer_for_version(
+            &self.container.object_key_buffer,
+            shape.key_buffer_offset,
+            shape.num_props,
+            self.version,
+        )?
+        .into_iter()
+        .map(|key| match key {
+            literal::LiteralValue::String(id) => Ok(b::wtf8_string(self.string(id)?)),
+            literal::LiteralValue::Number(number)
+                if number.is_finite()
+                    && number >= 0.0
+                    && number <= f64::from(u32::MAX)
+                    && number.fract() == 0.0 =>
+            {
+                Ok(b::number(number))
+            }
+            _ => Err(unsupported(f, op, "invalid buffered object key")),
+        })
+        .collect()
+    }
+
+    fn shaped_object_entries(
+        &self,
+        f: &RawFunction,
+        op: &RawInstruction,
+        shape_index: u32,
+        value_offset: u32,
+    ) -> Result<Vec<(Expr, Expr)>, Error> {
+        let shape = self
+            .container
+            .object_shape_table
+            .get(shape_index as usize)
+            .ok_or_else(|| unsupported(f, op, "invalid object shape index"))?;
+        let keys = literal::decode_buffer_for_version(
+            &self.container.object_key_buffer,
+            shape.key_buffer_offset,
+            shape.num_props,
+            self.version,
+        )?;
+        let values = self.literal_values(f, op, value_offset, shape.num_props)?;
+        keys.into_iter()
+            .zip(values)
+            .map(|(key, value)| {
+                let key = match key {
+                    literal::LiteralValue::String(id) => *b::wtf8_string(self.string(id)?),
+                    literal::LiteralValue::Number(number)
+                        if number.is_finite()
+                            && number >= 0.0
+                            && number <= f64::from(u32::MAX)
+                            && number.fract() == 0.0 =>
+                    {
+                        *b::number(number)
+                    }
+                    _ => return Err(unsupported(f, op, "invalid buffered object key")),
+                };
+                Ok((key, value))
             })
             .collect()
     }
@@ -1996,7 +2394,12 @@ impl Lower<'_> {
         key_offset: u32,
         value_offset: u32,
     ) -> Result<Vec<(Expr, Expr)>, Error> {
-        let keys = literal::decode_buffer(&self.container.object_key_buffer, key_offset, count)?;
+        let keys = literal::decode_buffer_for_version(
+            &self.container.object_key_buffer,
+            key_offset,
+            count,
+            self.version,
+        )?;
         let values = self.buffer_values(
             f,
             op,
@@ -2158,6 +2561,11 @@ fn is_define_own(name: &str) -> bool {
             | "PutNewOwnNEByIdLong"
             | "PutOwnByVal"
             | "PutOwnGetterSetterByVal"
+            | "DefineOwnById"
+            | "DefineOwnByIdLong"
+            | "DefineOwnByVal"
+            | "DefineOwnGetterSetterByVal"
+            | "AddOwnPrivateBySym"
     )
 }
 fn accessor_name(name: &str) -> bool {
@@ -2537,6 +2945,53 @@ function _name_function(_function, _name) {
 "#;
     embedded_runtime("mercury-function-name-runtime.js", SOURCE)
 }
+fn class_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _create_class(_constructor, _superclass, _derived) {
+    var _prototype_parent = _object_prototype;
+    if (_derived) {
+        if (_superclass === null) {
+            _prototype_parent = null;
+        } else {
+            _set_prototype_of(_constructor, _superclass);
+            _prototype_parent = _superclass["prototype"];
+            if (_prototype_parent !== null && typeof _prototype_parent !== "object" &&
+                typeof _prototype_parent !== "function") {
+                throw new _type_error("Base class prototype is neither null nor an object");
+            }
+        }
+    }
+    var _home = _object_create(_prototype_parent);
+    _define(_constructor, "prototype", {
+        value: _home,
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+    _define(_home, "constructor", {
+        value: _constructor,
+        writable: true,
+        enumerable: false,
+        configurable: true
+    });
+    return _constructor;
+}
+"#;
+    embedded_runtime("mercury-class-runtime.js", SOURCE)
+}
+fn shape_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+var _object_shapes = new _shape_map();
+function _shaped_object(_value, _keys) {
+    _object_shapes["set"](_value, _keys);
+    return _value;
+}
+function _own_slot_key(_value, _slot) {
+    return _object_shapes["get"](_value)[_slot];
+}
+"#;
+    embedded_runtime("mercury-shape-runtime.js", SOURCE)
+}
 fn construction_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
 var _recovered_functions = new _weak_set();
@@ -2556,6 +3011,18 @@ function _enter_function() {
         return _entry["target"];
     }
     return void 0;
+}
+function _call_with_new_target(_function, _new_target, _this_value, _arguments_value) {
+    if (_recovered_functions["has"](_function)) {
+        var _entry = { target: _new_target, pending: true, next: _new_target_stack };
+        _new_target_stack = _entry;
+        try {
+            return _apply(_function, _this_value, _arguments_value);
+        } finally {
+            _new_target_stack = _entry["next"];
+        }
+    }
+    return _reflect_construct(_function, _arguments_value, _new_target);
 }
 function _construct_value(_function, _this_value, _arguments_value, _external_construct) {
     if (_recovered_functions["has"](_function)) {
@@ -2584,6 +3051,12 @@ function _construct_spread(_function, _arguments_value) {
 function _constructor_prototype(_function) {
     if (_recovered_functions["has"](_function)) {
         return _function["prototype"];
+    }
+    return _external_constructor;
+}
+function _create_this_for_new(_function) {
+    if (_recovered_functions["has"](_function)) {
+        return _create_this(_function["prototype"]);
     }
     return _external_constructor;
 }
@@ -2664,7 +3137,7 @@ function _generator_function(_function) {
     });
     return _function;
 }
-function _generator(_init, _this_value, _arguments_value, _callee) {
+function _generator(_init, _this_value, _arguments_value, _callee, _numeric_actions) {
     var _prototype = _callee === void 0 ? _generator_prototype : _callee["prototype"];
     if (_prototype === null || (typeof _prototype !== "object" && typeof _prototype !== "function")) {
         _prototype = _generator_prototype;
@@ -2686,7 +3159,9 @@ function _generator(_init, _this_value, _arguments_value, _callee) {
         }
         _running = true;
         try {
-            var _result = _step(_action_value, _sent_value);
+            var _bytecode_action = !_numeric_actions ? _action_value :
+                _action_value === "throw" ? 1 : _action_value === "return" ? 2 : 0;
+            var _result = _step(_bytecode_action, _sent_value);
             _done = _result["done"];
             return _result;
         } catch (_error) {
@@ -2974,7 +3449,7 @@ fn global_var_name(name: &str) -> bool {
 }
 fn binary_op(name: &str) -> Option<BinaryOp> {
     Some(match name {
-        "Add" | "AddN" => BinaryOp::Add,
+        "Add" | "AddN" | "AddS" => BinaryOp::Add,
         "Sub" | "SubN" => BinaryOp::Sub,
         "Mul" | "MulN" => BinaryOp::Mul,
         "Div" | "DivN" => BinaryOp::Div,
@@ -3001,6 +3476,32 @@ fn binary_op(name: &str) -> Option<BinaryOp> {
 fn branch_condition(f: &RawFunction, op: &RawInstruction) -> Result<Box<Expr>, Error> {
     let name = op.name.strip_suffix("Long").unwrap_or(&op.name);
     let name = name.strip_suffix('N').unwrap_or(name);
+    if name == "JmpTypeOfIs" {
+        return type_of_is_condition(f, op);
+    }
+    if matches!(name, "JmpBuiltinIs" | "JmpBuiltinIsNot") {
+        let method = match uint(op, 1)? {
+            55 => "apply",
+            56 => "call",
+            _ => return Err(unsupported(f, op, "unsupported builtin branch")),
+        };
+        let expr = b::binary(
+            BinaryOp::EqEqEq,
+            register(f, op, 2)?,
+            b::member(
+                b::member(
+                    b::member(b::id("_g"), b::string("Function")),
+                    b::string("prototype"),
+                ),
+                b::string(method),
+            ),
+        );
+        return Ok(if name == "JmpBuiltinIsNot" {
+            b::unary(UnaryOp::Bang, expr)
+        } else {
+            expr
+        });
+    }
     let a = register(f, op, 1)?;
     match name {
         "JmpTrue" => return Ok(a),
@@ -3029,4 +3530,47 @@ fn branch_condition(f: &RawFunction, op: &RawInstruction) -> Result<Box<Expr>, E
     } else {
         expr
     })
+}
+
+fn type_of_is_condition(f: &RawFunction, op: &RawInstruction) -> Result<Box<Expr>, Error> {
+    let mask = uint(op, 2)?;
+    if mask & !0x1ff != 0 {
+        return Err(unsupported(f, op, "invalid typeof mask"));
+    }
+    let mut conditions = Vec::new();
+    for (bit, type_name) in [
+        (0, "undefined"),
+        (2, "string"),
+        (3, "symbol"),
+        (4, "boolean"),
+        (5, "number"),
+        (6, "bigint"),
+        (7, "function"),
+    ] {
+        if mask & (1 << bit) != 0 {
+            conditions.push(b::binary(
+                BinaryOp::EqEqEq,
+                b::unary(UnaryOp::TypeOf, register(f, op, 1)?),
+                b::string(type_name),
+            ));
+        }
+    }
+    if mask & (1 << 1) != 0 {
+        conditions.push(b::binary(
+            BinaryOp::LogicalAnd,
+            b::binary(
+                BinaryOp::EqEqEq,
+                b::unary(UnaryOp::TypeOf, register(f, op, 1)?),
+                b::string("object"),
+            ),
+            b::binary(BinaryOp::NotEqEq, register(f, op, 1)?, b::null()),
+        ));
+    }
+    if mask & (1 << 8) != 0 {
+        conditions.push(b::binary(BinaryOp::EqEqEq, register(f, op, 1)?, b::null()));
+    }
+    Ok(conditions
+        .into_iter()
+        .reduce(|left, right| b::binary(BinaryOp::LogicalOr, left, right))
+        .unwrap_or_else(|| b::boolean(false)))
 }

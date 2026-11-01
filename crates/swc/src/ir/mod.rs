@@ -1,11 +1,11 @@
 //! Raw and normalized intermediate representations for Hermes bytecode, plus
 //! lowering from raw decoded instructions into the stable semantic model.
 
+pub mod lower;
 pub mod raw;
 pub mod semantic;
-pub mod lower;
 
-pub use lower::{lower_function, lower_instruction, lower_module, LoweringError};
+pub use lower::{LoweringError, lower_function, lower_instruction, lower_module};
 pub use raw::{
     RawExceptionHandler, RawFunction, RawFunctionFlags, RawInstruction, RawModule, RawOperand,
     RawSectionBoundaries, RawSwitchTable,

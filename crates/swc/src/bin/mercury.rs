@@ -4,9 +4,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use mercury_hbc::{
-    asm as mercury_asm, binary as mercury_binary, ir as mercury_ir, spec as mercury_spec,
-};
 use mercury_hbc::asm::{parse_semantic_assembly, raise_module};
 use mercury_hbc::binary::{
     MinimalFunction, MinimalModule, build_minimal_module, decode_raw_module, encode_instructions,
@@ -20,6 +17,9 @@ use mercury_hbc::ir::{
 use mercury_hbc::spec_builtin::{load_spec, supported_versions};
 use mercury_hbc::spec_extract::hermes_dec::compare_against_hermes_dec;
 use mercury_hbc::spec_extract::{Extractor, ExtractorConfig};
+use mercury_hbc::{
+    asm as mercury_asm, binary as mercury_binary, ir as mercury_ir, spec as mercury_spec,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "mercury")]
@@ -37,7 +37,7 @@ enum Command {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Decompile the supported HBC-96 subset through SWC into JavaScript.
+    /// Decompile the supported HBC 96 or HBC 98 subset through SWC into JavaScript.
     Decompile {
         input: PathBuf,
         #[arg(short, long)]

@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
 use crate::spec::{HermesSpec, OperandMeaning};
+use anyhow::{Context, Result};
 
 #[derive(Debug, Clone)]
 /// Summary of how a generated Mercury spec compares with `hermes-dec`.
@@ -65,8 +65,16 @@ pub fn compare_against_hermes_dec(
             continue;
         }
 
-        let left_operands = left.operands.iter().map(|op| op.kind.as_str()).collect::<Vec<_>>();
-        let right_operands = right.operands.iter().map(String::as_str).collect::<Vec<_>>();
+        let left_operands = left
+            .operands
+            .iter()
+            .map(|op| op.kind.as_str())
+            .collect::<Vec<_>>();
+        let right_operands = right
+            .operands
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
         if left_operands != right_operands {
             opcode_mismatches.push(format!(
                 "operands differ for {}: mercury={:?} hermes-dec={:?}",
@@ -74,7 +82,11 @@ pub fn compare_against_hermes_dec(
             ));
         }
 
-        let left_meanings = left.operands.iter().map(|op| op.meaning.clone()).collect::<Vec<_>>();
+        let left_meanings = left
+            .operands
+            .iter()
+            .map(|op| op.meaning.clone())
+            .collect::<Vec<_>>();
         if left_meanings != right.meanings {
             opcode_mismatches.push(format!(
                 "operand meanings differ for {}: mercury={:?} hermes-dec={:?}",

@@ -12,7 +12,7 @@ IRs, semantic assembly, and a Hermes-compatible regular-expression compiler.
 
 - Parse, print, and transform JavaScript or TypeScript with SWC.
 - Compile supported JS/TS scripts to HBC 96 or HBC 98 with no external compiler.
-- Decompile HBC 96 into editable, executable SWC trees.
+- Decompile HBC 96 or HBC 98 into editable, executable SWC trees.
 - Decode raw HBC 89, HBC 94, HBC 96, and HBC 98 containers using generated specs.
 - Inspect normalized semantic IR and assemble the supported HBC 96 subset.
 - Compile regular-expression literals to Hermes-compatible regex bytecode.
@@ -71,7 +71,7 @@ Compile a JavaScript or TypeScript file without `hermesc`:
 cargo run -p mercury-hbc --example compile -- input.js output.hbc
 ```
 
-Decompile HBC 96 to JavaScript, writing to stdout or a file:
+Decompile HBC 96 or HBC 98 to JavaScript, writing to stdout or a file:
 
 ```sh
 cargo run -p mercury-hbc --example decompile -- input.hbc output.js
@@ -131,14 +131,14 @@ instructions outside its explicit rebuilding contract.
 | --- | --- | --- |
 | JS/TS parsing and printing | SWC scripts and modules | No type checking, JSX/TSX setup, or bundling |
 | Native source compilation | HBC 96 and HBC 98 scripts | Unsupported syntax returns an explicit error |
-| Bytecode decompilation | HBC 96 | Executable reconstruction, not original source recovery |
+| Bytecode decompilation | HBC 96 and HBC 98 | Executable reconstruction, not original source recovery |
 | Raw container decoding | HBC 89, 94, 96, and 98 | Support depends on the embedded versioned spec |
 | Semantic assembly | HBC 96 subset | Minimal writer; not a byte-perfect roundtrip |
 | Regex bytecode compilation | HBC 96 format | Matches the tested Hermes compiler format |
 
 A bytecode version appearing in `versions` does not imply that every high-level
-operation supports that version. Native source compilation targets HBC 96 and
-HBC 98; decompilation remains an HBC 96 contract.
+operation supports that version. Native source compilation and decompilation
+target HBC 96 and HBC 98.
 
 ## Native compiler coverage
 
@@ -164,8 +164,8 @@ private control-flow graph. It retains register temporaries and uses a
 basic-block dispatcher rather than attempting to recover the author's original
 control flow. Generated adapters preserve captured environments, exceptions,
 iterators, generator and async suspension, constructors, class helper calls,
-regular expressions, BigInts, and UTF-16 edge cases within the documented HBC 96
-contract.
+regular expressions, BigInts, and UTF-16 edge cases within the documented
+HBC 96 and HBC 98 contracts.
 
 Original comments, formatting, local names, TypeScript types, and byte-identical
 recompilation cannot be recovered from bytecode. Generated code assumes standard
@@ -211,9 +211,9 @@ cargo check -p mercury-hbc --examples
 
 Runtime and external-oracle tests are opt-in. They use `HERMES_BIN`,
 `HERMESC_BIN`, `HERMES98_BIN` for HBC 98 execution, and, for legacy comparisons,
-`HERMES_DEC_ROOT`. The corpus harness
-runs 122 combinations of committed JavaScript programs and Hermes optimization
-modes, comparing execution before and after HBC-to-SWC-to-HBC reconstruction.
+`HERMES_DEC_ROOT`. For each of HBC 96 and HBC 98, the corpus harness runs 122
+combinations of committed JavaScript programs and Hermes optimization modes,
+comparing execution before and after HBC-to-SWC-to-HBC reconstruction.
 See [fixture and test instructions](test/README.md) for reproducible commands.
 
 ## Regenerating bytecode specs

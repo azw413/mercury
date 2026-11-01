@@ -37,8 +37,19 @@ pub fn encode_instruction(
 
     let mut bytes = Vec::new();
     bytes.push(spec.opcode as u8);
-    for (index, (operand, operand_spec)) in instruction.operands.iter().zip(spec.operands.iter()).enumerate() {
-        encode_operand(&mut bytes, &instruction.name, index, operand, &operand_spec.kind)?;
+    for (index, (operand, operand_spec)) in instruction
+        .operands
+        .iter()
+        .zip(spec.operands.iter())
+        .enumerate()
+    {
+        encode_operand(
+            &mut bytes,
+            &instruction.name,
+            index,
+            operand,
+            &operand_spec.kind,
+        )?;
     }
     Ok(bytes)
 }
@@ -78,16 +89,20 @@ fn encode_operand(
     match (kind, operand) {
         ("Reg8" | "UInt8", DecodedOperand::U8(value)) => bytes.push(*value),
         ("UInt16", DecodedOperand::U16(value)) => bytes.extend_from_slice(&value.to_le_bytes()),
-        ("Reg32" | "UInt32", DecodedOperand::U32(value)) => bytes.extend_from_slice(&value.to_le_bytes()),
+        ("Reg32" | "UInt32", DecodedOperand::U32(value)) => {
+            bytes.extend_from_slice(&value.to_le_bytes())
+        }
         ("Addr8", DecodedOperand::I8(value)) => bytes.push(*value as u8),
-        ("Addr32" | "Imm32", DecodedOperand::I32(value)) => bytes.extend_from_slice(&value.to_le_bytes()),
+        ("Addr32" | "Imm32", DecodedOperand::I32(value)) => {
+            bytes.extend_from_slice(&value.to_le_bytes())
+        }
         ("Double", DecodedOperand::F64(value)) => bytes.extend_from_slice(&value.to_le_bytes()),
         _ => {
             return Err(HbcEncodeError::OperandKindMismatch {
                 name: instruction_name.to_owned(),
                 index,
                 expected: kind.to_owned(),
-            })
+            });
         }
     }
     Ok(())
@@ -96,7 +111,7 @@ fn encode_operand(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::binary::decode::{decode_function_instructions, HbcDecodeError};
+    use crate::binary::decode::{HbcDecodeError, decode_function_instructions};
     use crate::spec::{BytecodeSpec, InstructionFlags, InstructionOperandSpec, InstructionSpec};
 
     fn test_spec() -> BytecodeSpec {
@@ -168,7 +183,10 @@ mod tests {
         let bytes = encode_instructions(&instructions, &spec).expect("encodes");
         let decoded = decode_function_instructions(&bytes, &spec).expect("decodes");
         assert_eq!(decoded, instructions);
-        assert_eq!(encode_instructions(&decoded, &spec).expect("re-encodes"), bytes);
+        assert_eq!(
+            encode_instructions(&decoded, &spec).expect("re-encodes"),
+            bytes
+        );
     }
 
     #[test]

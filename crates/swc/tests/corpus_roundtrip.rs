@@ -16,8 +16,18 @@ struct Observation {
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn hermesc_javascript_corpus_roundtrips_with_identical_execution() {
-    let hermesc = required_tool("HERMESC_BIN");
-    let hermes = required_tool("HERMES_BIN");
+    run_corpus(96, "HERMES_BIN");
+}
+
+#[test]
+#[ignore = "requires HERMESC_BIN and HERMES98_BIN for HBC 98"]
+fn hermesc_hbc98_javascript_corpus_roundtrips_with_identical_execution() {
+    run_corpus(98, "HERMES98_BIN");
+}
+
+fn run_corpus(version: u32, runtime_variable: &str) {
+    let hermesc = required_tool("HERMESC_BIN", version);
+    let hermes = required_tool(runtime_variable, version);
     let files = corpus_files();
     assert!(!files.is_empty(), "the JavaScript corpus is empty");
     let modes = hermesc_modes();
@@ -25,7 +35,7 @@ fn hermesc_javascript_corpus_roundtrips_with_identical_execution() {
     let mut failures = Vec::new();
     for path in &files {
         for mode in &modes {
-            if let Err(error) = roundtrip_fixture(path, mode, &hermes, &hermesc) {
+            if let Err(error) = roundtrip_fixture(path, mode, &hermes, &hermesc, version) {
                 failures.push(format!("{} ({mode}):\n{error}", path.display()));
             }
         }
@@ -40,10 +50,10 @@ fn hermesc_javascript_corpus_roundtrips_with_identical_execution() {
     );
 }
 
-fn required_tool(name: &str) -> PathBuf {
+fn required_tool(name: &str, version: u32) -> PathBuf {
     env::var_os(name)
         .map(PathBuf::from)
-        .unwrap_or_else(|| panic!("set {name} to a version-96 Hermes executable"))
+        .unwrap_or_else(|| panic!("set {name} to a version-{version} Hermes executable"))
 }
 
 fn corpus_files() -> Vec<PathBuf> {
@@ -55,15 +65,13 @@ fn corpus_files() -> Vec<PathBuf> {
         }
     };
     let filter = env::var("MERCURY_JS_CORPUS_FILTER").ok();
-    let limit = env::var("MERCURY_JS_CORPUS_LIMIT")
-        .ok()
-        .map(|value| {
-            let limit = value
-                .parse::<usize>()
-                .unwrap_or_else(|_| panic!("MERCURY_JS_CORPUS_LIMIT must be a positive integer"));
-            assert!(limit > 0, "MERCURY_JS_CORPUS_LIMIT must be positive");
-            limit
-        });
+    let limit = env::var("MERCURY_JS_CORPUS_LIMIT").ok().map(|value| {
+        let limit = value
+            .parse::<usize>()
+            .unwrap_or_else(|_| panic!("MERCURY_JS_CORPUS_LIMIT must be a positive integer"));
+        assert!(limit > 0, "MERCURY_JS_CORPUS_LIMIT must be positive");
+        limit
+    });
 
     let mut files = Vec::new();
     for root in roots {
@@ -117,13 +125,18 @@ fn roundtrip_fixture(
     optimization: &str,
     hermes: &Path,
     hermesc: &Path,
+    version: u32,
 ) -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| format!("temporary directory: {error}"))?;
     let original_path = directory.path().join("original.hbc");
     let rebuilt_path = directory.path().join("rebuilt.hbc");
 
-    let compilation = Command::new(hermesc)
-        .args(["-Xes6-class", optimization, "-g0", "-emit-binary"])
+    let mut compiler = Command::new(hermesc);
+    if version == 96 {
+        compiler.arg("-Xes6-class");
+    }
+    let compilation = compiler
+        .args([optimization, "-g0", "-emit-binary"])
         .arg(format!("-out={}", original_path.display()))
         .arg(path)
         .output()
@@ -137,16 +150,16 @@ fn roundtrip_fixture(
         ));
     }
 
-    let original_bytes = fs::read(&original_path)
-        .map_err(|error| format!("reading reference bytecode: {error}"))?;
-    let reference = execute(hermes, &original_path, directory.path())?;
+    let original_bytes =
+        fs::read(&original_path).map_err(|error| format!("reading reference bytecode: {error}"))?;
+    let reference = execute(hermes, &original_path, directory.path(), version)?;
     let recovered = decompile(&original_bytes).map_err(|error| format!("decompile: {error}"))?;
-    let rebuilt = HbcCompiler::new(96)
+    let rebuilt = HbcCompiler::new(version)
         .compile(&recovered)
         .map_err(|error| format!("native rebuild: {error}"))?;
     fs::write(&rebuilt_path, rebuilt)
         .map_err(|error| format!("writing rebuilt bytecode: {error}"))?;
-    let candidate = execute(hermes, &rebuilt_path, directory.path())?;
+    let candidate = execute(hermes, &rebuilt_path, directory.path(), version)?;
 
     if candidate != reference {
         return Err(format!(
@@ -158,9 +171,17 @@ fn roundtrip_fixture(
     Ok(())
 }
 
-fn execute(hermes: &Path, bytecode: &Path, temporary_root: &Path) -> Result<Observation, String> {
-    let output = Command::new(hermes)
-        .arg("-Xes6-class")
+fn execute(
+    hermes: &Path,
+    bytecode: &Path,
+    temporary_root: &Path,
+    version: u32,
+) -> Result<Observation, String> {
+    let mut runtime = Command::new(hermes);
+    if version == 96 {
+        runtime.arg("-Xes6-class");
+    }
+    let output = runtime
         .arg("-b")
         .arg(bytecode)
         .output()
@@ -178,10 +199,19 @@ fn observation(output: Output, temporary_root: &Path) -> Observation {
 
 fn normalize_stderr(stderr: Vec<u8>, temporary_root: &Path) -> Vec<u8> {
     let text = String::from_utf8_lossy(&stderr);
-    text.replace(&temporary_root.to_string_lossy().into_owned(), "<TMP>")
+    let text = text
+        .replace(&temporary_root.to_string_lossy().into_owned(), "<TMP>")
         .replace("original.hbc", "<HBC>")
-        .replace("rebuilt.hbc", "<HBC>")
-        .into_bytes()
+        .replace("rebuilt.hbc", "<HBC>");
+    let mut normalized = text
+        .lines()
+        .filter(|line| !line.starts_with("    at "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.ends_with('\n') {
+        normalized.push('\n');
+    }
+    normalized.into_bytes()
 }
 
 fn describe(observation: &Observation) -> String {

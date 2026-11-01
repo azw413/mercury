@@ -9,5 +9,5 @@ pub use ast::{
     AssemblyStringKind, SemanticAssemblyFunction, SemanticAssemblyInstruction,
     SemanticAssemblyModule, SemanticAssemblyStatement, SemanticOperand,
 };
-pub use parser::{parse_semantic_assembly, AssemblyParseError};
-pub use raise::{raise_module, RaiseError, RaisedAssemblyFunction, RaisedAssemblyModule};
+pub use parser::{AssemblyParseError, parse_semantic_assembly};
+pub use raise::{RaiseError, RaisedAssemblyFunction, RaisedAssemblyModule, raise_module};

@@ -1,8 +1,8 @@
 # mercury-hbc
 
 `mercury-hbc` is Mercury's high-level Rust API for JavaScript and TypeScript
-source editing, native Hermes bytecode compilation, and executable HBC 96
-decompilation. It exposes real [SWC](https://swc.rs/) ASTs and re-exports the
+source editing, native Hermes bytecode compilation, and executable HBC 96 or
+HBC 98 decompilation. It exposes real [SWC](https://swc.rs/) ASTs and re-exports the
 matching SWC dependency family for visitors and transformations.
 
 The native [`HbcCompiler`](https://docs.rs/mercury-hbc/latest/mercury_hbc/struct.HbcCompiler.html)
@@ -76,9 +76,9 @@ never silently delegated to an external compiler.
 
 ### `decompile`
 
-`decompile(&bytes)` accepts supported HBC 96 and constructs an executable SWC
-module directly from Mercury's decoded IR and control-flow graph. It does not
-generate text and parse that text back into an AST. The returned module can be
+`decompile(&bytes)` accepts supported HBC 96 or HBC 98 and constructs an
+executable SWC module directly from Mercury's decoded IR and control-flow graph.
+It does not generate text and parse that text back into an AST. The returned module can be
 printed, edited, or compiled again.
 
 ### `HermesCompiler`
@@ -110,7 +110,7 @@ Compile a `.js` or `.ts` script to HBC 96:
 cargo run -p mercury-hbc --example compile -- input.js output.hbc
 ```
 
-Decompile HBC 96 to stdout, or pass an output path:
+Decompile HBC 96 or HBC 98 to stdout, or pass an output path:
 
 ```sh
 cargo run -p mercury-hbc --example decompile -- input.hbc output.js
@@ -185,7 +185,7 @@ The output is an executable reconstruction, not the original source. Functions
 retain register temporaries and use a `while`/`switch` basic-block dispatcher to
 preserve instruction and exception order without guessing high-level structure.
 
-Within the HBC 96 container contract, lowering covers constants, closures,
+Within the HBC 96 and HBC 98 container contracts, lowering covers constants, closures,
 mutable captured environments, global and property access, calls and
 construction, arithmetic and coercion, arrays and objects, spread and rest,
 iteration, dense switch tables, exceptions, regular expressions, BigInts, direct
@@ -234,8 +234,9 @@ Run the self-contained tests:
 cargo test -p mercury-hbc --all-features
 ```
 
-Execution tests require Hermes runtimes and, for fixtures authored from source,
-the HBC 96 compiler. Set `HERMES98_BIN` to an HBC 98 runtime for the HBC 98 suite:
+Execution tests require matching HBC 96 and HBC 98 compilers and runtimes. Set
+`HERMESC_BIN` separately for each corpus run, and set `HERMES98_BIN` to an HBC 98
+runtime for the HBC 98 suite:
 
 ```sh
 HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
@@ -243,8 +244,8 @@ HERMES98_BIN=/absolute/path/to/hermes98 \
   cargo test -p mercury-hbc --all-features -- --include-ignored
 ```
 
-The corpus harness covers 12 focused fixtures and 49 generated programs at `-O0`
-and `-O`, for 122 cases. Each reference HBC is executed, decompiled to SWC,
+For each version, the corpus harness covers 12 focused fixtures and 49 generated
+programs at `-O0` and `-O`, for 122 cases. Each reference HBC is executed, decompiled to SWC,
 rebuilt with `HbcCompiler`, and executed again. Exit status, stdout, and
 normalized stderr must match. See the workspace
 [test guide](../../test/README.md) for external corpus controls and fixture

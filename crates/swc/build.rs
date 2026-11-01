@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 fn main() -> Result<()> {
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").context("missing CARGO_MANIFEST_DIR")?);
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").context("missing CARGO_MANIFEST_DIR")?);
     let workspace_spec_dir = manifest_dir
         .parent()
         .context("crate dir should have parent")?

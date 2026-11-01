@@ -1,5 +1,5 @@
-//! Decompile an HBC-96 file to SWC, optionally edit its generated bindings, and
-//! compile the in-memory AST back to HBC without invoking `hermesc`.
+//! Decompile an HBC 96 or HBC 98 file to SWC, optionally edit its generated
+//! bindings, and compile the in-memory AST back to HBC without invoking `hermesc`.
 //!
 //! Run with:
 //! cargo run -p mercury-hbc --example roundtrip -- input.hbc output.hbc [--rename-generated]

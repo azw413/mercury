@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use crate::spec::{
     BitfieldFieldSpec, BitfieldSpec, BuiltinKind, BuiltinSpec, BytecodeSpec, ContainerSpec,
     FieldSpec, HermesSpec, InstructionFlags, InstructionOperandSpec, InstructionSpec,
@@ -13,6 +12,7 @@ use crate::spec::{
     SemanticFunctionSpec, SemanticInstructionSpec, SemanticModuleSpec, SemanticSideTableSpec,
     SemanticSpec, StructSpec,
 };
+use anyhow::{Context, Result};
 
 use crate::spec_extract::hermes_source::HermesSource;
 
@@ -43,17 +43,15 @@ impl Extractor {
 
     /// Extracts a versioned spec from a specific Hermes git tag or revision.
     pub fn extract_tag(&self, tag: &str) -> Result<HermesSpec> {
-        let version_header = self.source.read_file_at_tag(
-            tag,
-            "include/hermes/BCGen/HBC/BytecodeVersion.h",
-        )?;
-        let bytecode_list =
-            self.source
-                .read_file_at_tag(tag, "include/hermes/BCGen/HBC/BytecodeList.def")?;
-        let file_format = self.source.read_file_at_tag(
-            tag,
-            "include/hermes/BCGen/HBC/BytecodeFileFormat.h",
-        )?;
+        let version_header = self
+            .source
+            .read_file_at_tag(tag, "include/hermes/BCGen/HBC/BytecodeVersion.h")?;
+        let bytecode_list = self
+            .source
+            .read_file_at_tag(tag, "include/hermes/BCGen/HBC/BytecodeList.def")?;
+        let file_format = self
+            .source
+            .read_file_at_tag(tag, "include/hermes/BCGen/HBC/BytecodeFileFormat.h")?;
         let bytecode_stream = self
             .source
             .read_file_at_tag(tag, "lib/BCGen/HBC/BytecodeStream.cpp")?;
@@ -68,7 +66,11 @@ impl Extractor {
             hermes_tag: tag.to_owned(),
             bytecode_version: parse_bytecode_version(&version_header).unwrap_or_default(),
             bytecode: build_stub_bytecode_spec(&bytecode_list, &builtins),
-            container: build_stub_container_spec(&file_format, &bytecode_stream, &bytecode_stream_header),
+            container: build_stub_container_spec(
+                &file_format,
+                &bytecode_stream,
+                &bytecode_stream_header,
+            ),
             semantic: build_semantic_spec(),
         })
     }
@@ -248,7 +250,10 @@ fn build_stub_container_spec(
         .unwrap_or_else(|| "unknown".to_owned());
     let delta_magic = file_format
         .lines()
-        .find_map(|line| line.trim().strip_prefix("const static uint64_t DELTA_MAGIC = "))
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("const static uint64_t DELTA_MAGIC = ")
+        })
         .map(|value| value.trim_end_matches(';').to_owned())
         .unwrap_or_else(|| "unknown".to_owned());
     let file_header = StructSpec {
@@ -637,16 +642,25 @@ fn extract_builtins(source: &str) -> Vec<BuiltinSpec> {
     for line in source.lines() {
         let line = line.trim();
         let parsed = if let Some(body) = line.strip_prefix("BUILTIN_OBJECT(") {
-            Some((BuiltinKind::BuiltinObject, body.trim_end_matches(')').to_owned()))
+            Some((
+                BuiltinKind::BuiltinObject,
+                body.trim_end_matches(')').to_owned(),
+            ))
         } else if let Some(body) = line.strip_prefix("BUILTIN_METHOD(") {
             Some((
                 BuiltinKind::BuiltinMethod,
                 body.trim_end_matches(')').replace(", ", "."),
             ))
         } else if let Some(body) = line.strip_prefix("PRIVATE_BUILTIN(") {
-            Some((BuiltinKind::PrivateBuiltin, body.trim_end_matches(')').to_owned()))
+            Some((
+                BuiltinKind::PrivateBuiltin,
+                body.trim_end_matches(')').to_owned(),
+            ))
         } else if let Some(body) = line.strip_prefix("JS_BUILTIN(") {
-            Some((BuiltinKind::JsBuiltin, body.trim_end_matches(')').to_owned()))
+            Some((
+                BuiltinKind::JsBuiltin,
+                body.trim_end_matches(')').to_owned(),
+            ))
         } else {
             None
         };
@@ -684,11 +698,7 @@ fn extract_struct_fields(source: &str, marker: &str) -> Vec<FieldSpec> {
             continue;
         }
 
-        let declaration = line
-            .split("//")
-            .next()
-            .map(str::trim)
-            .unwrap_or_default();
+        let declaration = line.split("//").next().map(str::trim).unwrap_or_default();
 
         if declaration.is_empty() || declaration.contains('(') || !declaration.ends_with(';') {
             continue;
@@ -917,7 +927,8 @@ fn extract_container_sections(file_format: &str, bytecode_stream: &str) -> Vec<S
         notes: vec![
             "serialized after the template-driven segments".to_owned(),
             "jump tables are aligned to 4 bytes after opcode blocks".to_owned(),
-            "optional body padding may be emitted when padFunctionBodiesPercent is enabled".to_owned(),
+            "optional body padding may be emitted when padFunctionBodiesPercent is enabled"
+                .to_owned(),
         ],
     });
     sections.push(SectionSpec {
@@ -946,9 +957,9 @@ fn extract_container_sections(file_format: &str, bytecode_stream: &str) -> Vec<S
     if bytecode_stream.contains("pad(INFO_ALIGNMENT);") {
         for section in &mut sections {
             if section.name == "function_info" {
-                section
-                    .notes
-                    .push("serializer pads exception/debug-info subsections to INFO_ALIGNMENT".to_owned());
+                section.notes.push(
+                    "serializer pads exception/debug-info subsections to INFO_ALIGNMENT".to_owned(),
+                );
             }
         }
     }
@@ -1005,7 +1016,10 @@ fn map_visit_method_to_section(method_name: &str) -> (&'static str, Vec<String>)
             vec!["present when small string table entries overflow offset or length".to_owned()],
         ),
         "visitStringStorage" => ("string_storage", vec!["raw string blob".to_owned()]),
-        "visitArrayBuffer" => ("array_buffer", vec!["serialized literal array buffer".to_owned()]),
+        "visitArrayBuffer" => (
+            "array_buffer",
+            vec!["serialized literal array buffer".to_owned()],
+        ),
         "visitLiteralValueBuffer" => (
             "literal_value_buffer",
             vec!["shared array and object literal value buffer".to_owned()],
@@ -1034,7 +1048,12 @@ fn map_visit_method_to_section(method_name: &str) -> (&'static str, Vec<String>)
             "function_source_table",
             vec!["preserved function source references".to_owned()],
         ),
-        _ => ("unknown_segment", vec![format!("unrecognized serializer visit method: {method_name}")]),
+        _ => (
+            "unknown_segment",
+            vec![format!(
+                "unrecognized serializer visit method: {method_name}"
+            )],
+        ),
     }
 }
 
@@ -1058,7 +1077,13 @@ mod tests {
         let fields = spec
             .fields
             .iter()
-            .map(|field| (field.name.as_str(), field.type_name.as_str(), field.bit_width))
+            .map(|field| {
+                (
+                    field.name.as_str(),
+                    field.type_name.as_str(),
+                    field.bit_width,
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(
             fields,
@@ -1086,7 +1111,13 @@ mod tests {
         let fields = spec
             .fields
             .iter()
-            .map(|field| (field.name.as_str(), field.type_name.as_str(), field.bit_width))
+            .map(|field| {
+                (
+                    field.name.as_str(),
+                    field.type_name.as_str(),
+                    field.bit_width,
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(
             fields,

@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::binary::functions::small_function_header_size;
-use crate::binary::header::{HbcVersionedFileHeader, FILE_HEADER_SIZE};
+use crate::binary::header::{FILE_HEADER_SIZE, HbcVersionedFileHeader};
 use crate::binary::parse::HbcParseError;
 use crate::spec::{ContainerSpec, RawTableSpec};
 const BYTECODE_ALIGNMENT: usize = 4;
@@ -34,7 +34,8 @@ pub(crate) fn compute_section_boundaries(
 ) -> Result<HbcSectionBoundaries, HbcParseError> {
     let mut offset = FILE_HEADER_SIZE;
 
-    let function_headers = offset..offset + (header.function_count as usize * small_function_header_size(header.version));
+    let function_headers = offset
+        ..offset + (header.function_count as usize * small_function_header_size(header.version));
     offset = align_up(function_headers.end, BYTECODE_ALIGNMENT);
 
     let string_kinds = offset..offset + (header.string_kind_count as usize * 4);
@@ -117,7 +118,8 @@ pub(crate) fn compute_section_boundaries_with_spec(
     container_spec: &ContainerSpec,
 ) -> Result<HbcSectionBoundaries, HbcParseError> {
     let function_headers = FILE_HEADER_SIZE
-        ..FILE_HEADER_SIZE + (header.function_count as usize * small_function_header_size(header.version));
+        ..FILE_HEADER_SIZE
+            + (header.function_count as usize * small_function_header_size(header.version));
     let mut boundaries = HbcSectionBoundaries {
         file_header: 0..FILE_HEADER_SIZE,
         function_headers: function_headers.clone(),
@@ -179,27 +181,22 @@ fn resolve_section_size(
         "object_key_buffer" => Ok(header.obj_key_buffer_size as usize),
         "object_value_buffer" => Ok(header.obj_value_buffer_size as usize),
         "object_shape_table" => Ok(header.obj_shape_table_count as usize * 8),
-        "bigint_table" => Ok(
-            header.big_int_count as usize
-                * table_entry_size("bigint_table", &container_spec.raw_module.bigint_table)?,
-        ),
+        "bigint_table" => Ok(header.big_int_count as usize
+            * table_entry_size("bigint_table", &container_spec.raw_module.bigint_table)?),
         "bigint_storage" => Ok(header.big_int_storage_size as usize),
-        "regexp_table" => Ok(
-            header.reg_exp_count as usize
-                * table_entry_size("regexp_table", &container_spec.raw_module.regexp_table)?,
-        ),
+        "regexp_table" => Ok(header.reg_exp_count as usize
+            * table_entry_size("regexp_table", &container_spec.raw_module.regexp_table)?),
         "regexp_storage" => Ok(header.reg_exp_storage_size as usize),
-        "cjs_module_table" => Ok(
-            header.cjs_module_count as usize
-                * table_entry_size("cjs_module_table", &container_spec.raw_module.cjs_module_table)?,
-        ),
-        "function_source_table" => Ok(
-            header.function_source_count as usize
-                * table_entry_size(
-                    "function_source_table",
-                    &container_spec.raw_module.function_source_table,
-                )?,
-        ),
+        "cjs_module_table" => Ok(header.cjs_module_count as usize
+            * table_entry_size(
+                "cjs_module_table",
+                &container_spec.raw_module.cjs_module_table,
+            )?),
+        "function_source_table" => Ok(header.function_source_count as usize
+            * table_entry_size(
+                "function_source_table",
+                &container_spec.raw_module.function_source_table,
+            )?),
         other => Err(HbcParseError::UnsupportedSectionInSpec {
             section: other.to_owned(),
         }),
@@ -260,8 +257,13 @@ pub fn align_up(value: usize, alignment: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::binary::header::{BytecodeOptions, HbcVersionedFileHeader, HERMES_MAGIC};
-    use crate::spec::{ContainerSpec, RawBufferSpec, RawDebugInfoSpec, RawDebugOffsetsSpec, RawExceptionHandlerSpec, RawFooterSpec, RawFunctionBodySpec, RawFunctionHeaderSpec, RawFunctionInfoSpec, RawModuleSpec, RawStringTableSpec, RawSubsectionSpec, RawTableSpec, SectionSpec, StructSpec, BitfieldSpec};
+    use crate::binary::header::{BytecodeOptions, HERMES_MAGIC, HbcVersionedFileHeader};
+    use crate::spec::{
+        BitfieldSpec, ContainerSpec, RawBufferSpec, RawDebugInfoSpec, RawDebugOffsetsSpec,
+        RawExceptionHandlerSpec, RawFooterSpec, RawFunctionBodySpec, RawFunctionHeaderSpec,
+        RawFunctionInfoSpec, RawModuleSpec, RawStringTableSpec, RawSubsectionSpec, RawTableSpec,
+        SectionSpec, StructSpec,
+    };
 
     fn sample_header() -> HbcVersionedFileHeader {
         HbcVersionedFileHeader {
@@ -303,46 +305,203 @@ mod tests {
         ContainerSpec {
             magic: String::new(),
             delta_magic: String::new(),
-            bytecode_options: BitfieldSpec { name: String::new(), fields: vec![] },
-            file_header: StructSpec { name: String::new(), fields: vec![] },
-            function_header_flags: BitfieldSpec { name: String::new(), fields: vec![] },
-            function_header: StructSpec { name: String::new(), fields: vec![] },
+            bytecode_options: BitfieldSpec {
+                name: String::new(),
+                fields: vec![],
+            },
+            file_header: StructSpec {
+                name: String::new(),
+                fields: vec![],
+            },
+            function_header_flags: BitfieldSpec {
+                name: String::new(),
+                fields: vec![],
+            },
+            function_header: StructSpec {
+                name: String::new(),
+                fields: vec![],
+            },
             raw_module: RawModuleSpec {
-                function_header: RawFunctionHeaderSpec { small_header_fields: vec![], small_header_flags: String::new(), large_header_fields: vec![], overflow_strategy: String::new() },
-                function_body: RawFunctionBodySpec { opcode_stream_alignment: None, jump_table_alignment: None, jump_tables_inlined_after_opcodes: false, optional_padding_control: None, notes: vec![] },
-                function_info: RawFunctionInfoSpec { info_alignment: Some(4), large_header_may_be_present: true, subsections: vec![RawSubsectionSpec { name: String::new(), alignment: Some(4), storage: String::new(), notes: vec![] }], notes: vec![] },
-                exception_handlers: RawExceptionHandlerSpec { header_name: String::new(), table_entry_type: String::new(), alignment: Some(4), notes: vec![] },
-                debug_offsets: RawDebugOffsetsSpec { record_type: String::new(), alignment: Some(4), notes: vec![] },
-                debug_info: RawDebugInfoSpec { header_name: String::new(), alignment: Some(4), subsections: vec![], strip_behavior: None, notes: vec![] },
-                string_table: RawStringTableSpec { small_entry_type: String::new(), overflow_entry_type: String::new(), overflow_strategy: String::new(), notes: vec![] },
-                array_buffer: RawBufferSpec { alignment: Some(4), storage: String::new(), notes: vec![] },
-                object_key_buffer: RawBufferSpec { alignment: Some(4), storage: String::new(), notes: vec![] },
-                object_value_buffer: RawBufferSpec { alignment: Some(4), storage: String::new(), notes: vec![] },
+                function_header: RawFunctionHeaderSpec {
+                    small_header_fields: vec![],
+                    small_header_flags: String::new(),
+                    large_header_fields: vec![],
+                    overflow_strategy: String::new(),
+                },
+                function_body: RawFunctionBodySpec {
+                    opcode_stream_alignment: None,
+                    jump_table_alignment: None,
+                    jump_tables_inlined_after_opcodes: false,
+                    optional_padding_control: None,
+                    notes: vec![],
+                },
+                function_info: RawFunctionInfoSpec {
+                    info_alignment: Some(4),
+                    large_header_may_be_present: true,
+                    subsections: vec![RawSubsectionSpec {
+                        name: String::new(),
+                        alignment: Some(4),
+                        storage: String::new(),
+                        notes: vec![],
+                    }],
+                    notes: vec![],
+                },
+                exception_handlers: RawExceptionHandlerSpec {
+                    header_name: String::new(),
+                    table_entry_type: String::new(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                debug_offsets: RawDebugOffsetsSpec {
+                    record_type: String::new(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                debug_info: RawDebugInfoSpec {
+                    header_name: String::new(),
+                    alignment: Some(4),
+                    subsections: vec![],
+                    strip_behavior: None,
+                    notes: vec![],
+                },
+                string_table: RawStringTableSpec {
+                    small_entry_type: String::new(),
+                    overflow_entry_type: String::new(),
+                    overflow_strategy: String::new(),
+                    notes: vec![],
+                },
+                array_buffer: RawBufferSpec {
+                    alignment: Some(4),
+                    storage: String::new(),
+                    notes: vec![],
+                },
+                object_key_buffer: RawBufferSpec {
+                    alignment: Some(4),
+                    storage: String::new(),
+                    notes: vec![],
+                },
+                object_value_buffer: RawBufferSpec {
+                    alignment: Some(4),
+                    storage: String::new(),
+                    notes: vec![],
+                },
                 object_shape_table: None,
-                bigint_table: RawTableSpec { alignment: Some(4), entry_type: "BigIntTableEntry".into(), storage: String::new(), notes: vec![] },
-                regexp_table: RawTableSpec { alignment: Some(4), entry_type: "RegExpTableEntry".into(), storage: String::new(), notes: vec![] },
-                cjs_module_table: RawTableSpec { alignment: Some(4), entry_type: "pair<uint32_t, uint32_t>".into(), storage: String::new(), notes: vec![] },
-                function_source_table: RawTableSpec { alignment: Some(4), entry_type: "pair<uint32_t, uint32_t>".into(), storage: String::new(), notes: vec![] },
-                footer: RawFooterSpec { type_name: String::new(), hash_description: String::new(), notes: vec![] },
+                bigint_table: RawTableSpec {
+                    alignment: Some(4),
+                    entry_type: "BigIntTableEntry".into(),
+                    storage: String::new(),
+                    notes: vec![],
+                },
+                regexp_table: RawTableSpec {
+                    alignment: Some(4),
+                    entry_type: "RegExpTableEntry".into(),
+                    storage: String::new(),
+                    notes: vec![],
+                },
+                cjs_module_table: RawTableSpec {
+                    alignment: Some(4),
+                    entry_type: "pair<uint32_t, uint32_t>".into(),
+                    storage: String::new(),
+                    notes: vec![],
+                },
+                function_source_table: RawTableSpec {
+                    alignment: Some(4),
+                    entry_type: "pair<uint32_t, uint32_t>".into(),
+                    storage: String::new(),
+                    notes: vec![],
+                },
+                footer: RawFooterSpec {
+                    type_name: String::new(),
+                    hash_description: String::new(),
+                    notes: vec![],
+                },
             },
             sections: vec![
-                SectionSpec { name: "file_header".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "function_headers".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "string_kinds".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "identifier_hashes".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "small_string_table".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "overflow_string_table".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "string_storage".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "array_buffer".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "object_key_buffer".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "object_value_buffer".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "bigint_table".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "bigint_storage".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "regexp_table".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "regexp_storage".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "cjs_module_table".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "function_source_table".into(), alignment: Some(4), notes: vec![] },
-                SectionSpec { name: "function_bodies".into(), alignment: None, notes: vec![] },
+                SectionSpec {
+                    name: "file_header".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "function_headers".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "string_kinds".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "identifier_hashes".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "small_string_table".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "overflow_string_table".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "string_storage".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "array_buffer".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "object_key_buffer".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "object_value_buffer".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "bigint_table".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "bigint_storage".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "regexp_table".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "regexp_storage".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "cjs_module_table".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "function_source_table".into(),
+                    alignment: Some(4),
+                    notes: vec![],
+                },
+                SectionSpec {
+                    name: "function_bodies".into(),
+                    alignment: None,
+                    notes: vec![],
+                },
             ],
             notes: vec![],
         }
@@ -363,8 +522,8 @@ mod tests {
     #[test]
     fn computes_spec_driven_section_boundaries() {
         let header = sample_header();
-        let boundaries =
-            compute_section_boundaries_with_spec(&header, &minimal_container_spec()).expect("sections compute");
+        let boundaries = compute_section_boundaries_with_spec(&header, &minimal_container_spec())
+            .expect("sections compute");
         assert_eq!(boundaries.function_headers, 128..256);
         assert_eq!(boundaries.string_kinds, 256..264);
         assert_eq!(boundaries.identifier_hashes, 264..332);

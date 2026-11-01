@@ -1,13 +1,13 @@
 use mercury_hbc::binary::{
-    build_minimal_module, decode_raw_module, parse_hbc_container_with_spec, DecodedInstruction,
-    DecodedOperand, MinimalFunction, MinimalModule,
+    DecodedInstruction, DecodedOperand, MinimalFunction, MinimalModule, build_minimal_module,
+    decode_raw_module, parse_hbc_container_with_spec,
 };
 use mercury_hbc::spec_builtin::load_spec;
 use mercury_hbc::{
+    HbcCompiler, HermesCompiler, SourceKind, SourceLanguage, SwcModule,
     ast::Number,
     decompile,
     visit::{VisitMut, VisitMutWith},
-    HbcCompiler, HermesCompiler, SourceKind, SourceLanguage, SwcModule,
 };
 use std::{fs, path::PathBuf, process::Command};
 fn compiler() -> HermesCompiler {
@@ -612,7 +612,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
         "ReferenceError\n9\n",
     );
 
-    use DecodedOperand::{U16, U32, U8};
+    use DecodedOperand::{U8, U16, U32};
     let original = build_test_module(
         vec![],
         vec![
@@ -731,7 +731,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn typed_arithmetic_and_memory_opcodes_preserve_i32_and_view_semantics() {
-    use DecodedOperand::{I32, U16, U8};
+    use DecodedOperand::{I32, U8, U16};
     let original = build_test_module(
         vec![
             "ArrayBuffer".into(),
@@ -874,7 +874,7 @@ fn typed_arithmetic_and_memory_opcodes_preserve_i32_and_view_semantics() {
 #[test]
 #[ignore = "requires HERMESC_BIN and HERMES_BIN for HBC 96"]
 fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
-    use DecodedOperand::{U16, U32, U8};
+    use DecodedOperand::{U8, U16, U32};
 
     let configurable = build_test_module(
         vec!["permitted".into()],
@@ -943,9 +943,7 @@ fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
             instructions: vec![instruction("Unreachable", vec![])],
         }],
     );
-    assert!(
-        execute_failure(&unreachable).contains("Unreachable instruction encountered")
-    );
+    assert!(execute_failure(&unreachable).contains("Unreachable instruction encountered"));
     let rebuilt = compiler()
         .compile(&decompile(&unreachable).unwrap())
         .unwrap();
@@ -992,13 +990,13 @@ fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
     protected[body_offset + debugger_offset as usize] = 0;
     let container = parse_hbc_container_with_spec(&protected, &spec.container).unwrap();
     let raw = decode_raw_module(&container, &protected, &spec.bytecode).unwrap();
-    assert!(raw.functions[function_index]
-        .instructions
-        .iter()
-        .any(|instruction| instruction.name == "Unreachable"));
-    let rebuilt = compiler()
-        .compile(&decompile(&protected).unwrap())
-        .unwrap();
+    assert!(
+        raw.functions[function_index]
+            .instructions
+            .iter()
+            .any(|instruction| instruction.name == "Unreachable")
+    );
+    let rebuilt = compiler().compile(&decompile(&protected).unwrap()).unwrap();
     assert!(execute_failure(&rebuilt).contains("Unreachable instruction encountered"));
 }
 

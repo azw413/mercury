@@ -6,9 +6,7 @@ use mercury_hbc::spec_builtin::load_spec;
 use mercury_hbc::{
     HbcCompiler, SourceKind, SourceLanguage, SwcModule,
     ast::Ident,
-    decompile,
-    ir as mercury_ir,
-    regex as mercury_regex,
+    decompile, ir as mercury_ir, regex as mercury_regex,
     visit::{VisitMut, VisitMutWith},
 };
 
@@ -1208,10 +1206,7 @@ fn native_self_hosted_large_fixtures_roundtrip_survives_renaming() {
         .collect::<String>();
     for (original, expected) in [
         (&include_bytes!("fixtures/hex.hbc")[..], "".to_owned()),
-        (
-            &include_bytes!("fixtures/box2d.hbc")[..],
-            expected_box2d,
-        ),
+        (&include_bytes!("fixtures/box2d.hbc")[..], expected_box2d),
     ] {
         let mut module = decompile(original).unwrap();
         rename_generated_bindings(&mut module);

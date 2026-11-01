@@ -74,7 +74,7 @@ pub fn blocks(function: &RawFunction) -> Result<Vec<Block<'_>>, Error> {
             }
             leaders.insert(dest);
         }
-        if op.name == "SwitchImm" {
+        if matches!(op.name.as_str(), "SwitchImm" | "UIntSwitchImm") {
             let table = function
                 .switch_tables
                 .iter()
@@ -97,7 +97,7 @@ pub fn blocks(function: &RawFunction) -> Result<Vec<Block<'_>>, Error> {
             }
         }
         if (op.name.starts_with('J')
-            || op.name == "SwitchImm"
+            || matches!(op.name.as_str(), "SwitchImm" | "UIntSwitchImm")
             || matches!(op.name.as_str(), "Ret" | "Throw"))
             && i + 1 < function.instructions.len()
         {

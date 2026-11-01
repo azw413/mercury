@@ -8,8 +8,8 @@
 //!   its SWC AST, and print it again.
 //! - Compile a supported script directly to HBC 96 or HBC 98 with [`HbcCompiler`],
 //!   without invoking `hermesc` or executing the input program.
-//! - Decompile supported HBC 96 bytecode into an executable SWC tree with
-//!   [`decompile`], optionally edit that tree, and compile it back to HBC.
+//! - Decompile supported HBC 96 or HBC 98 bytecode into an executable SWC tree
+//!   with [`decompile`], optionally edit that tree, and compile it back to HBC.
 //!
 //! # Quickstart
 //!
@@ -46,8 +46,8 @@
 //!
 //! # Compatibility and limitations
 //!
-//! Native compilation targets **HBC 96 and HBC 98**; decompilation targets
-//! **HBC 96**. Source compilation accepts scripts, not unbundled ES modules, and
+//! Native compilation and decompilation target **HBC 96 and HBC 98**. Source
+//! compilation accepts scripts, not unbundled ES modules, and
 //! returns [`Error::Unsupported`] for syntax outside its implemented subset.
 //! TypeScript is transpiled, not type-checked. Decompilation preserves executable
 //! behavior rather than original formatting, comments, local names, or high-level
@@ -67,9 +67,9 @@
 
 #![warn(missing_docs)]
 
-mod ast_builder;
 #[allow(missing_docs)]
 pub mod asm;
+mod ast_builder;
 #[allow(missing_docs)]
 pub mod binary;
 mod cfg;

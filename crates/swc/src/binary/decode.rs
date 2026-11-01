@@ -203,7 +203,7 @@ fn decode_switch_tables(
     let mut tables = Vec::new();
     for instruction in instructions
         .iter()
-        .filter(|instruction| instruction.name == "SwitchImm")
+        .filter(|instruction| matches!(instruction.name.as_str(), "SwitchImm" | "UIntSwitchImm"))
     {
         let (
             Some(DecodedOperand::U32(table_offset)),
@@ -235,11 +235,10 @@ fn decode_switch_tables(
             .ok_or(HbcDecodeError::SwitchTableOutOfRange {
                 offset: instruction.offset,
             })?;
-        let table_start = align_up(unaligned_start, 4).ok_or(
-            HbcDecodeError::SwitchTableOutOfRange {
+        let table_start =
+            align_up(unaligned_start, 4).ok_or(HbcDecodeError::SwitchTableOutOfRange {
                 offset: instruction.offset,
-            },
-        )?;
+            })?;
         let table_size = usize::try_from(count)
             .map_err(|_| HbcDecodeError::SwitchTableOutOfRange {
                 offset: instruction.offset,
@@ -248,16 +247,18 @@ fn decode_switch_tables(
             .ok_or(HbcDecodeError::SwitchTableOutOfRange {
                 offset: instruction.offset,
             })?;
-        let table_end = table_start
-            .checked_add(table_size)
-            .ok_or(HbcDecodeError::SwitchTableOutOfRange {
-                offset: instruction.offset,
-            })?;
-        let table_bytes = bytes
-            .get(table_start..table_end)
-            .ok_or(HbcDecodeError::SwitchTableOutOfRange {
-                offset: instruction.offset,
-            })?;
+        let table_end =
+            table_start
+                .checked_add(table_size)
+                .ok_or(HbcDecodeError::SwitchTableOutOfRange {
+                    offset: instruction.offset,
+                })?;
+        let table_bytes =
+            bytes
+                .get(table_start..table_end)
+                .ok_or(HbcDecodeError::SwitchTableOutOfRange {
+                    offset: instruction.offset,
+                })?;
         let displacements = table_bytes
             .chunks_exact(4)
             .map(|entry| i32::from_le_bytes(entry.try_into().expect("four-byte switch entry")))
@@ -287,7 +288,9 @@ fn decode_operand(
 ) -> Result<DecodedOperand, HbcDecodeError> {
     match kind {
         "Reg8" | "UInt8" => {
-            let value = *body_bytes.get(*cursor).ok_or(HbcDecodeError::TruncatedInstruction)?;
+            let value = *body_bytes
+                .get(*cursor)
+                .ok_or(HbcDecodeError::TruncatedInstruction)?;
             *cursor += 1;
             Ok(DecodedOperand::U8(value))
         }
@@ -302,7 +305,9 @@ fn decode_operand(
             Ok(DecodedOperand::U32(value))
         }
         "Addr8" => {
-            let value = *body_bytes.get(*cursor).ok_or(HbcDecodeError::TruncatedInstruction)? as i8;
+            let value = *body_bytes
+                .get(*cursor)
+                .ok_or(HbcDecodeError::TruncatedInstruction)? as i8;
             *cursor += 1;
             Ok(DecodedOperand::I8(value))
         }

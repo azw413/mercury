@@ -511,13 +511,13 @@ impl Compiler {
             self.initialize_lexical_this()?;
         }
         if self.version == 96 {
-        for name in lexical_names {
-            let id = self.intern_identifier(&name)?;
-            self.emit(
-                "ThrowIfHasRestrictedGlobalProperty",
-                vec![DecodedOperand::U32(id)],
-            );
-        }
+            for name in lexical_names {
+                let id = self.intern_identifier(&name)?;
+                self.emit(
+                    "ThrowIfHasRestrictedGlobalProperty",
+                    vec![DecodedOperand::U32(id)],
+                );
+            }
         }
 
         let mut declarations = Vec::new();
@@ -650,7 +650,7 @@ impl Compiler {
                 );
             }
         } else {
-        self.emit("CreateEnvironment", vec![reg(environment)]);
+            self.emit("CreateEnvironment", vec![reg(environment)]);
         }
         self.scope = Some(Rc::new(FunctionScope {
             bindings: self.build_binding_map(first_bindings, &register_bindings)?,
@@ -758,8 +758,8 @@ impl Compiler {
             .filter(|(name, _)| !self.captured_names.contains(name))
             .take(
                 MAX_REGISTER_BINDINGS_PER_SCOPE.min(
-                self.register_binding_budget
-                    .saturating_sub(usize::from(self.next_register)),
+                    self.register_binding_budget
+                        .saturating_sub(usize::from(self.next_register)),
                 ),
             )
             .map(|(name, _)| name.clone())
@@ -3331,19 +3331,19 @@ impl Compiler {
                     self.emit_delete_by_val(object, key);
                     self.release_register(key)?;
                 } else {
-                let id = self.intern_identifier(property.sym.as_ref())?;
-                if let Ok(id) = u16::try_from(id) {
-                    self.emit(
-                        "DelById",
-                        vec![reg(object), reg(object), DecodedOperand::U16(id)],
-                    );
-                } else {
-                    self.emit(
-                        "DelByIdLong",
-                        vec![reg(object), reg(object), DecodedOperand::U32(id)],
-                    );
+                    let id = self.intern_identifier(property.sym.as_ref())?;
+                    if let Ok(id) = u16::try_from(id) {
+                        self.emit(
+                            "DelById",
+                            vec![reg(object), reg(object), DecodedOperand::U16(id)],
+                        );
+                    } else {
+                        self.emit(
+                            "DelByIdLong",
+                            vec![reg(object), reg(object), DecodedOperand::U32(id)],
+                        );
+                    }
                 }
-            }
             }
             MemberProp::Computed(property) => {
                 let key = self.compile_expression(&property.expr)?;
@@ -4346,9 +4346,9 @@ impl Compiler {
             Ok(cache)
         } else {
             // HBC 96 (Hermes 0.12): slots are 1..=255 and 0 means "no cache".
-        self.next_cache += 1;
-        Ok(self.next_cache as u8)
-    }
+            self.next_cache += 1;
+            Ok(self.next_cache as u8)
+        }
     }
 
     fn emit(&mut self, name: &str, operands: Vec<DecodedOperand>) {
@@ -4829,8 +4829,8 @@ impl Compiler {
         let this_register = frame_size
             .checked_sub(caller_extra_registers + 1)
             .ok_or_else(|| {
-            Error::Bytecode("native compiler produced an invalid outgoing frame".into())
-        })?;
+                Error::Bytecode("native compiler produced an invalid outgoing frame".into())
+            })?;
         for pending in &self.frame_moves {
             let destination = this_register.checked_sub(pending.slot).ok_or_else(|| {
                 Error::Bytecode("constructor arguments exceed the outgoing frame".into())

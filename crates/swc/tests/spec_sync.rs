@@ -20,19 +20,23 @@ fn packaged_specs_match_the_workspace_registry() {
     };
     let workspace_names = spec_names(&workspace);
     let packaged_names = spec_names(&packaged);
-    assert!(!workspace_names.is_empty(), "workspace registry must not be empty");
-    assert_eq!(packaged_names, workspace_names, "packaged registry filenames differ");
+    assert!(
+        !workspace_names.is_empty(),
+        "workspace registry must not be empty"
+    );
+    assert_eq!(
+        packaged_names, workspace_names,
+        "packaged registry filenames differ"
+    );
 
     for name in workspace_names {
         let workspace_spec = workspace.join(&name);
         let packaged_spec = packaged.join(&name);
         assert_eq!(
-            fs::read(&packaged_spec).unwrap_or_else(|error| {
-                panic!("read {}: {error}", packaged_spec.display())
-            }),
-            fs::read(&workspace_spec).unwrap_or_else(|error| {
-                panic!("read {}: {error}", workspace_spec.display())
-            }),
+            fs::read(&packaged_spec)
+                .unwrap_or_else(|error| { panic!("read {}: {error}", packaged_spec.display()) }),
+            fs::read(&workspace_spec)
+                .unwrap_or_else(|error| { panic!("read {}: {error}", workspace_spec.display()) }),
             "packaged spec {} is out of sync; copy spec/generated/*.json into crates/swc/spec/generated/",
             name.to_string_lossy(),
         );

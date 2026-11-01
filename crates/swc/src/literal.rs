@@ -1,16 +1,27 @@
-//! Decoder for the HBC-96 serialized literal value buffer.
+//! Decoder for versioned Hermes serialized literal value buffers.
 
 use crate::Error;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiteralValue {
     Null,
+    Undefined,
     Bool(bool),
     Number(f64),
     String(u32),
 }
 
+#[cfg(test)]
 pub fn decode_buffer(buffer: &[u8], offset: u32, count: u32) -> Result<Vec<LiteralValue>, Error> {
+    decode_buffer_for_version(buffer, offset, count, 96)
+}
+
+pub fn decode_buffer_for_version(
+    buffer: &[u8],
+    offset: u32,
+    count: u32,
+    version: u32,
+) -> Result<Vec<LiteralValue>, Error> {
     let mut cursor = usize::try_from(offset)
         .map_err(|_| Error::Bytecode("literal buffer offset does not fit this platform".into()))?;
     if cursor > buffer.len() {
@@ -59,8 +70,9 @@ pub fn decode_buffer(buffer: &[u8], offset: u32, count: u32) -> Result<Vec<Liter
                     values.push(LiteralValue::String(u32::from(u16::from_le_bytes(bytes))));
                 }
             }
-            // HBC 96 uses tag 6 for one-byte string IDs. Later Hermes
-            // versions repurposed it for undefined values.
+            0x60 if version >= 98 => {
+                values.extend((0..take).map(|_| LiteralValue::Undefined));
+            }
             0x60 => {
                 for _ in 0..take {
                     values.push(LiteralValue::String(u32::from(
