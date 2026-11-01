@@ -52,21 +52,36 @@ been replaced by the committed Box2D CLI round-trip test and focused assembler
 regressions.
 
 The SWC module adds self-contained source/AST and bytecode tests plus optional
-execution tests requiring both `HERMESC_BIN` and `HERMES_BIN`. See
-[the module instructions](../crates/swc/README.md). Set all three toolchain
-variables when running the full workspace with `--include-ignored`.
+execution tests requiring matching Hermes compilers and runtimes. See
+[the module instructions](../crates/swc/README.md).
 
-Its corpus roundtrip test recursively compiles 12 focused JavaScript fixtures
-and 49 deterministic generated programs with `hermesc` at `-O0` and `-O`, for
-122 cases. The programs include calculation kernels, language and runtime
-features, and several size stress families. Each reference is rebuilt through
-Mercury's HBC-to-SWC-to-native-HBC path and must produce the same status, stdout,
-and normalized stderr. Run it directly with:
+For each bytecode version, its corpus roundtrip test recursively compiles 12
+focused JavaScript fixtures and 49 deterministic generated programs with
+`hermesc` at `-O0` and `-O`, for 122 cases. The programs include calculation
+kernels, language and runtime features, and several size stress families. Each
+reference is rebuilt through Mercury's HBC-to-SWC-to-native-HBC path and must
+produce the same status, stdout, and normalized stderr. Run the HBC 96 matrix
+with:
 
 ```sh
-HERMESC_BIN=/absolute/path/to/hermesc HERMES_BIN=/absolute/path/to/hermes \
-  cargo test -p mercury-hbc --test corpus_roundtrip -- --ignored
+HERMESC_BIN=/absolute/path/to/hermesc96 HERMES_BIN=/absolute/path/to/hermes96 \
+  cargo test --locked -p mercury-hbc --test corpus_roundtrip \
+  hermesc_javascript_corpus_roundtrips_with_identical_execution -- --ignored --nocapture
 ```
 
-`MERCURY_JS_CORPUS` can point at a larger standalone JavaScript corpus; see the
-module README for filtering and limiting controls.
+Run HBC 98 separately with its matching toolchain:
+
+```sh
+HERMESC_BIN=/absolute/path/to/hermesc98 HERMES98_BIN=/absolute/path/to/hermes98 \
+  cargo test --locked -p mercury-hbc --test corpus_roundtrip \
+  hermesc_hbc98_javascript_corpus_roundtrips_with_identical_execution -- --ignored --nocapture
+```
+
+Both commands run `-O0` and `-O` unless `MERCURY_HERMESC_MODES` overrides the
+modes. `MERCURY_JS_CORPUS` can point at a larger standalone JavaScript corpus;
+see the module README for filtering and limiting controls.
+
+The [HBC corpus workflow](../.github/workflows/hbc-corpus.yml) runs both jobs on
+GitHub Actions. Each job builds `hermesc` and `hermes` from the same immutable
+Hermes commit recorded in the workflow, verifies the reported HBC version, and
+runs all 122 cases.

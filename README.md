@@ -215,6 +215,8 @@ Runtime and external-oracle tests are opt-in. They use `HERMES_BIN`,
 combinations of committed JavaScript programs and Hermes optimization modes,
 comparing execution before and after HBC-to-SWC-to-HBC reconstruction.
 See [fixture and test instructions](test/README.md) for reproducible commands.
+The HBC corpus GitHub Actions workflow builds each matching compiler/runtime pair
+from a pinned Hermes commit and runs both optimization modes for both versions.
 
 ## Regenerating bytecode specs
 

@@ -1,0 +1,69 @@
+name: HBC corpus
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hbc-corpus-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  roundtrip:
+    name: HBC ${{ matrix.version }} at -O0 and -O
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 96
+            commit: 4b3bf912cc0f705b51b71ce1a5b8bd79b93a451b
+            test: hermesc_javascript_corpus_roundtrips_with_identical_execution
+          - version: 98
+            commit: 40b4c8d4e22ed2b9af46aba81aec3ca8aa5e169c
+            test: hermesc_hbc98_javascript_corpus_roundtrips_with_identical_execution
+    steps:
+      - name: Check out Mercury
+        uses: actions/checkout@v4
+
+      - name: Check out pinned Hermes
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/hermes
+          ref: ${{ matrix.commit }}
+          path: hermes-source
+
+      - name: Cache Hermes build
+        uses: actions/cache@v4
+        with:
+          path: hermes-build
+          key: hermes-${{ runner.os }}-${{ matrix.version }}-${{ matrix.commit }}-v1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure Hermes
+        run: cmake -S hermes-source -B hermes-build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build matching Hermes tools
+        run: cmake --build hermes-build --target hermes hermesc --parallel 2
+
+      - name: Verify Hermes bytecode versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          hermes-build/bin/hermesc -version 2>&1 | grep -F "HBC bytecode version: ${{ matrix.version }}"
+          hermes-build/bin/hermes -version 2>&1 | grep -F "HBC bytecode version: ${{ matrix.version }}"
+
+      - name: Run both optimization modes
+        env:
+          HERMESC_BIN: ${{ github.workspace }}/hermes-build/bin/hermesc
+          HERMES_BIN: ${{ github.workspace }}/hermes-build/bin/hermes
+          HERMES98_BIN: ${{ github.workspace }}/hermes-build/bin/hermes
+          MERCURY_HERMESC_MODES: -O0,-O
+        run: cargo test --locked -p mercury-hbc --test corpus_roundtrip ${{ matrix.test }} -- --ignored --nocapture
