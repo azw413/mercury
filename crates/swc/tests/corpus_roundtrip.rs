@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, ExitStatus, Output},
 };
 
 use mercury_hbc::{HbcCompiler, decompile};
@@ -9,6 +9,7 @@ use mercury_hbc::{HbcCompiler, decompile};
 #[derive(Debug, PartialEq, Eq)]
 struct Observation {
     code: Option<i32>,
+    signal: Option<i32>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
 }
@@ -192,9 +193,21 @@ fn execute(
 fn observation(output: Output, temporary_root: &Path) -> Observation {
     Observation {
         code: output.status.code(),
+        signal: termination_signal(&output.status),
         stdout: output.stdout,
         stderr: normalize_stderr(output.stderr, temporary_root),
     }
+}
+
+#[cfg(unix)]
+fn termination_signal(status: &ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn termination_signal(_status: &ExitStatus) -> Option<i32> {
+    None
 }
 
 fn normalize_stderr(stderr: Vec<u8>, temporary_root: &Path) -> Vec<u8> {
@@ -216,8 +229,9 @@ fn normalize_stderr(stderr: Vec<u8>, temporary_root: &Path) -> Vec<u8> {
 
 fn describe(observation: &Observation) -> String {
     format!(
-        "status={:?}, stdout={:?}, stderr={:?}",
+        "status={:?}, signal={:?}, stdout={:?}, stderr={:?}",
         observation.code,
+        observation.signal,
         String::from_utf8_lossy(&observation.stdout),
         String::from_utf8_lossy(&observation.stderr),
     )
