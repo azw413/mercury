@@ -163,11 +163,31 @@ fn roundtrip_fixture(
     let candidate = execute(hermes, &rebuilt_path, directory.path(), version)?;
 
     if candidate != reference {
+        preserve_artifacts(path, optimization, directory.path())?;
         return Err(format!(
             "execution differs\nreference: {}\nrebuilt:   {}",
             describe(&reference),
             describe(&candidate),
         ));
+    }
+    Ok(())
+}
+
+fn preserve_artifacts(source: &Path, optimization: &str, temporary: &Path) -> Result<(), String> {
+    let Some(root) = env::var_os("MERCURY_CORPUS_ARTIFACTS") else {
+        return Ok(());
+    };
+    let root = PathBuf::from(root);
+    fs::create_dir_all(&root).map_err(|error| format!("creating artifact directory: {error}"))?;
+    let stem = source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("corpus");
+    let optimization = optimization.trim_start_matches('-');
+    for name in ["original.hbc", "rebuilt.hbc"] {
+        let destination = root.join(format!("{stem}-{optimization}-{name}"));
+        fs::copy(temporary.join(name), &destination)
+            .map_err(|error| format!("preserving {}: {error}", destination.display()))?;
     }
     Ok(())
 }

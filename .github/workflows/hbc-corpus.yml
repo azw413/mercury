@@ -42,8 +42,10 @@ jobs:
         id: hermes-cache
         uses: actions/cache/restore@v4
         with:
-          path: hermes-build
-          key: hermes-${{ runner.os }}-${{ matrix.version }}-${{ matrix.commit }}-v1
+          path: |
+            hermes-source
+            hermes-build
+          key: hermes-${{ runner.os }}-${{ matrix.version }}-${{ matrix.commit }}-v2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -58,8 +60,10 @@ jobs:
         if: always() && steps.hermes-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: hermes-build
-          key: hermes-${{ runner.os }}-${{ matrix.version }}-${{ matrix.commit }}-v1
+          path: |
+            hermes-source
+            hermes-build
+          key: hermes-${{ runner.os }}-${{ matrix.version }}-${{ matrix.commit }}-v2
 
       - name: Verify Hermes bytecode versions
         shell: bash
@@ -75,4 +79,12 @@ jobs:
           HERMES98_BIN: ${{ github.workspace }}/hermes-build/bin/hermes
           MERCURY_HERMESC_MODES: -O0,-O
           MERCURY_JS_CORPUS_FILTER: ${{ matrix.version == 98 && 'many_functions_64.js' || '' }}
+          MERCURY_CORPUS_ARTIFACTS: ${{ github.workspace }}/target/corpus-artifacts
         run: cargo test --locked -p mercury-hbc --test corpus_roundtrip ${{ matrix.test }} -- --ignored --nocapture
+
+      - name: Upload failing HBC 98 artifacts
+        if: failure() && matrix.version == 98
+        uses: actions/upload-artifact@v4
+        with:
+          name: hbc98-corpus-failure
+          path: target/corpus-artifacts
