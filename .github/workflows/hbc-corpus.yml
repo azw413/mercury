@@ -38,8 +38,9 @@ jobs:
           ref: ${{ matrix.commit }}
           path: hermes-source
 
-      - name: Cache Hermes build
-        uses: actions/cache@v4
+      - name: Restore Hermes build cache
+        id: hermes-cache
+        uses: actions/cache/restore@v4
         with:
           path: hermes-build
           key: hermes-${{ runner.os }}-${{ matrix.version }}-${{ matrix.commit }}-v1
@@ -53,6 +54,13 @@ jobs:
       - name: Build matching Hermes tools
         run: cmake --build hermes-build --target hermes hermesc --parallel 2
 
+      - name: Save Hermes build cache
+        if: always() && steps.hermes-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: hermes-build
+          key: hermes-${{ runner.os }}-${{ matrix.version }}-${{ matrix.commit }}-v1
+
       - name: Verify Hermes bytecode versions
         shell: bash
         run: |
@@ -60,10 +68,19 @@ jobs:
           hermes-build/bin/hermesc -version 2>&1 | grep -F "HBC bytecode version: ${{ matrix.version }}"
           hermes-build/bin/hermes -version 2>&1 | grep -F "HBC bytecode version: ${{ matrix.version }}"
 
+      - name: Prepare HBC 98 crash diagnostics
+        if: matrix.version == 98
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb
+          printf '%s\n' '#!/bin/sh' 'exec gdb -batch -ex run -ex "thread apply all bt" --args "$@"' > hermes-under-gdb
+          chmod +x hermes-under-gdb
+
       - name: Run both optimization modes
         env:
           HERMESC_BIN: ${{ github.workspace }}/hermes-build/bin/hermesc
           HERMES_BIN: ${{ github.workspace }}/hermes-build/bin/hermes
-          HERMES98_BIN: ${{ github.workspace }}/hermes-build/bin/hermes
+          HERMES98_BIN: ${{ matrix.version == 98 && format('{0}/hermes-under-gdb', github.workspace) || format('{0}/hermes-build/bin/hermes', github.workspace) }}
           MERCURY_HERMESC_MODES: -O0,-O
+          MERCURY_JS_CORPUS_FILTER: ${{ matrix.version == 98 && 'many_functions_64.js' || '' }}
         run: cargo test --locked -p mercury-hbc --test corpus_roundtrip ${{ matrix.test }} -- --ignored --nocapture
