@@ -38,6 +38,8 @@ pub struct MinimalModule {
     pub object_shape_table: Vec<ShapeTableEntry>,
     /// Compiled regex bytecode, indexed by `CreateRegExp`'s regexp operand.
     pub reg_exps: Vec<Vec<u8>>,
+    /// Number of `StringSwitchImm` instructions across all functions.
+    pub num_string_switch_imms: u32,
     pub functions: Vec<MinimalFunction>,
 }
 
@@ -91,6 +93,10 @@ pub struct MinimalFunction {
     pub strict_mode: bool,
     pub exception_handlers: Vec<ExceptionHandlerEntry>,
     pub instructions: Vec<DecodedInstruction>,
+    /// Table bytes appended after the function's opcodes (already aligned):
+    /// string-switch case tables in emission order. Not counted by
+    /// `bytecode_size_in_bytes`.
+    pub trailing_tables: Vec<u8>,
 }
 
 #[derive(Debug, Error)]
@@ -334,8 +340,19 @@ pub fn build_minimal_module(
         BYTECODE_ALIGNMENT,
     );
 
-    let function_bodies_end =
-        function_bodies_start + encoded_bodies.iter().map(Vec::len).sum::<usize>();
+    // Mirror the write loop: bodies carrying trailing tables start on a
+    // four-byte boundary and are followed by their table bytes.
+    let function_bodies_end = module.functions.iter().zip(encoded_bodies.iter()).fold(
+        function_bodies_start,
+        |offset, (function, body)| {
+            let offset = if function.trailing_tables.is_empty() {
+                offset
+            } else {
+                align_up(offset, 4)
+            };
+            offset + body.len() + function.trailing_tables.len()
+        },
+    );
     let function_infos_start = align_up(function_bodies_end, INFO_ALIGNMENT);
     let mut function_headers = build_function_headers(
         module,
@@ -377,8 +394,13 @@ pub fn build_minimal_module(
     bytes.extend_from_slice(&reg_exp_storage_bytes);
     pad_to(&mut bytes, function_bodies_start);
 
-    for body in &encoded_bodies {
+    for (body, function) in encoded_bodies.iter().zip(module.functions.iter()) {
+        if !function.trailing_tables.is_empty() {
+            let aligned = align_up(bytes.len(), 4);
+            pad_to(&mut bytes, aligned);
+        }
         bytes.extend_from_slice(body);
+        bytes.extend_from_slice(&function.trailing_tables);
     }
 
     pad_to(&mut bytes, function_infos_start);
@@ -415,7 +437,7 @@ pub fn build_minimal_module(
         obj_key_buffer_size: object_key_buffer_bytes.len() as u32,
         obj_value_buffer_size: object_value_buffer_bytes.len() as u32,
         obj_shape_table_count: module.object_shape_table.len() as u32,
-        num_string_switch_imms: 0,
+        num_string_switch_imms: module.num_string_switch_imms,
         segment_id: 0,
         cjs_module_count: 0,
         function_source_count: 0,
@@ -456,12 +478,18 @@ fn build_function_headers(
         .zip(function_name_ids.iter().copied())
         .zip(encoded_bodies.iter())
     {
+        // A trailing string-switch table is addressed with alignAddr(ip+off,
+        // 4), so the body itself must start on a four-byte boundary.
+        if !function.trailing_tables.is_empty() {
+            body_offset = align_up(body_offset as usize, 4) as u32;
+        }
         let read_cache = cache_metadata(&function.instructions, true, module.version);
         let write_cache = cache_metadata(&function.instructions, false, module.version);
         let header = FunctionHeader {
             offset: body_offset,
             param_count: function.param_count,
             bytecode_size_in_bytes: body.len() as u32,
+            // Trailing tables are excluded: this is the opcode byte count.
             function_name,
             info_offset: 0,
             frame_size: function.frame_size,
@@ -486,7 +514,9 @@ fn build_function_headers(
         };
 
         headers.push(header);
-        body_offset = body_offset.saturating_add(body.len() as u32);
+        body_offset = body_offset
+            .saturating_add(body.len() as u32)
+            .saturating_add(function.trailing_tables.len() as u32);
     }
 
     headers
@@ -851,6 +881,7 @@ mod tests {
     fn builds_and_reparses_minimal_hbc96_module() {
         let spec = load_spec(96).expect("embedded hbc96 spec");
         let module = MinimalModule {
+            num_string_switch_imms: 0,
             version: 96,
             global_code_index: 0,
             strings: vec!["encode".into(), "decode".into(), "".into()],
@@ -866,6 +897,7 @@ mod tests {
             reg_exps: Vec::new(),
             functions: vec![
                 MinimalFunction {
+                    trailing_tables: Vec::new(),
                     name: "global".into(),
                     param_count: 1,
                     frame_size: 3,
@@ -905,6 +937,7 @@ mod tests {
                     ],
                 },
                 MinimalFunction {
+                    trailing_tables: Vec::new(),
                     name: "encode".into(),
                     param_count: 2,
                     frame_size: 2,
@@ -974,6 +1007,7 @@ mod tests {
             },
         ];
         let module = MinimalModule {
+            num_string_switch_imms: 0,
             version: 98,
             global_code_index: 0,
             strings: vec![],
@@ -984,6 +1018,7 @@ mod tests {
             object_shape_table: shape_table.clone(),
             reg_exps: Vec::new(),
             functions: vec![MinimalFunction {
+                trailing_tables: Vec::new(),
                 name: "global".into(),
                 param_count: 32,
                 frame_size: 1,
@@ -1055,6 +1090,7 @@ mod tests {
             target: 4,
         };
         let module = MinimalModule {
+            num_string_switch_imms: 0,
             version: 96,
             global_code_index: 0,
             strings: vec![],
@@ -1065,6 +1101,7 @@ mod tests {
             object_shape_table: Vec::new(),
             reg_exps: Vec::new(),
             functions: vec![MinimalFunction {
+                trailing_tables: Vec::new(),
                 name: "global".into(),
                 param_count: 1,
                 frame_size: 1,
@@ -1125,6 +1162,7 @@ mod tests {
     fn builds_and_reparses_overflowed_function_headers() {
         let spec = load_spec(96).expect("embedded hbc96 spec");
         let module = MinimalModule {
+            num_string_switch_imms: 0,
             version: 96,
             global_code_index: 0,
             strings: vec![],
@@ -1135,6 +1173,7 @@ mod tests {
             object_shape_table: Vec::new(),
             reg_exps: Vec::new(),
             functions: vec![MinimalFunction {
+                trailing_tables: Vec::new(),
                 name: "global".into(),
                 param_count: 128,
                 frame_size: 1,
@@ -1187,6 +1226,7 @@ mod tests {
     fn restricted_global_operand_is_emitted_as_an_identifier() {
         let spec = load_spec(96).expect("embedded hbc96 spec");
         let module = MinimalModule {
+            num_string_switch_imms: 0,
             version: 96,
             global_code_index: 0,
             strings: vec!["undefined".into()],
@@ -1197,6 +1237,7 @@ mod tests {
             object_shape_table: Vec::new(),
             reg_exps: Vec::new(),
             functions: vec![MinimalFunction {
+                trailing_tables: Vec::new(),
                 name: "global".into(),
                 param_count: 1,
                 frame_size: 1,

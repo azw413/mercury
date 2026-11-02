@@ -14,6 +14,8 @@ pub enum LoweringError {
     MissingInstructionSpec { opcode: u16, name: String },
     #[error("invalid operand shape for instruction {name}")]
     InvalidOperandShape { name: String },
+    #[error("StringSwitchImm is not supported by the semantic IR")]
+    StringSwitchImm,
 }
 
 /// Lowers a decoded raw module into the stable semantic IR.
@@ -194,6 +196,8 @@ pub fn lower_instruction(
         throw
     } else if let Some(ret) = lower_return(raw, spec.operands.as_slice())? {
         ret
+    } else if raw.name == "StringSwitchImm" {
+        return Err(LoweringError::StringSwitchImm);
     } else {
         SemanticOp::Raw {
             mnemonic: raw.name.clone(),
@@ -1887,6 +1891,7 @@ mod tests {
                     overflowed: false,
                 },
                 switch_tables: vec![],
+                string_switch_tables: vec![],
                 exception_handlers: vec![],
                 instructions: vec![
                     RawInstruction {

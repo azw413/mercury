@@ -8,7 +8,7 @@ pub mod semantic;
 pub use lower::{LoweringError, lower_function, lower_instruction, lower_module};
 pub use raw::{
     RawExceptionHandler, RawFunction, RawFunctionFlags, RawInstruction, RawModule, RawOperand,
-    RawSectionBoundaries, RawSwitchTable,
+    RawSectionBoundaries, RawStringSwitchCase, RawStringSwitchTable, RawSwitchTable,
 };
 pub use semantic::{
     BinaryOpKind, BranchKind, ClosureKind, Immediate, PropertyAccessKind, PropertyDefineKind,

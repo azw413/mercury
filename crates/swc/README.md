@@ -249,8 +249,8 @@ HERMES98_BIN=/absolute/path/to/hermes98 \
   cargo test -p mercury-hbc --all-features -- --include-ignored
 ```
 
-For each version, the corpus harness covers 12 focused fixtures and 70 generated
-programs at `-O0` and `-O` — 164 cases for HBC 98, and 160 for HBC 96, where two
+For each version, the corpus harness covers 12 focused fixtures and 71 generated
+programs at `-O0` and `-O` — 166 cases for HBC 98, and 162 for HBC 96, where two
 fixtures use syntax only the newer compiler accepts. Each reference HBC is
 executed, decompiled to SWC, rebuilt with `HbcCompiler`, and executed again.
 Exit status, stdout, and normalized stderr must match. See the workspace

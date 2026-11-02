@@ -96,6 +96,7 @@ fn build_test_module(strings: Vec<String>, functions: Vec<MinimalFunction>) -> V
     let spec = load_spec(96).unwrap();
     build_minimal_module(
         &MinimalModule {
+            num_string_switch_imms: 0,
             version: 96,
             global_code_index: 0,
             strings: strings.into_iter().map(Into::into).collect(),
@@ -617,6 +618,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
         vec![],
         vec![
             MinimalFunction {
+                trailing_tables: Vec::new(),
                 name: "global".into(),
                 param_count: 1,
                 frame_size: 14,
@@ -645,6 +647,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
                 ],
             },
             MinimalFunction {
+                trailing_tables: Vec::new(),
                 name: "captured".into(),
                 param_count: 1,
                 frame_size: 1,
@@ -672,6 +675,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
             vec![],
             vec![
                 MinimalFunction {
+                    trailing_tables: Vec::new(),
                     name: "global".into(),
                     param_count: 1,
                     frame_size: 10,
@@ -687,6 +691,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
                     ],
                 },
                 MinimalFunction {
+                    trailing_tables: Vec::new(),
                     name: "direct".into(),
                     param_count: 2,
                     frame_size: 1,
@@ -709,6 +714,7 @@ fn remaining_vm_opcodes_preserve_environments_calls_tdz_and_global_writes() {
     let tdz = build_test_module(
         vec![],
         vec![MinimalFunction {
+            trailing_tables: Vec::new(),
             name: "global".into(),
             param_count: 1,
             frame_size: 2,
@@ -743,6 +749,7 @@ fn typed_arithmetic_and_memory_opcodes_preserve_i32_and_view_semantics() {
             "stores".into(),
         ],
         vec![MinimalFunction {
+            trailing_tables: Vec::new(),
             name: "global".into(),
             param_count: 1,
             frame_size: 40,
@@ -879,6 +886,7 @@ fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
     let configurable = build_test_module(
         vec!["permitted".into()],
         vec![MinimalFunction {
+            trailing_tables: Vec::new(),
             name: "global".into(),
             param_count: 1,
             frame_size: 2,
@@ -905,6 +913,7 @@ fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
     let restricted = build_test_module(
         vec!["undefined".into()],
         vec![MinimalFunction {
+            trailing_tables: Vec::new(),
             name: "global".into(),
             param_count: 1,
             frame_size: 1,
@@ -933,6 +942,7 @@ fn restricted_globals_and_unreachable_preserve_failure_boundaries() {
     let unreachable = build_test_module(
         vec![],
         vec![MinimalFunction {
+            trailing_tables: Vec::new(),
             name: "global".into(),
             param_count: 1,
             frame_size: 1,

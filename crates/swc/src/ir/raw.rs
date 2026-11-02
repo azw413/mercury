@@ -27,6 +27,7 @@ pub struct RawFunction {
     pub flags: RawFunctionFlags,
     pub instructions: Vec<RawInstruction>,
     pub switch_tables: Vec<RawSwitchTable>,
+    pub string_switch_tables: Vec<RawStringSwitchTable>,
     pub exception_handlers: Vec<RawExceptionHandler>,
 }
 
@@ -76,4 +77,20 @@ pub enum RawOperand {
     I8(i8),
     I32(i32),
     F64(f64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// String-keyed case table of a `StringSwitchImm` instruction (HBC 98).
+pub struct RawStringSwitchTable {
+    pub instruction_offset: u32,
+    pub global_index: u32,
+    pub cases: Vec<RawStringSwitchCase>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One `StringSwitchTableCase` entry: a string id and a signed displacement
+/// relative to the instruction start.
+pub struct RawStringSwitchCase {
+    pub string_id: u32,
+    pub displacement: i32,
 }

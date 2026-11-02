@@ -6,6 +6,7 @@ use std::{
 use crate::binary::{
     DecodedInstruction, DecodedOperand, ExceptionHandlerEntry, HbcString, MinimalFunction,
     MinimalModule, ShapeTableEntry, StringKind, build_minimal_module, encode_instruction,
+    write_string_switch_cases,
 };
 use crate::spec::BytecodeSpec;
 use crate::{literal::LiteralValue, regex as mercury_regex, spec_builtin as mercury_spec_builtin};
@@ -117,6 +118,13 @@ struct Compiler {
     /// Set while recompiling a function that ran out of registers: every
     /// binding then lives in an environment slot, as before register storage.
     register_bindings_disabled: bool,
+    /// File-wide count of `StringSwitchImm` instructions emitted so far.
+    string_switch_count: u32,
+    /// String-switch tables emitted by the current function.
+    pending_string_switches: Vec<PendingStringSwitchTable>,
+    /// Aligned, serialized string-switch case tables appended after the
+    /// function's opcode bytes.
+    string_switch_bytes: Vec<u8>,
 }
 
 enum BufferedLiteral {
@@ -368,6 +376,14 @@ struct PendingBranch {
     target: usize,
 }
 
+/// One `StringSwitchImm` whose case table and default target resolve once
+/// every instruction offset is final.
+struct PendingStringSwitchTable {
+    default_label: usize,
+    /// `(string_id, target label)` in table order.
+    cases: Vec<(u32, usize)>,
+}
+
 #[derive(Clone, Copy)]
 struct PendingFrameMove {
     instruction: usize,
@@ -484,6 +500,9 @@ impl Compiler {
             captured_names: HashSet::new(),
             redirect_definition_on_store: false,
             register_bindings_disabled: false,
+            string_switch_count: 0,
+            pending_string_switches: Vec::new(),
+            string_switch_bytes: Vec::new(),
         }
     }
 
@@ -575,6 +594,7 @@ impl Compiler {
         let module = MinimalModule {
             version: self.version,
             global_code_index: 0,
+            num_string_switch_imms: self.string_switch_count,
             strings: self.strings,
             string_kinds: self.string_kinds,
             literal_value_buffer: self.literal_value_buffer,
@@ -961,6 +981,7 @@ impl Compiler {
         let template_objects = self.template_object_ids.clone();
         let pending_functions = self.pending_functions.len();
         let next_function_id = self.next_function_id;
+        let string_switch_count = self.string_switch_count;
         match self.compile_pending_function(pending.clone(), spec) {
             Err(Error::Unsupported(message)) if message == REGISTER_PRESSURE => {
                 self.strings.truncate(strings);
@@ -974,6 +995,7 @@ impl Compiler {
                 self.template_object_ids = template_objects;
                 self.pending_functions.truncate(pending_functions);
                 self.next_function_id = next_function_id;
+                self.string_switch_count = string_switch_count;
                 self.register_bindings_disabled = true;
                 let result = self.compile_pending_function(pending, spec);
                 self.register_bindings_disabled = false;
@@ -1275,6 +1297,7 @@ impl Compiler {
             strict_mode: self.current_function_strict,
             exception_handlers,
             instructions: std::mem::take(&mut self.instructions),
+            trailing_tables: std::mem::take(&mut self.string_switch_bytes),
         })
     }
 
@@ -1903,20 +1926,76 @@ impl Compiler {
             .position(|case| case.test.is_none())
             .map_or(end, |index| labels[index]);
 
-        for (case, label) in statement.cases.iter().zip(labels.iter().copied()) {
-            let Some(test) = &case.test else {
-                continue;
+        let emit_string_switch = self.version >= 98
+            && !matches!(&*statement.discriminant, Expr::Lit(_))
+            && statement
+                .cases
+                .iter()
+                .filter(|case| case.test.is_some())
+                .count()
+                >= 10
+            && {
+                // Hermes lowers to StringSwitchImm only when every case test
+                // is a distinct string literal.
+                let mut seen = HashSet::new();
+                let mut cases = Vec::new();
+                let mut qualifies = true;
+                for (case, label) in statement.cases.iter().zip(labels.iter().copied()) {
+                    let Some(test) = &case.test else { continue };
+                    let Expr::Lit(Lit::Str(string)) = &**test else {
+                        qualifies = false;
+                        break;
+                    };
+                    let value = match string.value.as_str() {
+                        Some(value) => HbcString::from(value),
+                        None => HbcString::Utf16(string.value.to_ill_formed_utf16().collect()),
+                    };
+                    if !seen.insert(value.clone()) {
+                        qualifies = false;
+                        break;
+                    }
+                    match self.intern(value, StringKind::String) {
+                        Ok(id) => cases.push((id, label)),
+                        Err(error) => return Err(error),
+                    }
+                }
+                if qualifies {
+                    self.emit(
+                        "StringSwitchImm",
+                        vec![
+                            reg(discriminant),
+                            DecodedOperand::U32(self.string_switch_count),
+                            DecodedOperand::U32(0),
+                            DecodedOperand::I32(0),
+                            DecodedOperand::U32(cases.len() as u32),
+                        ],
+                    );
+                    self.pending_string_switches.push(PendingStringSwitchTable {
+                        default_label: default,
+                        cases,
+                    });
+                    self.string_switch_count += 1;
+                }
+                qualifies
             };
-            let comparison = self.compile_expression(test)?;
-            self.emit(
-                "StrictEq",
-                vec![reg(comparison), reg(discriminant), reg(comparison)],
-            );
-            self.emit_branch("JmpTrueLong", label, Some(comparison));
-            self.release_register(comparison)?;
+        if emit_string_switch {
+            self.release_register(discriminant)?;
+        } else {
+            for (case, label) in statement.cases.iter().zip(labels.iter().copied()) {
+                let Some(test) = &case.test else {
+                    continue;
+                };
+                let comparison = self.compile_expression(test)?;
+                self.emit(
+                    "StrictEq",
+                    vec![reg(comparison), reg(discriminant), reg(comparison)],
+                );
+                self.emit_branch("JmpTrueLong", label, Some(comparison));
+                self.release_register(comparison)?;
+            }
+            self.release_register(discriminant)?;
+            self.emit_branch("JmpLong", default, None);
         }
-        self.release_register(discriminant)?;
-        self.emit_branch("JmpLong", default, None);
 
         self.break_targets.push(ControlTarget {
             label: end,
@@ -5070,6 +5149,67 @@ impl Compiler {
                     Error::Bytecode("short branch displacement exceeds HBC 96".into())
                 })?)
             };
+        }
+
+        let string_switch_instructions = self
+            .instructions
+            .iter()
+            .enumerate()
+            .filter(|(_, instruction)| instruction.name == "StringSwitchImm")
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        for (pending, instruction_index) in self
+            .pending_string_switches
+            .drain(..)
+            .zip(string_switch_instructions.iter().copied())
+        {
+            let instruction_offset = offsets[instruction_index];
+            let default_target = self
+                .labels
+                .get(pending.default_label)
+                .and_then(|target| *target)
+                .ok_or_else(|| Error::Bytecode("native compiler left a label unresolved".into()))?;
+            let default =
+                i32::try_from(i64::from(offsets[default_target]) - i64::from(instruction_offset))
+                    .map_err(|_| Error::Unsupported("string switch target exceeds HBC".into()))?;
+            // Hermes places the tables right after the opcode bytes, padded
+            // to a four-byte boundary; the table offset operand is relative
+            // to the instruction start.
+            let table_start = (self.string_switch_bytes.len()
+                + usize::try_from(offsets[offsets.len() - 1]).unwrap()
+                + 3)
+                & !3;
+            let pad = table_start
+                - usize::try_from(offsets[offsets.len() - 1]).unwrap()
+                - self.string_switch_bytes.len();
+            self.string_switch_bytes
+                .resize(self.string_switch_bytes.len() + pad, 0);
+            let table_offset = u32::try_from(table_start - instruction_offset as usize)
+                .map_err(|_| Error::Unsupported("string switch table offset exceeds HBC".into()))?;
+            let mut cases = Vec::with_capacity(pending.cases.len());
+            for (string_id, label) in pending.cases {
+                let target = self
+                    .labels
+                    .get(label)
+                    .and_then(|target| *target)
+                    .ok_or_else(|| {
+                        Error::Bytecode("native compiler left a label unresolved".into())
+                    })?;
+                let displacement =
+                    i32::try_from(i64::from(offsets[target]) - i64::from(instruction_offset))
+                        .map_err(|_| {
+                            Error::Unsupported("string switch target exceeds HBC".into())
+                        })?;
+                cases.push(crate::ir::RawStringSwitchCase {
+                    string_id,
+                    displacement,
+                });
+            }
+            self.string_switch_bytes
+                .extend_from_slice(&write_string_switch_cases(&cases));
+            let instruction = &mut self.instructions[instruction_index];
+            instruction.operands[2] = DecodedOperand::U32(table_offset);
+            instruction.operands[3] = DecodedOperand::I32(default);
         }
 
         for (index, instruction) in self.instructions.iter_mut().enumerate() {

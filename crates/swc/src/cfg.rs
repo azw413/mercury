@@ -74,6 +74,28 @@ pub fn blocks(function: &RawFunction) -> Result<Vec<Block<'_>>, Error> {
             }
             leaders.insert(dest);
         }
+        if op.name == "StringSwitchImm" {
+            let table = function
+                .string_switch_tables
+                .iter()
+                .find(|table| table.instruction_offset == op.offset)
+                .ok_or_else(|| Error::Bytecode(format!("missing switch table at {}", op.offset)))?;
+            let mut targets = table
+                .cases
+                .iter()
+                .map(|case| switch_target(op.offset, case.displacement))
+                .collect::<Result<Vec<_>, _>>()?;
+            targets.push(relative_target(op, 3)?);
+            for dest in targets {
+                if !offsets.contains_key(&dest) {
+                    return Err(Error::Bytecode(format!(
+                        "switch at {} targets non-instruction {dest}",
+                        op.offset
+                    )));
+                }
+                leaders.insert(dest);
+            }
+        }
         if matches!(op.name.as_str(), "SwitchImm" | "UIntSwitchImm") {
             let table = function
                 .switch_tables
@@ -97,7 +119,10 @@ pub fn blocks(function: &RawFunction) -> Result<Vec<Block<'_>>, Error> {
             }
         }
         if (op.name.starts_with('J')
-            || matches!(op.name.as_str(), "SwitchImm" | "UIntSwitchImm")
+            || matches!(
+                op.name.as_str(),
+                "SwitchImm" | "UIntSwitchImm" | "StringSwitchImm"
+            )
             || matches!(op.name.as_str(), "Ret" | "Throw"))
             && i + 1 < function.instructions.len()
         {

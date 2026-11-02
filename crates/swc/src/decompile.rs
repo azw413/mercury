@@ -101,17 +101,21 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let h = &container.header;
     // The async bit records the presence of async functions; unlike static
     // builtins and statically resolved modules it does not change opcode meaning.
-    if h.options.raw & !0b100 != 0
-        || h.cjs_module_count != 0
-        || h.segment_id != 0
-        || h.num_string_switch_imms != 0
-    {
-        return Err(Error::Unsupported(
-            "bytecode options, modules or string-switch tables".into(),
-        ));
+    if h.options.raw & !0b100 != 0 || h.cjs_module_count != 0 || h.segment_id != 0 {
+        return Err(Error::Unsupported("bytecode options or modules".into()));
     }
     let raw = decode_raw_module(&container, bytes, &spec.bytecode)
         .map_err(|e| Error::Bytecode(e.to_string()))?;
+    for function in &raw.functions {
+        for table in &function.string_switch_tables {
+            if table.global_index >= h.num_string_switch_imms {
+                return Err(Error::Bytecode(format!(
+                    "StringSwitchImm global index {} exceeds header count {}",
+                    table.global_index, h.num_string_switch_imms
+                )));
+            }
+        }
+    }
     if h.global_code_index as usize >= raw.functions.len() {
         return Err(Error::Bytecode("invalid entry function".into()));
     }
@@ -1140,7 +1144,59 @@ impl Lower<'_> {
             let mut stmts = Vec::new();
             let mut terminated = false;
             for op in block.instructions {
-                if matches!(op.name.as_str(), "SwitchImm" | "UIntSwitchImm") {
+                if op.name == "StringSwitchImm" {
+                    let table = f
+                        .string_switch_tables
+                        .iter()
+                        .find(|table| table.instruction_offset == op.offset)
+                        .ok_or_else(|| unsupported(f, op, "missing string switch table"))?;
+                    // The runtime builds `table[str] = target` on string
+                    // content, so a duplicated label keeps only its last
+                    // entry even when distinct ids share the text.
+                    let labels = table
+                        .cases
+                        .iter()
+                        .map(|case| self.string(case.string_id))
+                        .collect::<Result<Vec<_>, Error>>()?;
+                    let mut survivors = std::collections::HashMap::new();
+                    for (label, case) in labels.iter().zip(table.cases.iter()) {
+                        survivors.insert(label, case);
+                    }
+                    let mut switch_cases = labels
+                        .iter()
+                        .zip(table.cases.iter())
+                        .filter(|(label, case)| survivors[label] == *case)
+                        .map(|(label, case)| {
+                            Ok(SwitchCase {
+                                span: DUMMY_SP,
+                                test: Some(b::wtf8_string(label.clone())),
+                                cons: vec![
+                                    set_pc(cfg::switch_target(op.offset, case.displacement)?),
+                                    Stmt::Break(BreakStmt {
+                                        span: DUMMY_SP,
+                                        label: None,
+                                    }),
+                                ],
+                            })
+                        })
+                        .collect::<Result<Vec<_>, Error>>()?;
+                    switch_cases.push(SwitchCase {
+                        span: DUMMY_SP,
+                        test: None,
+                        cons: vec![set_pc(cfg::relative_target(op, 3)?)],
+                    });
+                    stmts.push(Stmt::Switch(SwitchStmt {
+                        span: DUMMY_SP,
+                        body_ctxt: SyntaxContext::empty(),
+                        discriminant: register(f, op, 0)?,
+                        cases: switch_cases,
+                    }));
+                    stmts.push(Stmt::Continue(ContinueStmt {
+                        span: DUMMY_SP,
+                        label: None,
+                    }));
+                    terminated = true;
+                } else if matches!(op.name.as_str(), "SwitchImm" | "UIntSwitchImm") {
                     let table = f
                         .switch_tables
                         .iter()

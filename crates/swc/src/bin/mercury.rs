@@ -253,12 +253,14 @@ fn build_minimal_module_from_semantic(
             strict_mode: false,
             exception_handlers: Vec::new(),
             instructions: raised.instructions.clone(),
+            trailing_tables: Vec::new(),
         })
         .collect();
 
     MinimalModule {
         version: target_version,
         global_code_index: 0,
+        num_string_switch_imms: 0,
         strings: raised.strings.iter().cloned().map(Into::into).collect(),
         string_kinds: raised
             .strings
@@ -385,6 +387,20 @@ fn render_raw_module(
                 instruction.name,
                 render_operands(function, instruction, raw, container, spec, &labels)
             );
+            if instruction.name == "StringSwitchImm" {
+                if let Some(table) = function
+                    .string_switch_tables
+                    .iter()
+                    .find(|table| table.instruction_offset == instruction.offset)
+                {
+                    for case in &table.cases {
+                        let label = resolve_string(case.string_id, container)
+                            .unwrap_or_else(|| format!("?{}", case.string_id));
+                        let target = instruction.offset as i64 + i64::from(case.displacement);
+                        let _ = writeln!(out, "    case {label:?} -> {target:04x}");
+                    }
+                }
+            }
         }
 
         let _ = writeln!(out, ".end");

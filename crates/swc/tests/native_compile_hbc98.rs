@@ -443,3 +443,198 @@ fn execute(bytes: Vec<u8>) -> String {
     );
     String::from_utf8(output.stdout).unwrap()
 }
+
+fn switch_source(cases: usize, discriminant: &str, extra: &str) -> String {
+    let mut body = String::from("switch (") + discriminant + ") {\n";
+    for index in 0..cases {
+        body += &format!("  case \"k{index}\": return {index};\n");
+    }
+    body + "  default: return -1;\n}\n" + extra
+}
+
+fn switch_program(cases: usize) -> String {
+    format!(
+        "function f(key) {{\n{}}}\nf(\"k3\");\n",
+        switch_source(cases, "key", "")
+    )
+}
+
+#[test]
+fn compiles_wide_string_switches_to_string_switch_imm() {
+    let bytes = compile(&switch_program(12));
+    let (container, raw) = decode(&bytes);
+
+    assert_eq!(container.header.num_string_switch_imms, 1);
+    let function = raw
+        .functions
+        .iter()
+        .find(|f| !f.string_switch_tables.is_empty())
+        .expect("a function containing StringSwitchImm");
+    assert_eq!(
+        instruction_names(function)
+            .iter()
+            .filter(|name| **name == "StringSwitchImm")
+            .count(),
+        1
+    );
+    let table = &function.string_switch_tables[0];
+    assert_eq!(table.global_index, 0);
+    assert_eq!(table.cases.len(), 12);
+    // Header bytecode size covers only opcode bytes, not the table.
+    let opcode_end = function
+        .instructions
+        .last()
+        .map(|i| i.offset + i.size as u32)
+        .unwrap();
+    assert_eq!(function.bytecode_size_in_bytes, opcode_end);
+    // Every case target lands on an instruction boundary.
+    let offsets: std::collections::BTreeSet<u32> =
+        function.instructions.iter().map(|i| i.offset).collect();
+    for case in &table.cases {
+        let target = (i64::from(table.instruction_offset) + i64::from(case.displacement)) as u32;
+        assert!(offsets.contains(&target), "case target {target} misaligned");
+    }
+}
+
+#[test]
+fn assigns_string_switch_indices_across_functions() {
+    let cases = (0..11)
+        .map(|i| format!("case \"k{i}\": return {i};"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let source = format!(
+        "function f(k) {{ switch (k) {{ {cases} default: return -1; }} }}\n\
+         function g(k) {{ switch (k) {{ {cases} default: return -1; }}\n\
+         switch (k + \"x\") {{ {cases} default: return -1; }} }}\n\
+         f(\"k1\"); g(\"k2\");\n"
+    );
+    let bytes = compile(&source);
+    let (container, raw) = decode(&bytes);
+    assert_eq!(container.header.num_string_switch_imms, 3);
+    let indices: Vec<u32> = raw
+        .functions
+        .iter()
+        .flat_map(|f| f.string_switch_tables.iter())
+        .map(|t| t.global_index)
+        .collect();
+    assert_eq!(indices, vec![0, 1, 2]);
+}
+
+#[test]
+fn keeps_chain_comparison_for_non_qualifying_switches() {
+    for source in [
+        switch_program(9),                                     // too few cases
+        "function f(k) { switch (k) { case \"a\": return 1; case \"b\": return 2; case \"c\": return 3; case \"d\": return 4; case \"e\": return 5; case \"f\": return 6; case \"g\": return 7; case \"h\": return 8; case \"a\": return 9; case \"i\": return 10; default: return -1; } } f(\"a\");".into(), // duplicate label
+        "function f(k) { switch (k) { case \"a\": return 1; case \"b\": return 2; case \"c\": return 3; case \"d\": return 4; case \"e\": return 5; case \"f\": return 6; case \"g\": return 7; case \"h\": return 8; case \"i\": return 9; case 1: return 10; default: return -1; } } f(1);".into(), // mixed
+        "function f() { switch (\"x\") { case \"a\": return 1; case \"b\": return 2; case \"c\": return 3; case \"d\": return 4; case \"e\": return 5; case \"f\": return 6; case \"g\": return 7; case \"h\": return 8; case \"i\": return 9; case \"j\": return 10; default: return -1; } } f();".into(), // literal discriminant
+    ] {
+        let (_, raw) = decode(&compile(&source));
+        assert!(
+            !raw.functions
+                .iter()
+                .flat_map(|f| instruction_names(f))
+                .any(|n| n == "StringSwitchImm"),
+            "{source}"
+        );
+    }
+    // HBC 96 target never emits it either.
+    let module = SwcModule::parse(
+        "input.js",
+        &switch_program(12),
+        SourceLanguage::JavaScript,
+        SourceKind::Script,
+    )
+    .unwrap();
+    let bytes96 = mercury_hbc::HbcCompiler::new(96).compile(&module).unwrap();
+    let spec96 = load_spec(96).unwrap();
+    let container96 = parse_hbc_container_with_spec(&bytes96, &spec96.container).unwrap();
+    let raw96 = decode_raw_module(&container96, &bytes96, &spec96.bytecode).unwrap();
+    assert!(
+        !raw96
+            .functions
+            .iter()
+            .flat_map(|f| instruction_names(f))
+            .any(|n| n == "StringSwitchImm")
+    );
+}
+
+#[test]
+fn string_switch_imm_survives_a_decompile_rebuild_roundtrip() {
+    let bytes = compile(&switch_program(12));
+    let rebuilt = mercury_hbc::HbcCompiler::new(98)
+        .compile(&mercury_hbc::decompile(&bytes).unwrap())
+        .unwrap();
+    let (container, raw) = decode(&rebuilt);
+    assert_eq!(container.header.num_string_switch_imms, 1);
+    assert_eq!(
+        raw.functions
+            .iter()
+            .flat_map(|f| f.string_switch_tables.iter())
+            .map(|t| t.cases.len())
+            .sum::<usize>(),
+        12
+    );
+}
+
+#[test]
+#[ignore = "requires HERMES98_BIN pointing to an HBC 98 runtime"]
+fn executes_native_string_switches_with_identical_semantics() {
+    let source = r#"
+function classify(key) {
+  switch (key) {
+    case "alpha": return 1;
+    case "beta": return 2;
+    case "gamma": return 3;
+    case "delta": return 4;
+    case "epsilon": return 5;
+    default: return -1;
+    case "zeta": return 6;
+    case "eta": return 7;
+    case "theta": return 8;
+    case "iota": return 9;
+    case "kappa": return 10;
+  }
+}
+function pair(a, b) {
+  switch (a) {
+    case "s0": case "s1": case "s2": case "s3": case "s4":
+    case "s5": case "s6": case "s7": case "s8": case "s9":
+      switch (b) {
+        case "t0": case "t1": case "t2": case "t3": case "t4":
+        case "t5": case "t6": case "t7": case "t8": case "t9":
+          return a + b;
+        default: return "inner";
+      }
+    default: return "outer";
+  }
+}
+var inputs = ["beta", "zeta", "kappa", "missing", 7, null, new String("gamma"), "alpha"];
+for (var i = 0; i < inputs.length; i++) {
+  if (inputs[i] === "beta") continue;
+  print(classify(inputs[i]));
+}
+print(pair("s5", "t7"), pair("no", "t1"));
+"#;
+    let module = SwcModule::parse(
+        "input.js",
+        source,
+        SourceLanguage::JavaScript,
+        SourceKind::Script,
+    )
+    .unwrap();
+    let bytes = HbcCompiler::new(98).compile(&module).unwrap();
+    let hermes = std::env::var_os("HERMES98_BIN").expect("HERMES98_BIN must point to Hermes 98");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("input.hbc");
+    fs::write(&path, &bytes).unwrap();
+    let output = Command::new(hermes).arg("-b").arg(&path).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "6\n10\n-1\n-1\n-1\n-1\n1\ns5t7 outer\n"
+    );
+}

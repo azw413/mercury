@@ -2,7 +2,7 @@ use crate::binary::functions::FunctionHeader;
 use crate::binary::parse::HbcContainer;
 use crate::ir::{
     RawExceptionHandler, RawFunction, RawFunctionFlags, RawInstruction, RawModule, RawOperand,
-    RawSectionBoundaries, RawSwitchTable,
+    RawSectionBoundaries, RawStringSwitchCase, RawStringSwitchTable, RawSwitchTable,
 };
 use crate::spec::BytecodeSpec;
 use thiserror::Error;
@@ -41,6 +41,10 @@ pub enum HbcDecodeError {
     MalformedSwitch { offset: u32 },
     #[error("jump table for SwitchImm at offset {offset} extends past the container")]
     SwitchTableOutOfRange { offset: u32 },
+    #[error("malformed StringSwitchImm instruction at offset {offset}")]
+    MalformedStringSwitch { offset: u32 },
+    #[error("case table for StringSwitchImm at offset {offset} extends past the container")]
+    StringSwitchTableOutOfRange { offset: u32 },
 }
 
 /// Decodes a raw function-body byte slice into concrete instructions.
@@ -98,6 +102,7 @@ pub fn decode_raw_function(
         .ok_or(HbcDecodeError::TruncatedInstruction)?;
 
     let switch_tables = decode_switch_tables(bytes, header, &decoded)?;
+    let string_switch_tables = decode_string_switch_tables(bytes, header, &decoded)?;
     let exception_handlers = container
         .function_infos
         .get(function_index)
@@ -116,6 +121,7 @@ pub fn decode_raw_function(
         header,
         decoded,
         switch_tables,
+        string_switch_tables,
         exception_handlers,
     ))
 }
@@ -151,6 +157,7 @@ fn raw_function_from_decoded(
     header: &FunctionHeader,
     decoded: Vec<DecodedInstruction>,
     switch_tables: Vec<RawSwitchTable>,
+    string_switch_tables: Vec<RawStringSwitchTable>,
     exception_handlers: Vec<RawExceptionHandler>,
 ) -> RawFunction {
     RawFunction {
@@ -191,6 +198,7 @@ fn raw_function_from_decoded(
             })
             .collect(),
         switch_tables,
+        string_switch_tables,
         exception_handlers,
     }
 }
@@ -361,4 +369,225 @@ fn read_f64_checked(bytes: &[u8], offset: usize) -> Result<f64, HbcDecodeError> 
     let mut buf = [0u8; 8];
     buf.copy_from_slice(slice);
     Ok(f64::from_le_bytes(buf))
+}
+
+fn decode_string_switch_tables(
+    bytes: &[u8],
+    header: &FunctionHeader,
+    instructions: &[DecodedInstruction],
+) -> Result<Vec<RawStringSwitchTable>, HbcDecodeError> {
+    let mut tables = Vec::new();
+    for instruction in instructions
+        .iter()
+        .filter(|instruction| instruction.name == "StringSwitchImm")
+    {
+        let (
+            Some(DecodedOperand::U32(global_index)),
+            Some(DecodedOperand::U32(table_offset)),
+            Some(DecodedOperand::U32(count)),
+        ) = (
+            instruction.operands.get(1),
+            instruction.operands.get(2),
+            instruction.operands.get(4),
+        )
+        else {
+            return Err(HbcDecodeError::MalformedStringSwitch {
+                offset: instruction.offset,
+            });
+        };
+        let instruction_start = (header.offset as usize)
+            .checked_add(instruction.offset as usize)
+            .ok_or(HbcDecodeError::StringSwitchTableOutOfRange {
+                offset: instruction.offset,
+            })?;
+        // The offset operand is unaligned; the runtime aligns it to 4.
+        let unaligned_start = instruction_start
+            .checked_add(*table_offset as usize)
+            .ok_or(HbcDecodeError::StringSwitchTableOutOfRange {
+                offset: instruction.offset,
+            })?;
+        let table_start =
+            align_up(unaligned_start, 4).ok_or(HbcDecodeError::StringSwitchTableOutOfRange {
+                offset: instruction.offset,
+            })?;
+        let table_size = usize::try_from(*count)
+            .map_err(|_| HbcDecodeError::StringSwitchTableOutOfRange {
+                offset: instruction.offset,
+            })?
+            .checked_mul(8)
+            .ok_or(HbcDecodeError::StringSwitchTableOutOfRange {
+                offset: instruction.offset,
+            })?;
+        let table_end = table_start.checked_add(table_size).ok_or(
+            HbcDecodeError::StringSwitchTableOutOfRange {
+                offset: instruction.offset,
+            },
+        )?;
+        let table_bytes = bytes.get(table_start..table_end).ok_or(
+            HbcDecodeError::StringSwitchTableOutOfRange {
+                offset: instruction.offset,
+            },
+        )?;
+        let cases = table_bytes
+            .chunks_exact(8)
+            .map(|entry| RawStringSwitchCase {
+                string_id: u32::from_le_bytes(
+                    entry[0..4]
+                        .try_into()
+                        .expect("string id half of switch case"),
+                ),
+                displacement: i32::from_le_bytes(
+                    entry[4..8]
+                        .try_into()
+                        .expect("displacement half of switch case"),
+                ),
+            })
+            .collect();
+        tables.push(RawStringSwitchTable {
+            instruction_offset: instruction.offset,
+            global_index: *global_index,
+            cases,
+        });
+    }
+    Ok(tables)
+}
+
+/// Serializes `StringSwitchTableCase` entries into their on-disk form:
+/// `{ u32 caseLabelStringID, i32 target }` per case.
+pub fn write_string_switch_cases(cases: &[RawStringSwitchCase]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(cases.len() * 8);
+    for case in cases {
+        bytes.extend_from_slice(&case.string_id.to_le_bytes());
+        bytes.extend_from_slice(&case.displacement.to_le_bytes());
+    }
+    bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binary::functions::FunctionHeaderFlags;
+
+    fn header(offset: u32) -> FunctionHeader {
+        FunctionHeader {
+            offset,
+            param_count: 1,
+            bytecode_size_in_bytes: 14,
+            function_name: 0,
+            info_offset: 0,
+            frame_size: 10,
+            environment_size: 0,
+            highest_read_cache_index: 0,
+            highest_write_cache_index: 0,
+            loop_depth: 0,
+            number_reg_count: 0,
+            non_ptr_reg_count: 0,
+            num_cache_new_object: 0,
+            private_name_cache_size: 0,
+            flags: FunctionHeaderFlags {
+                raw: 0,
+                prohibit_invoke: 2,
+                strict_mode: false,
+                has_exception_handler: false,
+                has_debug_info: false,
+                overflowed: false,
+                kind: 0,
+            },
+            overflowed_from_small_header: false,
+        }
+    }
+
+    fn string_switch(
+        offset: u32,
+        global: u32,
+        table_off: u32,
+        default: i32,
+        count: u32,
+    ) -> DecodedInstruction {
+        DecodedInstruction {
+            offset,
+            opcode: 0,
+            name: "StringSwitchImm".into(),
+            operands: vec![
+                DecodedOperand::U8(3),
+                DecodedOperand::U32(global),
+                DecodedOperand::U32(table_off),
+                DecodedOperand::I32(default),
+                DecodedOperand::U32(count),
+            ],
+            size: 14,
+        }
+    }
+
+    #[test]
+    fn string_switch_table_cases_write_round_trips() {
+        let cases = vec![
+            RawStringSwitchCase {
+                string_id: 7,
+                displacement: -40,
+            },
+            RawStringSwitchCase {
+                string_id: 9,
+                displacement: 260,
+            },
+            RawStringSwitchCase {
+                string_id: 0,
+                displacement: i32::MIN,
+            },
+        ];
+        let bytes = write_string_switch_cases(&cases);
+        assert_eq!(bytes.len(), 24);
+        let reparsed = bytes
+            .chunks_exact(8)
+            .map(|entry| RawStringSwitchCase {
+                string_id: u32::from_le_bytes(entry[0..4].try_into().unwrap()),
+                displacement: i32::from_le_bytes(entry[4..8].try_into().unwrap()),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reparsed, cases);
+        assert_eq!(write_string_switch_cases(&reparsed), bytes);
+    }
+
+    #[test]
+    fn decodes_string_switch_table_at_unaligned_offset() {
+        // Body at file offset 100; instruction at body offset 0; the 14-byte
+        // instruction carries an unaligned table offset of 2, so the runtime
+        // aligns the table start to 104.
+        let mut bytes = vec![0u8; 100 + 4 + 2 * 8];
+        bytes[104..108].copy_from_slice(&7u32.to_le_bytes());
+        bytes[108..112].copy_from_slice(&(-4i32).to_le_bytes());
+        bytes[112..116].copy_from_slice(&9u32.to_le_bytes());
+        bytes[116..120].copy_from_slice(&64i32.to_le_bytes());
+        let header = header(100);
+        let instructions = vec![string_switch(0, 3, 2, 14, 2)];
+
+        let tables = decode_string_switch_tables(&bytes, &header, &instructions).unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].global_index, 3);
+        assert_eq!(
+            tables[0].cases,
+            vec![
+                RawStringSwitchCase {
+                    string_id: 7,
+                    displacement: -4
+                },
+                RawStringSwitchCase {
+                    string_id: 9,
+                    displacement: 64
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_string_switch_table_past_the_container() {
+        let bytes = vec![0u8; 120];
+        let header = header(100);
+        let instructions = vec![string_switch(0, 0, 4, 14, 3)];
+
+        assert_eq!(
+            decode_string_switch_tables(&bytes, &header, &instructions),
+            Err(HbcDecodeError::StringSwitchTableOutOfRange { offset: 0 })
+        );
+    }
 }

@@ -211,8 +211,8 @@ cargo check -p mercury-hbc --examples
 
 Runtime and external-oracle tests are opt-in. They use `HERMES_BIN`,
 `HERMESC_BIN`, `HERMES98_BIN` for HBC 98 execution, and, for legacy comparisons,
-`HERMES_DEC_ROOT`. The corpus harness runs 82 committed JavaScript programs at
-each of `-O0` and `-O` — 164 cases for HBC 98 and 160 for HBC 96, where two
+`HERMES_DEC_ROOT`. The corpus harness runs 83 committed JavaScript programs at
+each of `-O0` and `-O` — 166 cases for HBC 98 and 162 for HBC 96, where two
 fixtures use syntax only the newer compiler accepts — comparing execution
 before and after HBC-to-SWC-to-HBC reconstruction.
 See [fixture and test instructions](test/README.md) for reproducible commands.

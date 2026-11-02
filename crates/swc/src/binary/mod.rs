@@ -12,7 +12,7 @@ mod tables;
 
 pub use decode::{
     DecodedInstruction, DecodedOperand, HbcDecodeError, decode_function_instructions,
-    decode_raw_function, decode_raw_module,
+    decode_raw_function, decode_raw_module, write_string_switch_cases,
 };
 pub use encode::{HbcEncodeError, encode_instruction, encode_instructions};
 pub use functions::{
