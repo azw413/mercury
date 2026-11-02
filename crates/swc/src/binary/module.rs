@@ -562,11 +562,10 @@ fn cache_metadata(instructions: &[DecodedInstruction], read: bool, version: u32)
         .iter()
         .filter_map(|instruction| cache_index_for_instruction(instruction, read));
     if version >= 98 {
-        // HBC 98 stores the cache size, with 255 reserved to disable caching.
+        // HBC 98 stores the cache size, with 255 representing 256 entries.
         indices
-            .filter(|index| *index != u8::MAX)
             .max()
-            .map(|index| index + 1)
+            .map(|index| index.saturating_add(1))
             .unwrap_or(0)
     } else {
         // HBC 96 stores the highest one-based cache index.
@@ -1161,6 +1160,27 @@ mod tests {
         assert!(container.function_infos[0].large_header_range.is_some());
         assert_eq!(container.function_headers[0].param_count, 128);
         assert_eq!(raw.functions[0].param_count, 128);
+    }
+
+    #[test]
+    fn hbc98_disabled_cache_operand_reserves_the_full_cache() {
+        let instructions = [253, u8::MAX]
+            .into_iter()
+            .map(|index| DecodedInstruction {
+                offset: 0,
+                opcode: 0,
+                name: "PutByIdLoose".into(),
+                operands: vec![
+                    DecodedOperand::U8(0),
+                    DecodedOperand::U8(1),
+                    DecodedOperand::U8(index),
+                    DecodedOperand::U16(0),
+                ],
+                size: 6,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(cache_metadata(&instructions, false, 98), u8::MAX);
     }
 
     #[test]
