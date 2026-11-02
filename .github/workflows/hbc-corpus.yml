@@ -78,13 +78,12 @@ jobs:
           HERMES_BIN: ${{ github.workspace }}/hermes-build/bin/hermes
           HERMES98_BIN: ${{ github.workspace }}/hermes-build/bin/hermes
           MERCURY_HERMESC_MODES: -O0,-O
-          MERCURY_JS_CORPUS_FILTER: ${{ matrix.version == 98 && 'many_functions_64.js' || '' }}
           MERCURY_CORPUS_ARTIFACTS: ${{ github.workspace }}/target/corpus-artifacts
         run: cargo test --locked -p mercury-hbc --test corpus_roundtrip ${{ matrix.test }} -- --ignored --nocapture
 
-      - name: Upload failing HBC 98 artifacts
-        if: failure() && matrix.version == 98
+      - name: Upload failing corpus artifacts
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: hbc98-corpus-failure
+          name: hbc${{ matrix.version }}-corpus-failure
           path: target/corpus-artifacts
