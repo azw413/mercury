@@ -56,12 +56,13 @@ execution tests requiring matching Hermes compilers and runtimes. See
 [the module instructions](../crates/swc/README.md).
 
 For each bytecode version, its corpus roundtrip test recursively compiles 12
-focused JavaScript fixtures and 49 deterministic generated programs with
-`hermesc` at `-O0` and `-O`, for 122 cases. The programs include calculation
-kernels, language and runtime features, and several size stress families. Each
-reference is rebuilt through Mercury's HBC-to-SWC-to-native-HBC path and must
-produce the same status, stdout, and normalized stderr. Run the HBC 96 matrix
-with:
+focused JavaScript fixtures and 70 deterministic generated programs with
+`hermesc` at `-O0` and `-O` — 164 cases for HBC 98, and 160 for HBC 96, where
+two fixtures use syntax only the newer compiler accepts. The programs include
+calculation kernels, language and runtime features, and several size stress
+families. Each reference is rebuilt through Mercury's HBC-to-SWC-to-native-HBC
+path and must produce the same status, stdout, and normalized stderr. Run the
+HBC 96 matrix with:
 
 ```sh
 HERMESC_BIN=/absolute/path/to/hermesc96 HERMES_BIN=/absolute/path/to/hermes96 \
@@ -84,4 +85,4 @@ see the module README for filtering and limiting controls.
 The [HBC corpus workflow](../.github/workflows/hbc-corpus.yml) runs both jobs on
 GitHub Actions. Each job builds `hermesc` and `hermes` from the same immutable
 Hermes commit recorded in the workflow, verifies the reported HBC version, and
-runs all 122 cases.
+runs all cases.

@@ -20,6 +20,16 @@ pub struct BytecodeSpec {
     pub builtins: Vec<BuiltinSpec>,
 }
 
+impl BytecodeSpec {
+    /// The BuiltinMethod ID of a builtin by name, e.g. `"copyRestArgs"`.
+    pub fn builtin_index(&self, name: &str) -> Option<u32> {
+        self.builtins
+            .iter()
+            .find(|builtin| builtin.name == name)
+            .map(|builtin| builtin.index)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// Known operand kind in a particular Hermes bytecode version.
 pub struct OperandTypeSpec {
@@ -238,7 +248,8 @@ pub struct SectionSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Builtin object or method declared by Hermes for a given version.
+/// Builtin method declared by Hermes for a given version. `index` is the
+/// BuiltinMethod ID used by CallBuiltin.
 pub struct BuiltinSpec {
     pub index: u32,
     pub kind: BuiltinKind,
@@ -249,7 +260,7 @@ pub struct BuiltinSpec {
 #[serde(rename_all = "snake_case")]
 /// Category of builtin entry declared in `Builtins.def`.
 pub enum BuiltinKind {
-    BuiltinObject,
+    NormalMethod,
     BuiltinMethod,
     PrivateBuiltin,
     JsBuiltin,

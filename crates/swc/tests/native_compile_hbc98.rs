@@ -291,6 +291,140 @@ fn hbc98_cache_exhaustion_and_large_calls_execute_correctly() {
     assert_eq!(execute(compile(&source)), "255\n255\n");
 }
 
+/// A `size`-element literal: numbers and strings, one hole at `size - 2`,
+/// and `"last"` in the final slot.
+fn wide_array_source(size: usize) -> String {
+    let mut source = String::from("var a = [");
+    for index in 0..size - 2 {
+        if index % 3 == 0 {
+            source.push_str(&format!("\"s{index}\","));
+        } else {
+            source.push_str(&format!("{index},"));
+        }
+    }
+    source.push_str(",\"last\"];\n");
+    source
+}
+
+#[test]
+fn compiles_oversized_array_literals_without_dense_opcodes() {
+    // Past u16::MAX elements the NewArray size hint is 0, so dense writes
+    // would index elements that do not exist.
+    let bytes = compile(&wide_array_source(65_537));
+    let (_, raw) = decode(&bytes);
+    let names = raw
+        .functions
+        .iter()
+        .flat_map(|function| instruction_names(function))
+        .collect::<Vec<_>>();
+
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.starts_with("DefineOwnInDenseArray")),
+        "dense opcodes used: {names:?}"
+    );
+    assert!(names.contains(&"DefineOwnByIndex"));
+    assert!(names.contains(&"DefineOwnByIndexL"));
+}
+
+#[test]
+fn compiles_small_array_literals_with_dense_opcodes() {
+    let bytes = compile(r#"var a = [1, "two", , 4]; print(a.length);"#);
+    let (_, raw) = decode(&bytes);
+    let names = instruction_names(&raw.functions[0]);
+
+    assert!(names.contains(&"DefineOwnInDenseArray"));
+    assert!(!names.contains(&"DefineOwnByIndex"));
+    assert!(!names.contains(&"DefineOwnByIndexL"));
+}
+
+/// An object literal with `count` `k0..` number-valued properties plus any
+/// `extra` trailing entries, big enough to need the literal buffer.
+fn wide_object_source(count: usize, extra: &str) -> String {
+    let mut source = String::from("var o = {");
+    for index in 0..count {
+        source.push_str(&format!("k{index}: {index},"));
+    }
+    source.push_str(extra);
+    source.push_str("};\n");
+    source
+}
+
+fn object_opcodes(bytes: &[u8]) -> Vec<String> {
+    let (_, raw) = decode(bytes);
+    raw.functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .map(|instruction| instruction.name.clone())
+        .collect()
+}
+
+#[test]
+fn compiles_buffered_objects_with_unique_keys() {
+    let bytes = compile(&wide_object_source(65_536, ""));
+    let names = object_opcodes(&bytes);
+
+    assert!(
+        names
+            .iter()
+            .any(|name| name.starts_with("NewObjectWithBuffer")),
+        "buffered opcodes missing: {names:?}"
+    );
+}
+
+#[test]
+fn rejects_buffered_objects_with_duplicate_keys() {
+    let bytes = compile(&wide_object_source(65_536, "k0: 1,"));
+    let names = object_opcodes(&bytes);
+
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.starts_with("NewObjectWithBuffer")),
+        "duplicate key stayed buffered"
+    );
+}
+
+#[test]
+fn rejects_buffered_objects_with_null_computed_keys() {
+    let bytes = compile(&wide_object_source(65_536, "[null]: 1,"));
+    let names = object_opcodes(&bytes);
+
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.starts_with("NewObjectWithBuffer")),
+        "null key stayed buffered"
+    );
+}
+
+#[test]
+fn buffers_index_string_keys_as_numbers() {
+    let bytes = compile(&wide_object_source(65_536, "\"7\": 8,"));
+    let (container, _) = decode(&bytes);
+
+    // A Number literal key is tag 0x31 followed by the f64.
+    let mut number_key = vec![0x31];
+    number_key.extend_from_slice(&7.0f64.to_le_bytes());
+    assert!(
+        container
+            .object_key_buffer
+            .windows(number_key.len())
+            .any(|window| window == number_key.as_slice()),
+        "\"7\" was not buffered as the number 7"
+    );
+}
+
+#[test]
+#[ignore = "requires HERMES98_BIN pointing to an HBC 98 runtime"]
+fn hbc98_oversized_array_literals_execute_correctly() {
+    let mut source = wide_array_source(65_537);
+    source.push_str("print(a.length, a[0], a[65535], a[65536], 65535 in a);\n");
+
+    assert_eq!(execute(compile(&source)), "65537 s0 undefined last false\n");
+}
+
 fn execute(bytes: Vec<u8>) -> String {
     let path = std::env::temp_dir().join(format!(
         "mercury-native-hbc98-{}-{}.hbc",

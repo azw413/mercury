@@ -199,6 +199,11 @@ Generated code captures standard intrinsics such as `Reflect.apply`,
 `Math.imul` when needed. It assumes those intrinsics retain their standard
 behavior. Proxy/global interception, arbitrary host hooks, exact reflective
 function source, and caller stacks are outside the compatibility contract.
+Two lowerings are approximations in the same spirit: recovered private fields
+and brand checks are modeled with ordinary Symbols, so `#x in o` consults the
+prototype chain and proxy traps, missing-brand reads and writes do not throw,
+and the fields are visible to `Reflect.ownKeys`; and `PutByValWithReceiver` is
+lowered to `Reflect.set` without strict-mode throwing.
 
 String-switch metadata is not implemented. Some unsupported container options
 and global names are rejected explicitly. Original comments, formatting, local
@@ -244,9 +249,10 @@ HERMES98_BIN=/absolute/path/to/hermes98 \
   cargo test -p mercury-hbc --all-features -- --include-ignored
 ```
 
-For each version, the corpus harness covers 12 focused fixtures and 49 generated
-programs at `-O0` and `-O`, for 122 cases. Each reference HBC is executed, decompiled to SWC,
-rebuilt with `HbcCompiler`, and executed again. Exit status, stdout, and
-normalized stderr must match. See the workspace
+For each version, the corpus harness covers 12 focused fixtures and 70 generated
+programs at `-O0` and `-O` — 164 cases for HBC 98, and 160 for HBC 96, where two
+fixtures use syntax only the newer compiler accepts. Each reference HBC is
+executed, decompiled to SWC, rebuilt with `HbcCompiler`, and executed again.
+Exit status, stdout, and normalized stderr must match. See the workspace
 [test guide](../../test/README.md) for external corpus controls and fixture
 commands.

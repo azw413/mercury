@@ -14,6 +14,58 @@ use swc_core::{
     },
 };
 
+/// Hermes builtin method ids for one bytecode version, resolved by name
+/// from that version's embedded spec. Builtins that not every supported
+/// table defines are optional.
+#[derive(Clone, Copy)]
+struct BuiltinIds {
+    global_this_symbol: Option<u32>,
+    global_this_eval: Option<u32>,
+    get_template_object: u32,
+    silent_set_prototype_of: u32,
+    ensure_object: u32,
+    get_method: u32,
+    throw_type_error: u32,
+    throw_reference_error: Option<u32>,
+    delegated_yield: Option<u32>,
+    copy_data_properties: u32,
+    copy_rest_args: u32,
+    array_spread: u32,
+    apply: u32,
+    apply_arguments: Option<u32>,
+    apply_with_new_target: Option<u32>,
+    exponentiation: u32,
+    init_regex_named_groups: u32,
+    spawn_async: Option<u32>,
+}
+
+fn builtin_ids(spec: &crate::spec::BytecodeSpec) -> Result<BuiltinIds, Error> {
+    let index = |name: &str| {
+        spec.builtin_index(name)
+            .ok_or_else(|| Error::Bytecode(format!("missing builtin {name}")))
+    };
+    Ok(BuiltinIds {
+        global_this_symbol: spec.builtin_index("globalThis.Symbol"),
+        global_this_eval: spec.builtin_index("globalThis.eval"),
+        get_template_object: index("getTemplateObject")?,
+        silent_set_prototype_of: index("silentSetPrototypeOf")?,
+        ensure_object: index("ensureObject")?,
+        get_method: index("getMethod")?,
+        throw_type_error: index("throwTypeError")?,
+        throw_reference_error: spec.builtin_index("throwReferenceError"),
+        delegated_yield: spec.builtin_index("generatorSetDelegated"),
+        copy_data_properties: index("copyDataProperties")?,
+        copy_rest_args: index("copyRestArgs")?,
+        array_spread: index("arraySpread")?,
+        apply: index("apply")?,
+        apply_arguments: spec.builtin_index("applyArguments"),
+        apply_with_new_target: spec.builtin_index("applyWithNewTarget"),
+        exponentiation: index("exponentiationOperator")?,
+        init_regex_named_groups: index("initRegexNamedGroups")?,
+        spawn_async: spec.builtin_index("spawnAsync"),
+    })
+}
+
 /// Decompiles supported HBC 96 or HBC 98 bytecode into an executable [`SwcModule`].
 ///
 /// The result is a behavioral reconstruction, not the original source. Register
@@ -63,21 +115,6 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     if h.global_code_index as usize >= raw.functions.len() {
         return Err(Error::Bytecode("invalid entry function".into()));
     }
-    // Some HBC-96 producers inserted five builtins before the private range
-    // without changing the bytecode version. HBC 98 instead shifts the legacy
-    // range by two public builtins.
-    let modern_private_builtins = version == 96
-        && raw.functions.iter().any(|function| {
-            (has_function_opcode(function, "StartGenerator")
-                && function
-                    .instructions
-                    .iter()
-                    .any(|op| call_builtin_signature(op, 48, None)))
-                || function.instructions.iter().any(|op| {
-                    call_builtin_signature(op, 45, Some(3))
-                        || call_builtin_signature(op, 50, Some(2))
-                })
-        });
     let closure_targets = |names: [&str; 2]| -> HashSet<usize> {
         raw.functions
             .iter()
@@ -96,18 +133,10 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         .iter()
         .flat_map(|function| &function.instructions)
         .any(|op| is_define_own(&op.name));
-    let copy_rest_args_builtin = match (version, modern_private_builtins) {
-        (98, _) => 47,
-        (96, true) => 50,
-        _ => 45,
-    };
-    let copy_data_properties_builtin = copy_rest_args_builtin - 1;
-    let needs_copy_data_runtime = has_builtin(&raw, copy_data_properties_builtin);
-    let array_spread_builtin = copy_rest_args_builtin + 1;
-    let apply_builtin = copy_rest_args_builtin + 2;
-    let needs_array_spread_runtime = has_builtin(&raw, array_spread_builtin);
-    let get_template_object_builtin = copy_rest_args_builtin - 6;
-    let needs_template_runtime = has_builtin(&raw, get_template_object_builtin);
+    let builtins = builtin_ids(&spec.bytecode)?;
+    let needs_copy_data_runtime = has_builtin(&raw, builtins.copy_data_properties);
+    let needs_array_spread_runtime = has_builtin(&raw, builtins.array_spread);
+    let needs_template_runtime = has_builtin(&raw, builtins.get_template_object);
     needs_define |= needs_copy_data_runtime;
     needs_define |= needs_array_spread_runtime;
     needs_define |= needs_template_runtime;
@@ -173,7 +202,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                         | "GetArgumentsPropByValStrict"
                         | "GetArgumentsPropByValLoose"
                         | "GetArgumentsLength"
-                ) || call_builtin_signature(op, copy_rest_args_builtin, Some(2))
+                ) || call_builtin_signature(op, builtins.copy_rest_args, Some(2))
             })
         })
         .collect::<Vec<_>>();
@@ -217,13 +246,20 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     let needs_iterator_runtime = ["IteratorBegin", "IteratorNext", "IteratorClose"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
-    let ensure_object_builtin = copy_rest_args_builtin - 5;
-    let silent_set_prototype_builtin = ensure_object_builtin - 3;
-    let needs_prototype_runtime = has_builtin(&raw, silent_set_prototype_builtin)
+    let needs_prototype_runtime = has_builtin(&raw, builtins.silent_set_prototype_of)
         || needs_class
         || has_opcode(&raw, "LoadParentNoTraps");
-    let needs_private_builtin_runtime =
-        (0..=2).any(|offset| has_builtin(&raw, ensure_object_builtin + offset));
+    let needs_reference_error_runtime = builtins
+        .throw_reference_error
+        .is_some_and(|id| has_builtin(&raw, id));
+    let needs_private_builtin_runtime = [
+        builtins.ensure_object,
+        builtins.get_method,
+        builtins.throw_type_error,
+    ]
+    .into_iter()
+    .chain(builtins.throw_reference_error)
+    .any(|id| has_builtin(&raw, id));
     let needs_construction = needs_class
         || raw.functions.iter().any(|function| {
             function.flags.prohibit_invoke != 2
@@ -239,14 +275,14 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                             | "CallWithNewTargetLong"
                             | "SelectObject"
                             | "GetNewTarget"
-                    ) || call_builtin_signature(op, apply_builtin, Some(3))
+                    ) || call_builtin_signature(op, builtins.apply, Some(3))
                 })
         });
     let lower = Lower {
         version,
         container: &container,
         raw: &raw,
-        modern_private_builtins,
+        builtins,
         arrow_functions: &arrow_functions,
         generator_closures: &generator_closures,
     };
@@ -696,6 +732,10 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         wrapper_params.push("_type_error".into());
         wrapper_args.push(b::member(b::this(), b::string("TypeError")));
     }
+    if needs_reference_error_runtime {
+        wrapper_params.push("_reference_error".into());
+        wrapper_args.push(b::member(b::this(), b::string("ReferenceError")));
+    }
     if wrapper_params.len() == 2
         && wrapper_body.len() == 1
         && !raw.functions[h.global_code_index as usize]
@@ -927,7 +967,7 @@ struct Lower<'a> {
     version: u32,
     container: &'a HbcContainer,
     raw: &'a RawModule,
-    modern_private_builtins: bool,
+    builtins: BuiltinIds,
     arrow_functions: &'a [bool],
     generator_closures: &'a HashSet<usize>,
 }
@@ -1175,7 +1215,11 @@ impl Lower<'_> {
                         deferred_constructor_prototypes.contains(&op.offset),
                     )?);
                     terminated = matches!(op.name.as_str(), "Ret" | "Throw" | "Unreachable")
-                        || (self.version == 98 && call_builtin_signature(op, 44, None));
+                        || call_builtin_signature(op, self.builtins.throw_type_error, None)
+                        || self
+                            .builtins
+                            .throw_reference_error
+                            .is_some_and(|id| call_builtin_signature(op, id, None));
                 }
             }
             if !terminated {
@@ -1635,6 +1679,8 @@ impl Lower<'_> {
                 value
             }
             "GetByVal" | "FastArrayLoad" => b::member(r(1)?, r(2)?),
+            "GetOwnPrivateBySym" => b::member(r(1)?, r(3)?),
+            "PrivateIsIn" => b::binary(BinaryOp::In, r(1)?, r(2)?),
             "GetByIndex" => b::member(r(1)?, b::number(f64::from(uint(op, 2)?))),
             "GetByIdWithReceiverLong" => b::call(
                 b::member(
@@ -1705,6 +1751,18 @@ impl Lower<'_> {
             "DelByVal" => b::unary(UnaryOp::Delete, b::member(r(1)?, r(2)?)),
             "PutByVal" | "PutByValLoose" | "PutByValStrict" | "FastArrayStore" => {
                 return Ok(vec![b::assign(b::member(r(0)?, r(1)?), r(2)?)]);
+            }
+            "PutOwnPrivateBySym" => {
+                return Ok(vec![b::assign(b::member(r(0)?, r(3)?), r(1)?)]);
+            }
+            "PutByValWithReceiver" => {
+                return Ok(vec![b::expr(b::call(
+                    b::member(
+                        b::member(b::id("_g"), b::string("Reflect")),
+                        b::string("set"),
+                    ),
+                    vec![r(0)?, r(1)?, r(2)?, r(3)?],
+                ))]);
             }
             "DirectEval" => b::call(
                 b::id("_direct_eval"),
@@ -1805,6 +1863,21 @@ impl Lower<'_> {
                     vec![r(1)?, r(2)?, this_arg, b::array(args)],
                 )
             }
+            "CallWithNewTargetLong" => {
+                let (argument_count, first) = long_call_layout(f, op)?;
+                let last = first.checked_sub(argument_count - 1).ok_or_else(|| {
+                    unsupported(f, op, "argument count exceeds the function frame")
+                })?;
+                let this_arg = register_number(f, first)?;
+                let args = (last..first)
+                    .rev()
+                    .map(|register| register_number(f, register))
+                    .collect::<Result<Vec<_>, _>>()?;
+                b::call(
+                    b::id("_call_with_new_target"),
+                    vec![r(1)?, r(2)?, this_arg, b::array(args)],
+                )
+            }
             "Construct" | "ConstructLong" => {
                 let argument_count = uint(op, 2)?;
                 if argument_count == 0 {
@@ -1852,28 +1925,17 @@ impl Lower<'_> {
                     .rev()
                     .map(|register| register_number(f, register))
                     .collect::<Result<Vec<_>, _>>()?;
-                let copy_rest_args = match (self.version, self.modern_private_builtins) {
-                    (98, _) => 47,
-                    (96, true) => 50,
-                    _ => 45,
-                };
-                let ensure_object = copy_rest_args - 5;
-                let copy_data_properties = copy_rest_args - 1;
-                let array_spread = copy_rest_args + 1;
-                let apply = copy_rest_args + 2;
-                let get_template_object = copy_rest_args - 6;
-                let exponentiation = copy_rest_args + if self.version == 98 { 6 } else { 4 };
-                let init_regex_named_groups = exponentiation + 1;
+                let ids = self.builtins;
                 match builtin {
-                    value if value == ensure_object - 3 && args.len() == 2 => {
+                    value if value == ids.silent_set_prototype_of && args.len() == 2 => {
                         b::call(b::id("_silent_set_prototype_of"), args)
                     }
-                    value if value == ensure_object - 3 => {
+                    value if value == ids.silent_set_prototype_of => {
                         return Err(unsupported(f, op, "invalid prototype-set arguments"));
                     }
                     // Arguments: the template's id, whether the cooked strings
                     // are the raw ones, the raw strings, then any cooked ones.
-                    value if value == get_template_object && args.len() >= 3 => b::call(
+                    value if value == ids.get_template_object && args.len() >= 3 => b::call(
                         b::id("_template_object"),
                         vec![
                             args[0].clone(),
@@ -1881,24 +1943,27 @@ impl Lower<'_> {
                             b::array(args[2..].to_vec()),
                         ],
                     ),
-                    value if value == get_template_object => {
+                    value if value == ids.get_template_object => {
                         return Err(unsupported(f, op, "invalid template object arguments"));
                     }
-                    value if value == ensure_object => b::call(b::id("_ensure_object"), args),
-                    value if value == ensure_object + 1 => b::call(b::id("_get_method"), args),
-                    value if value == ensure_object + 2 => {
+                    value if value == ids.ensure_object => b::call(b::id("_ensure_object"), args),
+                    value if value == ids.get_method => b::call(b::id("_get_method"), args),
+                    value if value == ids.throw_type_error => {
                         b::call(b::id("_throw_type_error"), args)
                     }
-                    value if resumable && value == ensure_object + 3 => {
+                    value if Some(value) == ids.throw_reference_error => {
+                        b::call(b::id("_throw_reference_error"), args)
+                    }
+                    value if resumable && Some(value) == ids.delegated_yield => {
                         return Ok(vec![
                             b::assign(b::id("_delegated"), b::boolean(true)),
                             b::assign(r(0)?, b::undefined()),
                         ]);
                     }
-                    value if value == copy_data_properties => {
+                    value if value == ids.copy_data_properties => {
                         b::call(b::id("_copy_data_properties"), args)
                     }
-                    value if value == copy_rest_args && args.len() == 1 => b::call(
+                    value if value == ids.copy_rest_args && args.len() == 1 => b::call(
                         b::id("_apply"),
                         vec![
                             b::id("_slice"),
@@ -1906,35 +1971,63 @@ impl Lower<'_> {
                             b::array(vec![args[0].clone()]),
                         ],
                     ),
-                    value if value == copy_rest_args => {
+                    value if value == ids.copy_rest_args => {
                         return Err(unsupported(f, op, "invalid rest-argument copy"));
                     }
-                    value if value == array_spread && args.len() == 3 => {
+                    value if value == ids.array_spread && args.len() == 3 => {
                         b::call(b::id("_array_spread"), args)
                     }
-                    value if value == array_spread => {
+                    value if value == ids.array_spread => {
                         return Err(unsupported(f, op, "invalid array-spread arguments"));
                     }
-                    value if value == apply && args.len() == 3 => b::call(
+                    value if value == ids.apply && args.len() == 3 => b::call(
                         b::id("_apply"),
                         vec![args[0].clone(), args[2].clone(), args[1].clone()],
                     ),
-                    value if value == apply && args.len() == 2 => {
+                    value if value == ids.apply && args.len() == 2 => {
                         b::call(b::id("_construct_spread"), args)
                     }
-                    value if value == apply => {
+                    value if value == ids.apply => {
                         return Err(unsupported(f, op, "invalid spread-call arguments"));
                     }
-                    value if value == exponentiation && args.len() == 2 => {
+                    value if Some(value) == ids.apply_arguments && args.len() == 3 => b::call(
+                        b::id("_call_with_new_target"),
+                        vec![
+                            args[0].clone(),
+                            args[2].clone(),
+                            args[1].clone(),
+                            b::id("arguments"),
+                        ],
+                    ),
+                    value if Some(value) == ids.apply_with_new_target && args.len() == 4 => {
+                        b::call(
+                            b::id("_call_with_new_target"),
+                            vec![
+                                args[0].clone(),
+                                args[3].clone(),
+                                args[2].clone(),
+                                args[1].clone(),
+                            ],
+                        )
+                    }
+                    value
+                        if Some(value) == ids.apply_arguments
+                            || Some(value) == ids.apply_with_new_target =>
+                    {
+                        return Err(unsupported(f, op, "invalid new-target call arguments"));
+                    }
+                    value if value == ids.exponentiation && args.len() == 2 => {
                         b::binary(BinaryOp::Exp, args[0].clone(), args[1].clone())
                     }
-                    value if value == exponentiation => {
+                    value if value == ids.exponentiation => {
                         return Err(unsupported(f, op, "invalid exponentiation arguments"));
                     }
                     // Hands a regex literal its group names. Decompiled
                     // CreateRegExp goes through the RegExp constructor, which
                     // finds them itself.
-                    value if value == init_regex_named_groups && args.len() == 2 => b::undefined(),
+                    value if value == ids.init_regex_named_groups && args.len() == 2 => {
+                        b::undefined()
+                    }
                     _ => {
                         return Err(unsupported(
                             f,
@@ -1946,11 +2039,17 @@ impl Lower<'_> {
             }
             "GetBuiltinClosure" => {
                 let builtin = uint(op, 1)?;
-                if self.version == 98 && builtin == 0 {
+                let ids = self.builtins;
+                if Some(builtin) == ids.global_this_symbol {
                     b::id("_symbol")
-                } else if self.version == 98 && builtin == 57 {
+                } else if Some(builtin) == ids.spawn_async {
                     b::id("_spawn_async")
-                } else if builtin == 1 && has_function_opcode(f, "DirectEval") {
+                } else if (Some(builtin) == ids.global_this_eval
+                    || (ids.global_this_eval.is_none() && builtin == 1))
+                    && has_function_opcode(f, "DirectEval")
+                {
+                    // HBC 96 has no globalThis.eval builtin; index 1 is the
+                    // eval closure's historical slot there.
                     b::id("_eval")
                 } else {
                     let async_driver = f
@@ -2203,7 +2302,7 @@ impl Lower<'_> {
                 return Ok(define_own(r(0)?, r(2)?, r(1)?, enumerable));
             }
             "AddOwnPrivateBySym" => {
-                return Ok(define_own(r(0)?, r(1)?, r(2)?, false));
+                return Ok(define_own(r(0)?, r(2)?, r(1)?, false));
             }
             "PutOwnGetterSetterByVal" | "DefineOwnGetterSetterByVal" => {
                 let enumerable = match uint(op, 4)? {
@@ -2213,6 +2312,10 @@ impl Lower<'_> {
                 };
                 return Ok(define_accessor(r(0)?, r(1)?, r(2)?, r(3)?, enumerable));
             }
+            "CreatePrivateName" => b::call(
+                b::member(b::id("_g"), b::string("Symbol")),
+                vec![b::wtf8_string(self.string(uint(op, 1)?)?)],
+            ),
             "NewObject" => b::empty_object(),
             "CacheNewObject" => {
                 let _ = (r(0)?, r(1)?, uint(op, 2)?, uint(op, 3)?);
@@ -2426,6 +2529,71 @@ impl Lower<'_> {
             })
             .collect()
     }
+}
+
+fn long_call_layout(f: &RawFunction, call: &RawInstruction) -> Result<(u32, u32), Error> {
+    let Some(call_index) = f
+        .instructions
+        .iter()
+        .position(|instruction| instruction.offset == call.offset)
+    else {
+        return Err(unsupported(f, call, "missing long call"));
+    };
+    let mut count_register = uint(call, 3)?;
+    let mut first_argument = None;
+    for instruction in f.instructions[..call_index].iter().rev() {
+        if !defines_first_register(&instruction.name)
+            || uint(instruction, 0).ok() != Some(count_register)
+        {
+            continue;
+        }
+        if matches!(instruction.name.as_str(), "Mov" | "MovLong") {
+            count_register = uint(instruction, 1)?;
+            first_argument.get_or_insert(count_register);
+            continue;
+        }
+        let argument_count = match instruction.name.as_str() {
+            "LoadConstZero" => 0,
+            "LoadConstUInt8" => uint(instruction, 1)?,
+            "LoadConstInt" => match instruction.operands.get(1) {
+                Some(RawOperand::I32(value)) if *value >= 0 => *value as u32,
+                _ => return Err(unsupported(f, call, "invalid long-call argument count")),
+            },
+            "LoadConstDouble" => match instruction.operands.get(1) {
+                Some(RawOperand::F64(value))
+                    if *value >= 0.0 && *value <= f64::from(u32::MAX) && value.fract() == 0.0 =>
+                {
+                    *value as u32
+                }
+                _ => return Err(unsupported(f, call, "invalid long-call argument count")),
+            },
+            _ => {
+                return Err(unsupported(
+                    f,
+                    call,
+                    "long-call argument count is not constant",
+                ));
+            }
+        };
+        if argument_count == 0 {
+            return Err(unsupported(f, call, "long call has no this argument"));
+        }
+        let frame_first = f
+            .frame_size
+            .checked_sub(8)
+            .ok_or_else(|| unsupported(f, call, "frame is too small for long-call arguments"))?;
+        let uses_frame_end = f.instructions[..call_index].iter().any(|instruction| {
+            defines_first_register(&instruction.name)
+                && uint(instruction, 0).ok() == Some(frame_first)
+        });
+        let first = if uses_frame_end {
+            frame_first
+        } else {
+            first_argument.unwrap_or(count_register)
+        };
+        return Ok((argument_count, first));
+    }
+    Err(unsupported(f, call, "missing long-call argument count"))
 }
 
 fn definitely_undefined_receiver(
@@ -2933,6 +3101,9 @@ function _get_method(_value, _key) {
 function _throw_type_error(_message) {
     throw new _type_error(_message);
 }
+function _throw_reference_error(_message) {
+    throw new _reference_error(_message);
+}
 "#;
     embedded_runtime("mercury-private-builtin-runtime.js", SOURCE)
 }
@@ -3013,6 +3184,7 @@ function _enter_function() {
     return void 0;
 }
 function _call_with_new_target(_function, _new_target, _this_value, _arguments_value) {
+    if (_new_target === void 0) return _apply(_function, _this_value, _arguments_value);
     if (_recovered_functions["has"](_function)) {
         var _entry = { target: _new_target, pending: true, next: _new_target_stack };
         _new_target_stack = _entry;
@@ -3211,6 +3383,9 @@ function _get_method(_value, _key) {
 }
 function _throw_type_error(_message) {
     throw new _type_error(_message);
+}
+function _throw_reference_error(_message) {
+    throw new _reference_error(_message);
 }
 "#;
     embedded_runtime("mercury-suspension-runtime.js", SOURCE)

@@ -332,6 +332,73 @@ CASES = {
         var values=[1n,2n,3n,4n,5n],product=1n;for(var value of values)product*=value;
         print("bigint",String(c),String(product),a>b,String(BigInt("9007199254740993")+1n));
     """,
+    "language/unary_equality.js": r"""
+        function inspect(value, other) {
+          return [~value, !value, value != other, value == other, !(value < other), !(value >= other)];
+        }
+        print("unary-equality", inspect(5, 6).join("|"), inspect(0, 0).join("|"));
+    """,
+    "language/private_fields.js": r"""
+        class Counter {
+          #value;
+          static #instances = 0;
+          constructor(value) { this.#value = value; Counter.#instances++; }
+          get() { return this.#value; }
+          set(value) { this.#value = value; }
+          has(object) { return #value in object; }
+          static count() { return Counter.#instances; }
+        }
+        var first = new Counter(4), second = new Counter(9);
+        first.set(first.get() + 3);
+        print("private-fields", first.get(), second.get(), first.has(first), first.has({}), Counter.count());
+    """,
+    "language/computed_super.js": r"""
+        class Base { constructor() { this.value = 7; } get value() { return this._value; } set value(v) { this._value = v; } }
+        class Derived extends Base {
+          read(key) { return super[key]; }
+          write(key, value) { super[key] = value; }
+        }
+        var item = new Derived(), key = "value";
+        item.write(key, 12);
+        print("computed-super", item.read(key));
+    """,
+    "language/debugger_tdz.js": r"""
+        debugger;
+        function temporalDeadZone() {
+          try { print("unreachable", missing); } catch (error) { return error instanceof ReferenceError; } finally { let missing = 1; }
+        }
+        print("debugger-tdz", temporalDeadZone());
+    """,
+    "language/try_property_writes.js": r"""
+        function loose(object, value) { try { object.answer = value; } catch (error) { return "caught"; } return object.answer; }
+        function strict(object, value) { "use strict"; try { object.answer = value; } catch (error) { return "caught"; } return object.answer; }
+        var object = {};
+        print("try-property-writes", loose(object, 4), strict(object, 8), object.answer);
+    """,
+    "language/to_property_key.js": r"""
+        var key = { toString: function () { return "converted"; } }, object = {};
+        object[key] = 11;
+        print("to-property-key", object.converted, object[key]);
+    """,
+    "language/own_property_slots.js": r"""
+        function make(value) {
+          var object = { first: value, second: value + 1, third: value + 2 };
+          return object.first + object.second + object.third;
+        }
+        print("own-property-slots", make(5), make(9));
+    """,
+    "language/nested_environments.js": r"""
+        function outer(seed) {
+          var shared = seed;
+          function middle(step) {
+            var local = step;
+            return function inner() { shared += local; return shared; };
+          }
+          return middle;
+        }
+        var middle = outer(3), first = middle(2), second = middle(5);
+        print("nested-environments", first(), second(), first());
+    """,
 }
 
 
@@ -377,11 +444,12 @@ def generated_cases():
             print("large-switch-{count}", checksum, choose({count // 2}), choose({count + 1}));
         """
 
-    for count in (8, 32, 128):
+    for count in (8, 32, 128, 256, 512):
         declarations = ["var value0 = seed;"]
         for index in range(1, count + 1):
             declarations.append(f"var value{index} = value{index - 1} + {index};")
-        captured = " + ".join(f"value{index}" for index in range(0, count + 1, max(1, count // 8)))
+        capture_step = 1 if count >= 256 else max(1, count // 8)
+        captured = " + ".join(f"value{index}" for index in range(0, count + 1, capture_step))
         result[f"size/closure_capture_{count}.js"] = f"""
             function build(seed) {{
               {' '.join(declarations)}
@@ -402,6 +470,84 @@ def generated_cases():
             + "\n".join(statements)
             + f'\nprint("straight-line-{count}", value);\n'
         )
+
+    parameters = ", ".join(f"p{index}" for index in range(256))
+    arguments = ", ".join(str(index) for index in range(256))
+    result["size/wide_parameters.js"] = f"""
+        function wide({parameters}) {{ return p0 + p255; }}
+        print("wide-parameters", wide({arguments}));
+    """
+    result["size/wide_builtin_call.js"] = f"""
+        print("wide-builtin-call", Math.max({arguments}));
+    """
+    result["size/wide_constructor_call.js"] = f"""
+        function Wide({parameters}) {{ this.total = p0 + p255; }}
+        var value = new Wide({arguments});
+        print("wide-constructor-call", value.total);
+    """
+
+    for numeric in (False, True):
+        functions = []
+        calls = []
+        for index, operator in enumerate(("<", "<=", ">", ">=", "==", "!=", "===", "!==")):
+            left, right = ("Math.sqrt(input)", "Math.sqrt(input + 1)") if numeric else ("left", "right")
+            signature = "input" if numeric else "left, right, input"
+            statements = " ".join(
+                f"value = (Math.imul(value ^ {step + index * 64}, 33) + {step}) | 0;"
+                for step in range(64)
+            )
+            functions.append(f"""
+                function branch{index}({signature}) {{
+                  var value = input;
+                  if ({left} {operator} {right}) {{ {statements} }} else {{ value = -value; }}
+                  return value;
+                }}
+            """)
+            call_arguments = "7" if numeric else "3, 5, 7"
+            calls.append(f"checksum = (checksum + branch{index}({call_arguments})) | 0;")
+        kind = "numeric" if numeric else "generic"
+        result[f"size/long_branches_{kind}.js"] = (
+            "\n".join(functions)
+            + "\nvar checksum = 0;\n"
+            + "\n".join(calls)
+            + f'\nprint("long-branches-{kind}", checksum);\n'
+        )
+
+    accesses = "\n".join(f"checksum = (checksum + object.p{index}) | 0;" for index in range(300))
+    properties = ", ".join(f"p{index}: {index}" for index in range(300))
+    result["size/property_cache_overflow.js"] = f"""
+        var source = {{{properties}}};
+        function readAll(object) {{
+          var checksum = 0;
+          {accesses}
+          return checksum;
+        }}
+        print("property-cache-overflow", readAll(source), readAll(source));
+    """
+
+    for count in (256, 1024):
+        values = ", ".join(f"value + {index}" for index in range(count))
+        result[f"size/dense_array_{count}.js"] = f"""
+            var value = 3, array = [{values}];
+            print("dense-array-{count}", array.length, array[0], array[{count - 1}]);
+        """
+
+    count = 65536
+    strings = ",\n".join(f'"string-{index}"' for index in range(count))
+    result["size/many_strings_65536.js"] = f"""
+        var strings = [{strings}];
+        print("many-strings", strings.length, strings[0], strings[{count - 1}]);
+    """
+    bigints = ",\n".join(f"{index}n" for index in range(count))
+    result["size/many_bigints_65536.js"] = f"""
+        var bigints = [{bigints}];
+        print("many-bigints", bigints.length, String(bigints[0]), String(bigints[{count - 1}]));
+    """
+    entries = ",\n".join(f"property{index}: {index}" for index in range(count))
+    result["size/many_properties_65536.js"] = f"""
+        var object = {{{entries}}};
+        print("many-properties-wide", Object.keys(object).length, object.property0, object.property{count - 1});
+    """
     return result
 
 

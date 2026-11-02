@@ -641,10 +641,13 @@ fn extract_builtins(source: &str) -> Vec<BuiltinSpec> {
 
     for line in source.lines() {
         let line = line.trim();
-        let parsed = if let Some(body) = line.strip_prefix("BUILTIN_OBJECT(") {
+        // Only method lines receive BuiltinMethod enum IDs: object and
+        // MARK_FIRST_* macros expand to nothing, and commented-out lines
+        // never reach the enum.
+        let parsed = if let Some(body) = line.strip_prefix("NORMAL_METHOD(") {
             Some((
-                BuiltinKind::BuiltinObject,
-                body.trim_end_matches(')').to_owned(),
+                BuiltinKind::NormalMethod,
+                body.trim_end_matches(')').replace(", ", "."),
             ))
         } else if let Some(body) = line.strip_prefix("BUILTIN_METHOD(") {
             Some((
@@ -1059,7 +1062,7 @@ fn map_visit_method_to_section(method_name: &str) -> (&'static str, Vec<String>)
 
 #[cfg(test)]
 mod tests {
-    use super::extract_bitfield_spec;
+    use super::{extract_bitfield_spec, extract_builtins};
 
     #[test]
     fn extracts_direct_multiline_bitfield_macros() {
@@ -1091,6 +1094,58 @@ mod tests {
                 ("StaticBuiltins", "bool", 1),
                 ("CjsModulesStaticallyResolved", "bool", 1),
             ]
+        );
+    }
+
+    #[test]
+    fn extracts_only_method_builtins_in_enum_order() {
+        let source = r#"
+NORMAL_OBJECT(globalThis)
+NORMAL_METHOD(globalThis, Symbol)
+NORMAL_METHOD(globalThis, eval)
+
+BUILTIN_OBJECT(Array)
+// BUILTIN_METHOD(Array, from)
+BUILTIN_METHOD(Array, isArray)
+
+BUILTIN_OBJECT(Math)
+BUILTIN_METHOD(Math, max)
+
+PRIVATE_BUILTIN(silentSetPrototypeOf)
+MARK_FIRST_PRIVATE_BUILTIN(silentSetPrototypeOf)
+PRIVATE_BUILTIN(requireFast)
+
+JS_BUILTIN(spawnAsync)
+MARK_FIRST_JS_BUILTIN(spawnAsync)
+"#;
+        let builtins = extract_builtins(source);
+        let names = builtins
+            .iter()
+            .map(|builtin| {
+                (
+                    builtin.index,
+                    format!("{:?}", builtin.kind),
+                    builtin.name.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                (0, "NormalMethod".to_owned(), "globalThis.Symbol"),
+                (1, "NormalMethod".to_owned(), "globalThis.eval"),
+                (2, "BuiltinMethod".to_owned(), "Array.isArray"),
+                (3, "BuiltinMethod".to_owned(), "Math.max"),
+                (4, "PrivateBuiltin".to_owned(), "silentSetPrototypeOf"),
+                (5, "PrivateBuiltin".to_owned(), "requireFast"),
+                (6, "JsBuiltin".to_owned(), "spawnAsync"),
+            ]
+        );
+        assert!(
+            builtins
+                .iter()
+                .enumerate()
+                .all(|(index, builtin)| builtin.index as usize == index)
         );
     }
 

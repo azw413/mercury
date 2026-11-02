@@ -5019,281 +5019,256 @@
     "builtins": [
       {
         "index": 0,
-        "kind": "builtin_object",
-        "name": "Array"
-      },
-      {
-        "index": 1,
         "kind": "builtin_method",
         "name": "Array.isArray"
       },
       {
-        "index": 2,
+        "index": 1,
         "kind": "builtin_method",
         "name": "Date.UTC"
       },
       {
-        "index": 3,
+        "index": 2,
         "kind": "builtin_method",
         "name": "Date.parse"
       },
       {
-        "index": 4,
-        "kind": "builtin_object",
-        "name": "JSON"
-      },
-      {
-        "index": 5,
+        "index": 3,
         "kind": "builtin_method",
         "name": "JSON.parse"
       },
       {
-        "index": 6,
+        "index": 4,
         "kind": "builtin_method",
         "name": "JSON.stringify"
       },
       {
-        "index": 7,
-        "kind": "builtin_object",
-        "name": "Math"
-      },
-      {
-        "index": 8,
+        "index": 5,
         "kind": "builtin_method",
         "name": "Math.abs"
       },
       {
-        "index": 9,
+        "index": 6,
         "kind": "builtin_method",
         "name": "Math.acos"
       },
       {
-        "index": 10,
+        "index": 7,
         "kind": "builtin_method",
         "name": "Math.asin"
       },
       {
-        "index": 11,
+        "index": 8,
         "kind": "builtin_method",
         "name": "Math.atan"
       },
       {
-        "index": 12,
+        "index": 9,
         "kind": "builtin_method",
         "name": "Math.atan2"
       },
       {
-        "index": 13,
+        "index": 10,
         "kind": "builtin_method",
         "name": "Math.ceil"
       },
       {
-        "index": 14,
+        "index": 11,
         "kind": "builtin_method",
         "name": "Math.cos"
       },
       {
-        "index": 15,
+        "index": 12,
         "kind": "builtin_method",
         "name": "Math.exp"
       },
       {
-        "index": 16,
+        "index": 13,
         "kind": "builtin_method",
         "name": "Math.floor"
       },
       {
-        "index": 17,
+        "index": 14,
         "kind": "builtin_method",
         "name": "Math.hypot"
       },
       {
-        "index": 18,
+        "index": 15,
         "kind": "builtin_method",
         "name": "Math.imul"
       },
       {
-        "index": 19,
+        "index": 16,
         "kind": "builtin_method",
         "name": "Math.log"
       },
       {
-        "index": 20,
+        "index": 17,
         "kind": "builtin_method",
         "name": "Math.max"
       },
       {
-        "index": 21,
+        "index": 18,
         "kind": "builtin_method",
         "name": "Math.min"
       },
       {
-        "index": 22,
+        "index": 19,
         "kind": "builtin_method",
         "name": "Math.pow"
       },
       {
-        "index": 23,
+        "index": 20,
         "kind": "builtin_method",
         "name": "Math.round"
       },
       {
-        "index": 24,
+        "index": 21,
         "kind": "builtin_method",
         "name": "Math.sin"
       },
       {
-        "index": 25,
+        "index": 22,
         "kind": "builtin_method",
         "name": "Math.sqrt"
       },
       {
-        "index": 26,
+        "index": 23,
         "kind": "builtin_method",
         "name": "Math.tan"
       },
       {
-        "index": 27,
+        "index": 24,
         "kind": "builtin_method",
         "name": "Math.trunc"
       },
       {
-        "index": 28,
-        "kind": "builtin_object",
-        "name": "Object"
-      },
-      {
-        "index": 29,
+        "index": 25,
         "kind": "builtin_method",
         "name": "Object.create"
       },
       {
-        "index": 30,
+        "index": 26,
         "kind": "builtin_method",
         "name": "Object.defineProperties"
       },
       {
-        "index": 31,
+        "index": 27,
         "kind": "builtin_method",
         "name": "Object.defineProperty"
       },
       {
-        "index": 32,
+        "index": 28,
         "kind": "builtin_method",
         "name": "Object.freeze"
       },
       {
-        "index": 33,
+        "index": 29,
         "kind": "builtin_method",
         "name": "Object.getOwnPropertyDescriptor"
       },
       {
-        "index": 34,
+        "index": 30,
         "kind": "builtin_method",
         "name": "Object.getOwnPropertyNames"
       },
       {
-        "index": 35,
+        "index": 31,
         "kind": "builtin_method",
         "name": "Object.getPrototypeOf"
       },
       {
-        "index": 36,
+        "index": 32,
         "kind": "builtin_method",
         "name": "Object.isExtensible"
       },
       {
-        "index": 37,
+        "index": 33,
         "kind": "builtin_method",
         "name": "Object.isFrozen"
       },
       {
-        "index": 38,
+        "index": 34,
         "kind": "builtin_method",
         "name": "Object.keys"
       },
       {
-        "index": 39,
+        "index": 35,
         "kind": "builtin_method",
         "name": "Object.seal"
       },
       {
-        "index": 40,
-        "kind": "builtin_object",
-        "name": "String"
-      },
-      {
-        "index": 41,
+        "index": 36,
         "kind": "builtin_method",
         "name": "String.fromCharCode"
       },
       {
-        "index": 42,
+        "index": 37,
         "kind": "private_builtin",
         "name": "silentSetPrototypeOf"
       },
       {
-        "index": 43,
+        "index": 38,
         "kind": "private_builtin",
         "name": "requireFast"
       },
       {
-        "index": 44,
+        "index": 39,
         "kind": "private_builtin",
         "name": "getTemplateObject"
       },
       {
-        "index": 45,
+        "index": 40,
         "kind": "private_builtin",
         "name": "ensureObject"
       },
       {
-        "index": 46,
+        "index": 41,
         "kind": "private_builtin",
         "name": "getMethod"
       },
       {
-        "index": 47,
+        "index": 42,
         "kind": "private_builtin",
         "name": "throwTypeError"
       },
       {
-        "index": 48,
+        "index": 43,
         "kind": "private_builtin",
         "name": "generatorSetDelegated"
       },
       {
-        "index": 49,
+        "index": 44,
         "kind": "private_builtin",
         "name": "copyDataProperties"
       },
       {
-        "index": 50,
+        "index": 45,
         "kind": "private_builtin",
         "name": "copyRestArgs"
       },
       {
-        "index": 51,
+        "index": 46,
         "kind": "private_builtin",
         "name": "arraySpread"
       },
       {
-        "index": 52,
+        "index": 47,
         "kind": "private_builtin",
         "name": "apply"
       },
       {
-        "index": 53,
+        "index": 48,
         "kind": "private_builtin",
         "name": "exportAll"
       },
       {
-        "index": 54,
+        "index": 49,
         "kind": "private_builtin",
         "name": "exponentiationOperator"
       },
       {
-        "index": 55,
+        "index": 50,
         "kind": "js_builtin",
         "name": "spawnAsync"
       }

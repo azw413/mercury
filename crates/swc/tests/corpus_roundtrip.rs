@@ -1,10 +1,17 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Output},
 };
 
-use mercury_hbc::{HbcCompiler, decompile};
+use mercury_hbc::{
+    HbcCompiler,
+    binary::{decode_raw_module, parse_hbc_container_with_spec},
+    decompile,
+    spec_builtin::load_spec,
+};
+use serde::Serialize;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Observation {
@@ -12,6 +19,101 @@ struct Observation {
     signal: Option<i32>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+}
+
+#[derive(Default)]
+struct FixtureCoverage {
+    reference: BTreeSet<String>,
+    rebuilt: BTreeSet<String>,
+}
+
+#[derive(Serialize)]
+struct CoverageReport {
+    version: u32,
+    coverage_kind: &'static str,
+    successful_cases: usize,
+    opcodes: BTreeMap<String, OpcodeCoverage>,
+}
+
+#[derive(Serialize)]
+struct OpcodeCoverage {
+    opcode: u16,
+    reference: BTreeMap<String, BTreeSet<String>>,
+    rebuilt: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl CoverageReport {
+    fn new(version: u32) -> Self {
+        let spec = load_spec(version).expect("embedded bytecode spec");
+        let opcodes = spec
+            .bytecode
+            .instructions
+            .iter()
+            .map(|instruction| {
+                (
+                    instruction.name.clone(),
+                    OpcodeCoverage {
+                        opcode: instruction.opcode,
+                        reference: BTreeMap::new(),
+                        rebuilt: BTreeMap::new(),
+                    },
+                )
+            })
+            .collect();
+        Self {
+            version,
+            coverage_kind: "static instruction presence after successful roundtrip",
+            successful_cases: 0,
+            opcodes,
+        }
+    }
+
+    fn record(&mut self, path: &Path, mode: &str, coverage: FixtureCoverage) {
+        self.successful_cases += 1;
+        let relative = path
+            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            .unwrap_or(path);
+        let fixture = relative.to_string_lossy().into_owned();
+        for (reference, opcodes) in [(true, coverage.reference), (false, coverage.rebuilt)] {
+            for name in opcodes {
+                let entry = self.opcodes.get_mut(&name).expect("decoded opcode in spec");
+                let side = if reference {
+                    &mut entry.reference
+                } else {
+                    &mut entry.rebuilt
+                };
+                side.entry(mode.to_owned())
+                    .or_default()
+                    .insert(fixture.clone());
+            }
+        }
+    }
+
+    fn write(&self, path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create coverage report directory");
+        }
+        let mut json = serde_json::to_vec_pretty(self).expect("serialize coverage report");
+        json.push(b'\n');
+        fs::write(path, json).expect("write coverage report");
+    }
+}
+
+#[test]
+fn hbc98_coverage_report_contains_all_opcodes() {
+    let spec = load_spec(98).expect("embedded HBC 98 spec");
+    let report = CoverageReport::new(98);
+    assert_eq!(spec.bytecode.instructions.len(), 219);
+    assert_eq!(report.opcodes.len(), 219);
+    for instruction in &spec.bytecode.instructions {
+        let coverage = report
+            .opcodes
+            .get(&instruction.name)
+            .expect("opcode in coverage report");
+        assert_eq!(coverage.opcode, instruction.opcode);
+        assert!(coverage.reference.is_empty());
+        assert!(coverage.rebuilt.is_empty());
+    }
 }
 
 #[test]
@@ -26,20 +128,46 @@ fn hermesc_hbc98_javascript_corpus_roundtrips_with_identical_execution() {
     run_corpus(98, "HERMES98_BIN");
 }
 
+/// Fixtures (relative to `tests/corpus`) using syntax the HBC 96 hermesc
+/// rejects outright; they only run in the HBC 98 matrix.
+const HBC98_ONLY_FIXTURES: &[&str] = &["language/computed_super.js", "language/private_fields.js"];
+
 fn run_corpus(version: u32, runtime_variable: &str) {
     let hermesc = required_tool("HERMESC_BIN", version);
     let hermes = required_tool(runtime_variable, version);
+    let corpus_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("corpus");
     let files = corpus_files();
     assert!(!files.is_empty(), "the JavaScript corpus is empty");
+    let files = files
+        .into_iter()
+        .filter(|path| {
+            let hbc98_only = HBC98_ONLY_FIXTURES
+                .iter()
+                .map(Path::new)
+                .any(|fixture| path.strip_prefix(&corpus_root) == Ok(fixture));
+            if version < 98 && hbc98_only {
+                println!("skipping HBC 98-only fixture {}", path.display());
+            }
+            version >= 98 || !hbc98_only
+        })
+        .collect::<Vec<_>>();
     let modes = hermesc_modes();
 
+    let mut coverage = CoverageReport::new(version);
     let mut failures = Vec::new();
     for path in &files {
         for mode in &modes {
-            if let Err(error) = roundtrip_fixture(path, mode, &hermes, &hermesc, version) {
-                failures.push(format!("{} ({mode}):\n{error}", path.display()));
+            match roundtrip_fixture(path, mode, &hermes, &hermesc, version) {
+                Ok(fixture_coverage) => coverage.record(path, mode, fixture_coverage),
+                Err(error) => failures.push(format!("{} ({mode}):\n{error}", path.display())),
             }
         }
+    }
+
+    if let Some(path) = env::var_os("MERCURY_HBC_COVERAGE_REPORT") {
+        coverage.write(Path::new(&path));
     }
 
     assert!(
@@ -127,7 +255,7 @@ fn roundtrip_fixture(
     hermes: &Path,
     hermesc: &Path,
     version: u32,
-) -> Result<(), String> {
+) -> Result<FixtureCoverage, String> {
     let directory = tempfile::tempdir().map_err(|error| format!("temporary directory: {error}"))?;
     let original_path = directory.path().join("original.hbc");
     let rebuilt_path = directory.path().join("rebuilt.hbc");
@@ -158,7 +286,7 @@ fn roundtrip_fixture(
     let rebuilt = HbcCompiler::new(version)
         .compile(&recovered)
         .map_err(|error| format!("native rebuild: {error}"))?;
-    fs::write(&rebuilt_path, rebuilt)
+    fs::write(&rebuilt_path, &rebuilt)
         .map_err(|error| format!("writing rebuilt bytecode: {error}"))?;
     let candidate = execute(hermes, &rebuilt_path, directory.path(), version)?;
 
@@ -170,7 +298,31 @@ fn roundtrip_fixture(
             describe(&candidate),
         ));
     }
-    Ok(())
+    fixture_coverage(&original_bytes, &rebuilt, version)
+}
+
+fn fixture_coverage(
+    original: &[u8],
+    rebuilt: &[u8],
+    version: u32,
+) -> Result<FixtureCoverage, String> {
+    let spec = load_spec(version).expect("embedded bytecode spec");
+    let decode = |bytes: &[u8]| -> Result<BTreeSet<String>, String> {
+        let container = parse_hbc_container_with_spec(bytes, &spec.container)
+            .map_err(|error| format!("coverage parse: {error}"))?;
+        let module = decode_raw_module(&container, bytes, &spec.bytecode)
+            .map_err(|error| format!("coverage decode: {error}"))?;
+        Ok(module
+            .functions
+            .iter()
+            .flat_map(|function| &function.instructions)
+            .map(|instruction| instruction.name.clone())
+            .collect())
+    };
+    Ok(FixtureCoverage {
+        reference: decode(original)?,
+        rebuilt: decode(rebuilt)?,
+    })
 }
 
 fn preserve_artifacts(source: &Path, optimization: &str, temporary: &Path) -> Result<(), String> {

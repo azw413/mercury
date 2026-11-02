@@ -5,10 +5,10 @@ use std::{
 
 use crate::binary::{
     DecodedInstruction, DecodedOperand, ExceptionHandlerEntry, HbcString, MinimalFunction,
-    MinimalModule, StringKind, build_minimal_module, encode_instruction,
+    MinimalModule, ShapeTableEntry, StringKind, build_minimal_module, encode_instruction,
 };
 use crate::spec::BytecodeSpec;
-use crate::{regex as mercury_regex, spec_builtin as mercury_spec_builtin};
+use crate::{literal::LiteralValue, regex as mercury_regex, spec_builtin as mercury_spec_builtin};
 use swc_core::atoms::Wtf8Atom;
 use swc_core::ecma::ast::{
     ArrowExpr, ArrowFunctionBody, AssignOp, AssignTarget, BinaryOp, BlockStmt, Callee, Decl, Expr,
@@ -28,17 +28,6 @@ const REGISTER_PRESSURE: &str = "expression needs more than 256 live registers";
 const CALLER_EXTRA_REGISTERS_HBC96: u16 = 6;
 // HBC 98 adds SHLocals to the caller's stack-frame metadata.
 const CALLER_EXTRA_REGISTERS_HBC98: u16 = 7;
-// Private builtin IDs in HBC 98 are shifted by two additional public builtins.
-const PRIVATE_BUILTIN_ID_OFFSET_HBC98: u8 = 2;
-const SILENT_SET_PROTOTYPE_OF_BUILTIN: u8 = 37;
-const GET_TEMPLATE_OBJECT_BUILTIN: u8 = 39;
-const THROW_TYPE_ERROR_BUILTIN: u8 = 42;
-const COPY_DATA_PROPERTIES_BUILTIN: u8 = 44;
-const COPY_REST_ARGS_BUILTIN: u8 = 45;
-const ARRAY_SPREAD_BUILTIN: u8 = 46;
-const APPLY_BUILTIN: u8 = 47;
-const EXPONENTIATION_BUILTIN: u8 = 49;
-const INIT_REGEX_NAMED_GROUPS_BUILTIN: u8 = 50;
 
 /// A native compiler from SWC syntax trees to Hermes bytecode.
 ///
@@ -87,10 +76,15 @@ impl HbcCompiler {
 
 struct Compiler {
     version: u32,
+    /// Builtin method name → CallBuiltin index, from the embedded spec.
+    builtin_ids: HashMap<String, u32>,
     instructions: Vec<DecodedInstruction>,
     strings: Vec<HbcString>,
     string_kinds: Vec<StringKind>,
     string_ids: HashMap<HbcString, u32>,
+    literal_value_buffer: Vec<u8>,
+    object_key_buffer: Vec<u8>,
+    object_shape_table: Vec<ShapeTableEntry>,
     reg_exps: Vec<mercury_regex::CompiledRegex>,
     reg_exp_ids: HashMap<(String, String), u32>,
     template_object_ids: HashMap<Vec<String>, u32>,
@@ -123,6 +117,14 @@ struct Compiler {
     /// Set while recompiling a function that ran out of registers: every
     /// binding then lives in an environment slot, as before register storage.
     register_bindings_disabled: bool,
+}
+
+enum BufferedLiteral {
+    Null,
+    Undefined,
+    Bool(bool),
+    Number(f64),
+    String(HbcString),
 }
 
 #[derive(Clone)]
@@ -433,12 +435,25 @@ enum DecompiledDispatcherTerminator<'a> {
 
 impl Compiler {
     fn new(version: u32) -> Self {
+        let builtin_ids = mercury_spec_builtin::load_spec(version)
+            .map(|spec| {
+                spec.bytecode
+                    .builtins
+                    .iter()
+                    .map(|builtin| (builtin.name.clone(), builtin.index))
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             version,
+            builtin_ids,
             instructions: Vec::new(),
             strings: Vec::new(),
             string_kinds: Vec::new(),
             string_ids: HashMap::new(),
+            literal_value_buffer: Vec::new(),
+            object_key_buffer: Vec::new(),
+            object_shape_table: Vec::new(),
             reg_exps: Vec::new(),
             reg_exp_ids: HashMap::new(),
             template_object_ids: HashMap::new(),
@@ -562,10 +577,10 @@ impl Compiler {
             global_code_index: 0,
             strings: self.strings,
             string_kinds: self.string_kinds,
-            literal_value_buffer: Vec::new(),
-            object_key_buffer: Vec::new(),
+            literal_value_buffer: self.literal_value_buffer,
+            object_key_buffer: self.object_key_buffer,
             object_value_buffer: Vec::new(),
-            object_shape_table: Vec::new(),
+            object_shape_table: self.object_shape_table,
             reg_exps: self
                 .reg_exps
                 .into_iter()
@@ -939,6 +954,9 @@ impl Compiler {
         spec: &BytecodeSpec,
     ) -> Result<MinimalFunction, Error> {
         let strings = self.strings.len();
+        let literal_values = self.literal_value_buffer.len();
+        let object_keys = self.object_key_buffer.len();
+        let object_shapes = self.object_shape_table.len();
         let reg_exps = self.reg_exps.len();
         let template_objects = self.template_object_ids.clone();
         let pending_functions = self.pending_functions.len();
@@ -948,6 +966,9 @@ impl Compiler {
                 self.strings.truncate(strings);
                 self.string_kinds.truncate(strings);
                 self.string_ids.retain(|_, id| (*id as usize) < strings);
+                self.literal_value_buffer.truncate(literal_values);
+                self.object_key_buffer.truncate(object_keys);
+                self.object_shape_table.truncate(object_shapes);
                 self.reg_exps.truncate(reg_exps);
                 self.reg_exp_ids.retain(|_, id| (*id as usize) < reg_exps);
                 self.template_object_ids = template_objects;
@@ -969,12 +990,6 @@ impl Compiler {
     ) -> Result<MinimalFunction, Error> {
         let param_count = u32::try_from(pending.params.len() + 1)
             .map_err(|_| Error::Unsupported("too many function parameters".into()))?;
-        if param_count >= 128 {
-            return Err(Error::Unsupported(
-                "functions with more than 126 parameters do not fit an HBC 96 small header".into(),
-            ));
-        }
-
         let mut parameter_bindings = Vec::new();
         let simple_parameters = pending
             .params
@@ -1091,19 +1106,24 @@ impl Compiler {
                 }
                 let start = self.alloc_register()?;
                 self.emit_number(start, index as f64);
-                let value = self.emit_builtin_call(COPY_REST_ARGS_BUILTIN, &[start])?;
+                let value = self.emit_builtin_call("copyRestArgs", &[start])?;
                 self.compile_pattern_initialization(&rest.arg, value)?;
                 self.release_register(value)?;
                 self.release_register(start)?;
             } else {
                 let value = self.alloc_register()?;
-                let parameter_index = u8::try_from(index + 1).map_err(|_| {
-                    Error::Unsupported("function parameter index exceeds HBC 96".into())
-                })?;
-                self.emit(
-                    "LoadParam",
-                    vec![reg(value), DecodedOperand::U8(parameter_index)],
-                );
+                let parameter_index = index + 1;
+                if let Ok(parameter_index) = u8::try_from(parameter_index) {
+                    self.emit(
+                        "LoadParam",
+                        vec![reg(value), DecodedOperand::U8(parameter_index)],
+                    );
+                } else {
+                    self.emit(
+                        "LoadParamLong",
+                        vec![reg(value), DecodedOperand::U32(parameter_index as u32)],
+                    );
+                }
                 self.compile_pattern_initialization(parameter, value)?;
                 self.release_register(value)?;
             }
@@ -2379,10 +2399,8 @@ impl Compiler {
                     let target = self.alloc_register()?;
                     self.emit("NewObject", vec![reg(target)]);
                     let excluded = excluded.expect("object rest allocated an exclusion object");
-                    let rest_value = self.emit_builtin_call(
-                        COPY_DATA_PROPERTIES_BUILTIN,
-                        &[target, value, excluded],
-                    )?;
+                    let rest_value =
+                        self.emit_builtin_call("copyDataProperties", &[target, value, excluded])?;
                     self.compile_pattern_initialization(&rest.arg, rest_value)?;
                     self.release_register(rest_value)?;
                     self.release_register(target)?;
@@ -2402,7 +2420,7 @@ impl Compiler {
         let valid = self.new_label();
         self.emit_branch("JmpFalseLong", valid, Some(nullish));
         let message = self.compile_string_value("Cannot destructure 'undefined' or 'null'.")?;
-        let thrown = self.emit_builtin_call(THROW_TYPE_ERROR_BUILTIN, &[message])?;
+        let thrown = self.emit_builtin_call("throwTypeError", &[message])?;
         self.release_register(thrown)?;
         self.release_register(message)?;
         self.mark_label(valid)?;
@@ -2416,16 +2434,21 @@ impl Compiler {
         self.release_register(zero)
     }
 
-    fn emit_builtin_call(&mut self, builtin: u8, arguments: &[u8]) -> Result<u8, Error> {
+    fn emit_builtin_call(&mut self, name: &'static str, arguments: &[u8]) -> Result<u8, Error> {
         let argument_count = u8::try_from(arguments.len() + 1)
             .map_err(|_| Error::Unsupported("too many builtin arguments".into()))?;
-        let builtin = if self.version >= 98 {
-            // applyArguments and applyWithNewTarget also precede exponentiation.
-            let late_builtin_offset = u8::from(builtin >= EXPONENTIATION_BUILTIN) * 2;
-            builtin + PRIVATE_BUILTIN_ID_OFFSET_HBC98 + late_builtin_offset
-        } else {
-            builtin
-        };
+        let builtin = self.builtin_ids.get(name).copied().ok_or_else(|| {
+            Error::Unsupported(format!(
+                "builtin {name} is unavailable in HBC {}",
+                self.version
+            ))
+        })?;
+        let builtin = u8::try_from(builtin).map_err(|_| {
+            Error::Unsupported(format!(
+                "builtin {name} index does not fit CallBuiltin in HBC {}",
+                self.version
+            ))
+        })?;
         self.max_call_arguments = self.max_call_arguments.max(u16::from(argument_count));
         for (index, argument) in arguments.iter().enumerate() {
             self.emit_frame_move(*argument, (index + 1) as u16);
@@ -2449,7 +2472,7 @@ impl Compiler {
         right: u8,
     ) -> Result<(), Error> {
         if operator == BinaryOp::Exp {
-            let output = self.emit_builtin_call(EXPONENTIATION_BUILTIN, &[left, right])?;
+            let output = self.emit_builtin_call("exponentiationOperator", &[left, right])?;
             self.emit("Mov", vec![reg(left), reg(output)]);
             return self.release_register(output);
         }
@@ -2640,10 +2663,8 @@ impl Compiler {
                 if let Some(element) = element {
                     let value = self.compile_expression(&element.expr)?;
                     if element.spread.is_some() {
-                        let updated = self.emit_builtin_call(
-                            ARRAY_SPREAD_BUILTIN,
-                            &[output, value, next_index],
-                        )?;
+                        let updated =
+                            self.emit_builtin_call("arraySpread", &[output, value, next_index])?;
                         self.emit("Mov", vec![reg(next_index), reg(updated)]);
                         self.release_register(updated)?;
                     } else {
@@ -2660,9 +2681,10 @@ impl Compiler {
             return Ok(output);
         }
 
-        let length = u16::try_from(array.elems.len()).map_err(|_| {
-            Error::Unsupported("array literals with more than 65535 slots are not supported".into())
-        })?;
+        // The dense opcodes index existing elements, so they are only safe
+        // while every literal index fits the NewArray size hint (u16).
+        let dense = array.elems.len() <= usize::from(u16::MAX);
+        let length = u16::try_from(array.elems.len()).unwrap_or(0);
         let output = self.alloc_register()?;
         self.emit("NewArray", vec![reg(output), DecodedOperand::U16(length)]);
         for (index, element) in array.elems.iter().enumerate() {
@@ -2671,35 +2693,67 @@ impl Compiler {
             };
             let value = self.compile_expression(&element.expr)?;
             let value_source = self.take_last_move(value).unwrap_or(value);
-            if let Ok(index) = u8::try_from(index) {
-                let opcode = if self.version >= 98 {
-                    "DefineOwnInDenseArray"
+            if dense {
+                if let Ok(index) = u8::try_from(index) {
+                    let opcode = if self.version >= 98 {
+                        "DefineOwnInDenseArray"
+                    } else {
+                        "PutOwnByIndex"
+                    };
+                    self.emit(
+                        opcode,
+                        vec![reg(output), reg(value_source), DecodedOperand::U8(index)],
+                    );
                 } else {
-                    "PutOwnByIndex"
-                };
-                self.emit(
-                    opcode,
-                    vec![reg(output), reg(value_source), DecodedOperand::U8(index)],
-                );
+                    let opcode = if self.version >= 98 {
+                        "DefineOwnInDenseArrayL"
+                    } else {
+                        "PutOwnByIndexL"
+                    };
+                    let index = if self.version >= 98 {
+                        DecodedOperand::U16(index as u16)
+                    } else {
+                        DecodedOperand::U32(index as u32)
+                    };
+                    self.emit(opcode, vec![reg(output), reg(value_source), index]);
+                }
             } else {
-                let opcode = if self.version >= 98 {
-                    "DefineOwnInDenseArrayL"
+                let index = u32::try_from(index)
+                    .map_err(|_| Error::Unsupported("array literal index exceeds u32".into()))?;
+                let (short, long) = if self.version >= 98 {
+                    ("DefineOwnByIndex", "DefineOwnByIndexL")
                 } else {
-                    "PutOwnByIndexL"
+                    ("PutOwnByIndex", "PutOwnByIndexL")
                 };
-                let index = if self.version >= 98 {
-                    DecodedOperand::U16(index as u16)
+                if let Ok(index) = u8::try_from(index) {
+                    self.emit(
+                        short,
+                        vec![reg(output), reg(value_source), DecodedOperand::U8(index)],
+                    );
                 } else {
-                    DecodedOperand::U32(index as u32)
-                };
-                self.emit(opcode, vec![reg(output), reg(value_source), index]);
+                    self.emit(
+                        long,
+                        vec![reg(output), reg(value_source), DecodedOperand::U32(index)],
+                    );
+                }
             }
             self.release_register(value)?;
+        }
+        if length == 0 && !array.elems.is_empty() {
+            let length_register = self.alloc_register()?;
+            self.emit_number(length_register, array.elems.len() as f64);
+            self.emit_put_by_id(output, length_register, "length")?;
+            self.release_register(length_register)?;
         }
         Ok(output)
     }
 
     fn compile_object(&mut self, object: &swc_core::ecma::ast::ObjectLit) -> Result<u8, Error> {
+        if self.version >= 98 && object.props.len() > usize::from(u16::MAX) {
+            if let Some(output) = self.compile_buffered_object(object)? {
+                return Ok(output);
+            }
+        }
         let output = self.alloc_register()?;
         self.emit("NewObject", vec![reg(output)]);
         for property in &object.props {
@@ -2708,8 +2762,7 @@ impl Compiler {
                     unreachable!();
                 };
                 let source = self.compile_expression(&spread.expr)?;
-                let copied =
-                    self.emit_builtin_call(COPY_DATA_PROPERTIES_BUILTIN, &[output, source])?;
+                let copied = self.emit_builtin_call("copyDataProperties", &[output, source])?;
                 self.release_register(copied)?;
                 self.release_register(source)?;
                 continue;
@@ -2725,10 +2778,8 @@ impl Compiler {
                 Prop::KeyValue(property) => {
                     if is_proto_setter_name(&property.key) {
                         let parent = self.compile_expression(&property.value)?;
-                        let updated = self.emit_builtin_call(
-                            SILENT_SET_PROTOTYPE_OF_BUILTIN,
-                            &[output, parent],
-                        )?;
+                        let updated =
+                            self.emit_builtin_call("silentSetPrototypeOf", &[output, parent])?;
                         self.release_register(updated)?;
                         self.release_register(parent)?;
                         continue;
@@ -2774,6 +2825,98 @@ impl Compiler {
             }
         }
         Ok(output)
+    }
+
+    fn compile_buffered_object(
+        &mut self,
+        object: &swc_core::ecma::ast::ObjectLit,
+    ) -> Result<Option<u8>, Error> {
+        let mut keys = Vec::with_capacity(object.props.len());
+        let mut values = Vec::with_capacity(object.props.len());
+        let mut seen_keys = HashSet::with_capacity(object.props.len());
+        for property in &object.props {
+            let PropOrSpread::Prop(property) = property else {
+                return Ok(None);
+            };
+            let Prop::KeyValue(property) = &**property else {
+                return Ok(None);
+            };
+            if is_proto_setter_name(&property.key) {
+                return Ok(None);
+            }
+            let Some(key) = buffered_property_name(&property.key) else {
+                return Ok(None);
+            };
+            // Duplicate keys corrupt the hidden class: its property count
+            // would exceed the buffered key count.
+            if !seen_keys.insert(buffered_key(&key)) {
+                return Ok(None);
+            }
+            let Some(value) = buffered_expression(&property.value) else {
+                return Ok(None);
+            };
+            keys.push(key);
+            values.push(value);
+        }
+
+        let key_offset = u32::try_from(self.object_key_buffer.len())
+            .map_err(|_| Error::Unsupported("object key buffer exceeds HBC 98".into()))?;
+        let value_offset = u32::try_from(self.literal_value_buffer.len())
+            .map_err(|_| Error::Unsupported("literal value buffer exceeds HBC 98".into()))?;
+        let num_props = u32::try_from(keys.len())
+            .map_err(|_| Error::Unsupported("too many properties in object shape".into()))?;
+        for key in keys {
+            let key = self.intern_buffered_literal(key)?;
+            if let LiteralValue::String(id) = key {
+                self.string_kinds[id as usize] = StringKind::Identifier;
+            }
+            encode_buffered_literal(&mut self.object_key_buffer, key);
+        }
+        for value in values {
+            let value = self.intern_buffered_literal(value)?;
+            encode_buffered_literal(&mut self.literal_value_buffer, value);
+        }
+        let shape_index = u32::try_from(self.object_shape_table.len())
+            .map_err(|_| Error::Unsupported("too many HBC 98 object shapes".into()))?;
+        self.object_shape_table.push(ShapeTableEntry {
+            key_buffer_offset: key_offset,
+            num_props,
+        });
+        let output = self.alloc_register()?;
+        if let (Ok(shape_index), Ok(value_offset)) =
+            (u16::try_from(shape_index), u16::try_from(value_offset))
+        {
+            self.emit(
+                "NewObjectWithBuffer",
+                vec![
+                    reg(output),
+                    DecodedOperand::U16(shape_index),
+                    DecodedOperand::U16(value_offset),
+                ],
+            );
+        } else {
+            self.emit(
+                "NewObjectWithBufferLong",
+                vec![
+                    reg(output),
+                    DecodedOperand::U32(shape_index),
+                    DecodedOperand::U32(value_offset),
+                ],
+            );
+        }
+        Ok(Some(output))
+    }
+
+    fn intern_buffered_literal(&mut self, value: BufferedLiteral) -> Result<LiteralValue, Error> {
+        Ok(match value {
+            BufferedLiteral::Null => LiteralValue::Null,
+            BufferedLiteral::Undefined => LiteralValue::Undefined,
+            BufferedLiteral::Bool(value) => LiteralValue::Bool(value),
+            BufferedLiteral::Number(value) => LiteralValue::Number(value),
+            BufferedLiteral::String(value) => {
+                LiteralValue::String(self.intern(value, StringKind::String)?)
+            }
+        })
     }
 
     fn compile_property_name(&mut self, name: &PropName) -> Result<u8, Error> {
@@ -3783,12 +3926,11 @@ impl Compiler {
             (function, function, this_value)
         };
 
-        let requires_apply = call.args.iter().any(|argument| argument.spread.is_some())
-            || (self.version >= 98 && call.args.len() > 254);
+        let requires_apply =
+            call.args.iter().any(|argument| argument.spread.is_some()) || call.args.len() > 254;
         if requires_apply {
             let arguments = self.compile_spread_arguments(&call.args)?;
-            let output =
-                self.emit_builtin_call(APPLY_BUILTIN, &[function, arguments, this_value])?;
+            let output = self.emit_builtin_call("apply", &[function, arguments, this_value])?;
             self.emit("Mov", vec![reg(result), reg(output)]);
             self.release_register(output)?;
             self.release_register(arguments)?;
@@ -3980,7 +4122,7 @@ impl Compiler {
                 });
             }
         }
-        let object = self.emit_builtin_call(GET_TEMPLATE_OBJECT_BUILTIN, &strings)?;
+        let object = self.emit_builtin_call("getTemplateObject", &strings)?;
         self.emit("Mov", vec![reg(result), reg(object)]);
         self.release_register(object)?;
         while let Some(string) = strings.pop() {
@@ -4052,12 +4194,12 @@ impl Compiler {
 
     fn compile_new(&mut self, expression: &swc_core::ecma::ast::NewExpr) -> Result<u8, Error> {
         let arguments = expression.args.as_deref().unwrap_or_default();
-        let requires_apply = arguments.iter().any(|argument| argument.spread.is_some())
-            || (self.version >= 98 && arguments.len() > 254);
+        let requires_apply =
+            arguments.iter().any(|argument| argument.spread.is_some()) || arguments.len() > 254;
         if requires_apply {
             let constructor = self.compile_expression(&expression.callee)?;
             let arguments = self.compile_spread_arguments(arguments)?;
-            let output = self.emit_builtin_call(APPLY_BUILTIN, &[constructor, arguments])?;
+            let output = self.emit_builtin_call("apply", &[constructor, arguments])?;
             self.emit("Mov", vec![reg(constructor), reg(output)]);
             self.release_register(output)?;
             self.release_register(arguments)?;
@@ -4117,7 +4259,7 @@ impl Compiler {
             let value = self.compile_expression(&argument.expr)?;
             if argument.spread.is_some() {
                 let updated =
-                    self.emit_builtin_call(ARRAY_SPREAD_BUILTIN, &[output, value, next_index])?;
+                    self.emit_builtin_call("arraySpread", &[output, value, next_index])?;
                 self.emit("Mov", vec![reg(next_index), reg(updated)]);
                 self.release_register(updated)?;
             } else {
@@ -4290,7 +4432,7 @@ impl Compiler {
             self.release_register(value)?;
             self.release_register(key)?;
         }
-        let result = self.emit_builtin_call(INIT_REGEX_NAMED_GROUPS_BUILTIN, &[regex, groups])?;
+        let result = self.emit_builtin_call("initRegexNamedGroups", &[regex, groups])?;
         self.release_register(result)?;
         self.release_register(groups)
     }
@@ -5471,6 +5613,131 @@ fn unsupported_expression(expression: &Expr) -> Error {
             _ => "this",
         }
     ))
+}
+
+fn buffered_property_name(name: &PropName) -> Option<BufferedLiteral> {
+    let key = match name {
+        PropName::Ident(identifier) => BufferedLiteral::String(identifier.sym.as_ref().into()),
+        PropName::Str(string) => BufferedLiteral::String(match string.value.as_str() {
+            Some(value) => HbcString::from(value),
+            None => HbcString::Utf16(string.value.to_ill_formed_utf16().collect()),
+        }),
+        PropName::Num(number) => BufferedLiteral::Number(number.value),
+        PropName::Computed(property) => buffered_expression(&property.expr)?,
+        PropName::BigInt(_) => return None,
+    };
+    normalize_buffered_key(key)
+}
+
+/// Normalizes a key for the HBC 98 object-literal buffer. Canonical array
+/// indices — including index-looking strings such as `"7"` — are buffered as
+/// numbers, as Hermes does; anything else stays a string. Returns `None` for
+/// keys the buffer cannot represent: non-index numbers (Hermes assumes
+/// numeric buffer keys are array indices) and null, boolean, or undefined
+/// keys, which the buffer decoder cannot decode.
+fn normalize_buffered_key(key: BufferedLiteral) -> Option<BufferedLiteral> {
+    match key {
+        BufferedLiteral::Number(value) => {
+            array_index(value).map(|index| BufferedLiteral::Number(f64::from(index)))
+        }
+        BufferedLiteral::String(text) => Some(match string_array_index(&text) {
+            Some(index) => BufferedLiteral::Number(f64::from(index)),
+            None => BufferedLiteral::String(text),
+        }),
+        BufferedLiteral::Null | BufferedLiteral::Undefined | BufferedLiteral::Bool(_) => None,
+    }
+}
+
+/// An integer in `[0, 2^32 - 1)`; `-0` counts as `0`.
+fn array_index(value: f64) -> Option<u32> {
+    if value == 0.0 || (value.fract() == 0.0 && value > 0.0 && value < 4294967295.0) {
+        Some(value as u32)
+    } else {
+        None
+    }
+}
+
+/// The canonical array index a string names, if any: decimal digits only,
+/// no leading zeros, and less than `2^32 - 1`.
+fn string_array_index(text: &HbcString) -> Option<u32> {
+    let digits: Vec<u8> = match text {
+        HbcString::Utf8(text) => text.as_bytes().to_vec(),
+        HbcString::Utf16(units) => units
+            .iter()
+            .map(|unit| u8::try_from(*unit).ok())
+            .collect::<Option<_>>()?,
+    };
+    if digits.is_empty() || !digits.iter().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let index = std::str::from_utf8(&digits).ok()?.parse::<u32>().ok()?;
+    if index == u32::MAX {
+        return None;
+    }
+    (index.to_string().len() == digits.len()).then_some(index)
+}
+
+/// The identity of a normalized buffer key: index keys compare by index,
+/// string keys by UTF-16 code units, so `"7"` and `7` collide as they would
+/// at runtime.
+#[derive(PartialEq, Eq, Hash)]
+enum BufferedKey {
+    Index(u32),
+    String(Vec<u16>),
+}
+
+fn buffered_key(key: &BufferedLiteral) -> BufferedKey {
+    match key {
+        BufferedLiteral::Number(index) => BufferedKey::Index(*index as u32),
+        BufferedLiteral::String(HbcString::Utf8(text)) => {
+            BufferedKey::String(text.encode_utf16().collect())
+        }
+        BufferedLiteral::String(HbcString::Utf16(units)) => BufferedKey::String(units.clone()),
+        _ => unreachable!("non-key literal in an object key buffer"),
+    }
+}
+
+fn buffered_expression(expression: &Expr) -> Option<BufferedLiteral> {
+    match expression {
+        Expr::Lit(Lit::Null(_)) => Some(BufferedLiteral::Null),
+        Expr::Lit(Lit::Bool(value)) => Some(BufferedLiteral::Bool(value.value)),
+        Expr::Lit(Lit::Num(value)) => Some(BufferedLiteral::Number(value.value)),
+        Expr::Lit(Lit::Str(value)) => Some(BufferedLiteral::String(match value.value.as_str() {
+            Some(text) => HbcString::from(text),
+            None => HbcString::Utf16(value.value.to_ill_formed_utf16().collect()),
+        })),
+        Expr::Unary(unary) if unary.op == UnaryOp::Void => {
+            matches!(&*unary.arg, Expr::Lit(Lit::Num(value)) if value.value == 0.0)
+                .then_some(BufferedLiteral::Undefined)
+        }
+        Expr::Unary(unary) if unary.op == UnaryOp::Minus => match &*unary.arg {
+            Expr::Lit(Lit::Num(value)) => Some(BufferedLiteral::Number(-value.value)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn encode_buffered_literal(buffer: &mut Vec<u8>, value: LiteralValue) {
+    match value {
+        LiteralValue::Null => buffer.push(0x01),
+        LiteralValue::Undefined => buffer.push(0x61),
+        LiteralValue::Bool(true) => buffer.push(0x11),
+        LiteralValue::Bool(false) => buffer.push(0x21),
+        LiteralValue::Number(value) => {
+            buffer.push(0x31);
+            buffer.extend_from_slice(&value.to_le_bytes());
+        }
+        LiteralValue::String(id) => {
+            if let Ok(id) = u16::try_from(id) {
+                buffer.push(0x51);
+                buffer.extend_from_slice(&id.to_le_bytes());
+            } else {
+                buffer.push(0x41);
+                buffer.extend_from_slice(&id.to_le_bytes());
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1565,6 +1565,80 @@ fn native_lexical_tdz_reads_and_writes_fail() {
     assert!(failure.contains("SyntaxError"), "{failure}");
 }
 
+/// A `wide` parameter list `p0..p{wide-1}`; `f` returns `p0 + p{wide-1}`.
+fn wide_parameters_source(wide: usize) -> String {
+    let parameters = (0..wide)
+        .map(|index| format!("p{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let arguments = (1..=wide)
+        .map(|index| index.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "function f({parameters}) {{ return p0 + p{}; }}\nprint(f({arguments}));\n",
+        wide - 1
+    )
+}
+
+#[test]
+fn compiles_wide_parameter_lists_into_overflowed_hbc96_headers() {
+    let bytes = compile(&wide_parameters_source(300), SourceLanguage::JavaScript);
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+
+    let index = raw
+        .functions
+        .iter()
+        .position(|function| function.param_count == 301)
+        .expect("a function with 300 parameters");
+    assert!(container.function_headers[index].overflowed_from_small_header);
+    assert!(
+        raw.functions[index]
+            .instructions
+            .iter()
+            .any(|instruction| instruction.name == "LoadParamLong")
+    );
+    decompile(&bytes).unwrap();
+}
+
+#[test]
+#[ignore = "requires HERMES_BIN for an HBC 96 runtime"]
+fn native_wide_parameter_lists_execute() {
+    let bytes = compile(&wide_parameters_source(300), SourceLanguage::JavaScript);
+
+    assert_eq!(execute(bytes), "301\n");
+}
+
+#[test]
+fn compiles_oversized_array_literals_with_long_indices() {
+    let mut source = String::from("var a = [");
+    for index in 0..65_537 {
+        source.push_str(&format!("{index},"));
+    }
+    source.push_str("0];\n");
+    let bytes = compile(&source, SourceLanguage::JavaScript);
+    let spec = load_spec(96).unwrap();
+    let container = parse_hbc_container_with_spec(&bytes, &spec.container).unwrap();
+    let raw = decode_raw_module(&container, &bytes, &spec.bytecode).unwrap();
+    let names = raw
+        .functions
+        .iter()
+        .flat_map(|function| &function.instructions)
+        .map(|instruction| instruction.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&"PutOwnByIndexL"));
+    assert!(
+        raw.functions
+            .iter()
+            .flat_map(|function| &function.instructions)
+            .filter(|instruction| instruction.name == "NewArray")
+            .any(|instruction| instruction.operands[1] == RawOperand::U16(0))
+    );
+}
+
 fn execute(bytes: Vec<u8>) -> String {
     let output = execute_output(bytes);
     assert!(
