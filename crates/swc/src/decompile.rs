@@ -305,6 +305,12 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
                             | "SelectObject"
                             | "GetNewTarget"
                     ) || call_builtin_signature(op, builtins.apply, Some(3))
+                        || builtins
+                            .apply_arguments
+                            .is_some_and(|id| call_builtin_signature(op, id, Some(4)))
+                        || builtins
+                            .apply_with_new_target
+                            .is_some_and(|id| call_builtin_signature(op, id, None))
                 })
         });
     let lower = Lower {
@@ -2117,23 +2123,39 @@ impl Lower<'_> {
                         b::id("_apply"),
                         vec![args[0].clone(), args[1].clone(), b::id("arguments")],
                     ),
+                    // Both builtins go through Callable::construct when
+                    // new.target is defined, which yields `this` unless the
+                    // callee returns an object.
                     value if Some(value) == ids.apply_arguments && args.len() == 3 => b::call(
-                        b::id("_call_with_new_target"),
+                        b::id("_construct_result"),
                         vec![
-                            args[0].clone(),
                             args[2].clone(),
                             args[1].clone(),
-                            b::id("arguments"),
+                            b::call(
+                                b::id("_call_with_new_target"),
+                                vec![
+                                    args[0].clone(),
+                                    args[2].clone(),
+                                    args[1].clone(),
+                                    b::id("arguments"),
+                                ],
+                            ),
                         ],
                     ),
                     value if Some(value) == ids.apply_with_new_target && args.len() == 4 => {
                         b::call(
-                            b::id("_call_with_new_target"),
+                            b::id("_select_object"),
                             vec![
-                                args[0].clone(),
-                                args[3].clone(),
                                 args[2].clone(),
-                                args[1].clone(),
+                                b::call(
+                                    b::id("_call_with_new_target"),
+                                    vec![
+                                        args[0].clone(),
+                                        args[3].clone(),
+                                        args[2].clone(),
+                                        args[1].clone(),
+                                    ],
+                                ),
                             ],
                         )
                     }
@@ -3398,6 +3420,9 @@ function _select_object(_this_value, _return_value) {
         return _return_value;
     }
     return _this_value;
+}
+function _construct_result(_new_target, _this_value, _return_value) {
+    return _new_target === void 0 ? _return_value : _select_object(_this_value, _return_value);
 }
 "#;
     embedded_runtime("mercury-construction-runtime.js", SOURCE)

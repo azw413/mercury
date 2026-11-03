@@ -455,6 +455,19 @@ CASES = {
         }
         print("computed-class-keys", new Keys().named(), Keys[symbol](), new Keys()[2], log.join(","));
     """,
+    "language/derived_constructors.js": r"""
+        function Base(name) { this.name = name; }
+        function Returning(name) { this.name = name; return { replaced: name }; }
+        class Implicit extends Base { field = 1; }
+        class Direct extends Base { field = 2; constructor(name) { super(name); } }
+        class Spread extends Base { field = 3; constructor(...names) { super(...names); } }
+        class Replaced extends Returning { constructor(...names) { super(...names); } }
+        class ImplicitReplaced extends Returning {}
+        var implicit = new Implicit("a"), direct = new Direct("b"), spread = new Spread("c");
+        print("derived-constructors", implicit.name, implicit.field, implicit instanceof Implicit,
+          direct.name, direct.field, spread.name, spread.field, spread instanceof Spread,
+          new Replaced("d").replaced, new ImplicitReplaced("e").replaced);
+    """,
     "language/inlined_closures.js": r"""
         function counter() {
           let total = 0;

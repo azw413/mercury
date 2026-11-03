@@ -56,9 +56,9 @@ execution tests requiring matching Hermes compilers and runtimes. See
 [the module instructions](../crates/swc/README.md).
 
 For each bytecode version, its corpus roundtrip test recursively compiles 12
-focused JavaScript fixtures and 74 deterministic generated programs with
-`hermesc` at `-O0` and `-O` — 172 cases for HBC 98, and 166 for HBC 96, where
-three fixtures use syntax only the newer compiler accepts. The programs include
+focused JavaScript fixtures and 75 deterministic generated programs with
+`hermesc` at `-O0` and `-O` — 174 cases for HBC 98, and 166 for HBC 96, where
+four fixtures use syntax only the newer compiler accepts. The programs include
 calculation kernels, language and runtime features, and several size stress
 families. Each reference is rebuilt through Mercury's HBC-to-SWC-to-native-HBC
 path and must produce the same status, stdout, and normalized stderr. Run the

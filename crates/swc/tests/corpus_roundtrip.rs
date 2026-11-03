@@ -133,6 +133,7 @@ fn hermesc_hbc98_javascript_corpus_roundtrips_with_identical_execution() {
 const HBC98_ONLY_FIXTURES: &[&str] = &[
     "language/computed_class_keys.js",
     "language/computed_super.js",
+    "language/derived_constructors.js",
     "language/private_fields.js",
 ];
 
