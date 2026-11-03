@@ -164,11 +164,6 @@ pub fn build_minimal_module(
                 ),
             });
         }
-        if function.instructions.is_empty() {
-            return Err(HbcBuildError::InvalidModule {
-                reason: format!("function {} has no instructions", function.name),
-            });
-        }
         let bytecode_size = function
             .instructions
             .last()

@@ -130,7 +130,11 @@ fn hermesc_hbc98_javascript_corpus_roundtrips_with_identical_execution() {
 
 /// Fixtures (relative to `tests/corpus`) using syntax the HBC 96 hermesc
 /// rejects outright; they only run in the HBC 98 matrix.
-const HBC98_ONLY_FIXTURES: &[&str] = &["language/computed_super.js", "language/private_fields.js"];
+const HBC98_ONLY_FIXTURES: &[&str] = &[
+    "language/computed_class_keys.js",
+    "language/computed_super.js",
+    "language/private_fields.js",
+];
 
 fn run_corpus(version: u32, runtime_variable: &str) {
     let hermesc = required_tool("HERMESC_BIN", version);

@@ -36,6 +36,8 @@ struct BuiltinIds {
     apply_with_new_target: Option<u32>,
     exponentiation: u32,
     init_regex_named_groups: u32,
+    function_prototype_apply: Option<u32>,
+    function_prototype_call: Option<u32>,
     spawn_async: Option<u32>,
 }
 
@@ -62,6 +64,8 @@ fn builtin_ids(spec: &crate::spec::BytecodeSpec) -> Result<BuiltinIds, Error> {
         apply_with_new_target: spec.builtin_index("applyWithNewTarget"),
         exponentiation: index("exponentiationOperator")?,
         init_regex_named_groups: index("initRegexNamedGroups")?,
+        function_prototype_apply: spec.builtin_index("functionPrototypeApply"),
+        function_prototype_call: spec.builtin_index("functionPrototypeCall"),
         spawn_async: spec.builtin_index("spawnAsync"),
     })
 }
@@ -155,7 +159,26 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     });
     let needs_direct_eval = has_opcode(&raw, "DirectEval");
     let needs_restricted_global = has_opcode(&raw, "ThrowIfHasRestrictedGlobalProperty");
-    let needs_unreachable = has_opcode(&raw, "Unreachable");
+    // Hermes emits functions it proved are never invoked (for example a
+    // closure whose every call was inlined) with an empty body; calling one
+    // is as invalid as reaching an Unreachable instruction.
+    // Release hermesc also omits Unreachable itself, so a function may end
+    // after a call proven never to return.
+    let needs_unreachable = has_opcode(&raw, "Unreachable")
+        || raw.functions.iter().any(|function| {
+            function.instructions.last().is_none_or(|op| {
+                !op.name.starts_with('J')
+                    && !matches!(
+                        op.name.as_str(),
+                        "Ret"
+                            | "Throw"
+                            | "Unreachable"
+                            | "SwitchImm"
+                            | "UIntSwitchImm"
+                            | "StringSwitchImm"
+                    )
+            })
+        });
     let needs_empty = ["LoadConstEmpty", "ThrowIfEmpty", "ThrowIfThisInitialized"]
         .into_iter()
         .any(|name| has_opcode(&raw, name));
@@ -264,6 +287,8 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     .into_iter()
     .chain(builtins.throw_reference_error)
     .any(|id| has_builtin(&raw, id));
+    let needs_to_property_key = has_opcode(&raw, "ToPropertyKey");
+    let needs_closure_env_runtime = has_opcode(&raw, "GetClosureEnvironment");
     let needs_construction = needs_class
         || raw.functions.iter().any(|function| {
             function.flags.prohibit_invoke != 2
@@ -289,6 +314,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         builtins,
         arrow_functions: &arrow_functions,
         generator_closures: &generator_closures,
+        closure_envs: needs_closure_env_runtime,
     };
     let mut globals = Vec::new();
     let mut seen_globals = HashSet::new();
@@ -354,6 +380,12 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
     }
     if needs_prototype_runtime {
         wrapper_body.extend(prototype_runtime());
+    }
+    if needs_to_property_key {
+        wrapper_body.extend(property_key_runtime());
+    }
+    if needs_closure_env_runtime {
+        wrapper_body.extend(closure_env_runtime());
     }
     if needs_array_spread_runtime {
         wrapper_body.extend(array_spread_runtime());
@@ -635,26 +667,28 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         wrapper_params.push("_symbol".into());
         wrapper_args.push(b::member(b::this(), b::string("Symbol")));
     }
+    if needs_copy_data_runtime || needs_to_property_key {
+        wrapper_params.push("_own_keys".into());
+        wrapper_args.push(b::member(
+            b::member(b::this(), b::string("Reflect")),
+            b::string("ownKeys"),
+        ));
+    }
+    if needs_closure_env_runtime {
+        wrapper_params.push("_closure_envs".into());
+        wrapper_args.push(b::new(b::member(b::this(), b::string("WeakMap")), vec![]));
+    }
     if needs_copy_data_runtime {
-        for (name, value) in [
-            (
-                "_own_keys",
+        for (name, value) in [(
+            "_has_own",
+            b::member(
                 b::member(
-                    b::member(b::this(), b::string("Reflect")),
-                    b::string("ownKeys"),
+                    b::member(b::this(), b::string("Object")),
+                    b::string("prototype"),
                 ),
+                b::string("hasOwnProperty"),
             ),
-            (
-                "_has_own",
-                b::member(
-                    b::member(
-                        b::member(b::this(), b::string("Object")),
-                        b::string("prototype"),
-                    ),
-                    b::string("hasOwnProperty"),
-                ),
-            ),
-        ] {
+        )] {
             wrapper_params.push(name.into());
             wrapper_args.push(value);
         }
@@ -730,6 +764,7 @@ pub fn decompile(bytes: &[u8]) -> Result<SwcModule, Error> {
         || needs_construction
         || needs_iterator_runtime
         || needs_copy_data_runtime
+        || needs_closure_env_runtime
         || needs_array_spread_runtime
         || needs_private_builtin_runtime
     {
@@ -974,8 +1009,18 @@ struct Lower<'a> {
     builtins: BuiltinIds,
     arrow_functions: &'a [bool],
     generator_closures: &'a HashSet<usize>,
+    /// Whether closures record their creation environment for
+    /// `GetClosureEnvironment`.
+    closure_envs: bool,
 }
 impl Lower<'_> {
+    fn with_closure_env(&self, closure: Box<Expr>, environment: Box<Expr>) -> Box<Expr> {
+        if self.closure_envs {
+            b::call(b::id("_with_env"), vec![closure, environment])
+        } else {
+            closure
+        }
+    }
     fn call_extra_registers(&self) -> u32 {
         if self.version == 98 { 7 } else { 6 }
     }
@@ -1028,6 +1073,13 @@ impl Lower<'_> {
         let mut body = Vec::new();
         if f.flags.strict_mode {
             body.push(b::expr(b::string("use strict")));
+        }
+        if f.instructions.is_empty() {
+            body.push(Stmt::Throw(ThrowStmt {
+                span: DUMMY_SP,
+                arg: b::id("_unreachable"),
+            }));
+            return Ok(body);
         }
         if construction_runtime {
             // An arrow has no `new.target` of its own.
@@ -1251,7 +1303,7 @@ impl Lower<'_> {
                             .ok_or_else(|| unsupported(f, op, "conditional has no fallthrough"))?;
                         stmts.push(Stmt::If(IfStmt {
                             span: DUMMY_SP,
-                            test: branch_condition(f, op)?,
+                            test: branch_condition(f, op, &self.builtins)?,
                             cons: Box::new(set_pc(target)),
                             alt: Some(Box::new(set_pc(next))),
                         }));
@@ -1279,14 +1331,20 @@ impl Lower<'_> {
                 }
             }
             if !terminated {
-                let next = block.next.ok_or_else(|| {
-                    Error::Bytecode(format!("function {} falls off its end", f.function_index))
-                })?;
-                stmts.push(set_pc(next));
-                stmts.push(Stmt::Continue(ContinueStmt {
-                    span: DUMMY_SP,
-                    label: None,
-                }));
+                if let Some(next) = block.next {
+                    stmts.push(set_pc(next));
+                    stmts.push(Stmt::Continue(ContinueStmt {
+                        span: DUMMY_SP,
+                        label: None,
+                    }));
+                } else {
+                    // Without assertions hermesc omits Unreachable, so a
+                    // function can end after a call proven never to return.
+                    stmts.push(Stmt::Throw(ThrowStmt {
+                        span: DUMMY_SP,
+                        arg: b::id("_unreachable"),
+                    }));
+                }
             }
             cases.push(SwitchCase {
                 span: DUMMY_SP,
@@ -1442,18 +1500,19 @@ impl Lower<'_> {
                     b::member(b::id("_make"), b::number(f64::from(target))),
                     vec![r(2)?],
                 );
-                return Ok(vec![
-                    b::assign(
-                        b::id("_class"),
-                        b::call(
-                            b::id("_create_class"),
-                            vec![
-                                constructor,
-                                if derived { r(3)? } else { b::undefined() },
-                                b::boolean(derived),
-                            ],
-                        ),
+                let class = self.with_closure_env(
+                    b::call(
+                        b::id("_create_class"),
+                        vec![
+                            constructor,
+                            if derived { r(3)? } else { b::undefined() },
+                            b::boolean(derived),
+                        ],
                     ),
+                    r(2)?,
+                );
+                return Ok(vec![
+                    b::assign(b::id("_class"), class),
                     b::assign(r(1)?, b::member(b::id("_class"), b::string("prototype"))),
                     b::assign(r(0)?, b::id("_class")),
                 ]);
@@ -1468,9 +1527,12 @@ impl Lower<'_> {
                 if target as usize >= self.raw.functions.len() {
                     return Err(Error::Bytecode("invalid closure target".into()));
                 }
-                b::call(
-                    b::member(b::id("_make"), b::number(f64::from(target))),
-                    vec![r(1)?],
+                self.with_closure_env(
+                    b::call(
+                        b::member(b::id("_make"), b::number(f64::from(target))),
+                        vec![r(1)?],
+                    ),
+                    r(1)?,
                 )
             }
             "GetEnvironment" | "GetParentEnvironment" => {
@@ -1497,6 +1559,9 @@ impl Lower<'_> {
                 )]);
             }
             "GetGlobalObject" => b::id("_g"),
+            "TypeOfIs" => type_of_is_condition(f, op)?,
+            "ToPropertyKey" => b::call(b::id("_to_property_key"), vec![r(1)?]),
+            "GetClosureEnvironment" => b::call(b::id("_closure_env"), vec![r(1)?]),
             "GetNewTarget" => b::id("_function_new_target"),
             "LoadParentNoTraps" | "TypedLoadParent" => {
                 b::call(b::id("_get_prototype_of"), vec![r(1)?])
@@ -2046,6 +2111,12 @@ impl Lower<'_> {
                     value if value == ids.apply => {
                         return Err(unsupported(f, op, "invalid spread-call arguments"));
                     }
+                    // `f.apply(thisArg, arguments)` once `f.apply` is known
+                    // to be Function.prototype.apply.
+                    value if Some(value) == ids.apply_arguments && args.len() == 2 => b::call(
+                        b::id("_apply"),
+                        vec![args[0].clone(), args[1].clone(), b::id("arguments")],
+                    ),
                     value if Some(value) == ids.apply_arguments && args.len() == 3 => b::call(
                         b::id("_call_with_new_target"),
                         vec![
@@ -3089,6 +3160,32 @@ function _silent_set_prototype_of(_target, _parent) {
 "#;
     embedded_runtime("mercury-prototype-runtime.js", SOURCE)
 }
+fn property_key_runtime() -> Vec<Stmt> {
+    // A computed key in an object literal performs exactly ToPropertyKey and,
+    // unlike an assignment, never reaches the `__proto__` setter.
+    const SOURCE: &str = r#"
+function _to_property_key(_value) {
+    return _own_keys({ [_value]: 0 })[0];
+}
+"#;
+    embedded_runtime("mercury-property-key-runtime.js", SOURCE)
+}
+fn closure_env_runtime() -> Vec<Stmt> {
+    const SOURCE: &str = r#"
+function _with_env(_closure, _environment) {
+    _closure_envs["set"](_closure, _environment);
+    return _closure;
+}
+function _closure_env(_closure) {
+    var _environment = _closure_envs["get"](_closure);
+    if (_environment === void 0) {
+        throw new _type_error("closure environment was not recorded");
+    }
+    return _environment;
+}
+"#;
+    embedded_runtime("mercury-closure-env-runtime.js", SOURCE)
+}
 fn array_spread_runtime() -> Vec<Stmt> {
     const SOURCE: &str = r#"
 function _array_spread(_target, _source, _index) {
@@ -3704,17 +3801,24 @@ fn binary_op(name: &str) -> Option<BinaryOp> {
         _ => return None,
     })
 }
-fn branch_condition(f: &RawFunction, op: &RawInstruction) -> Result<Box<Expr>, Error> {
+fn branch_condition(
+    f: &RawFunction,
+    op: &RawInstruction,
+    builtins: &BuiltinIds,
+) -> Result<Box<Expr>, Error> {
     let name = op.name.strip_suffix("Long").unwrap_or(&op.name);
     let name = name.strip_suffix('N').unwrap_or(name);
     if name == "JmpTypeOfIs" {
         return type_of_is_condition(f, op);
     }
     if matches!(name, "JmpBuiltinIs" | "JmpBuiltinIsNot") {
-        let method = match uint(op, 1)? {
-            55 => "apply",
-            56 => "call",
-            _ => return Err(unsupported(f, op, "unsupported builtin branch")),
+        let builtin = Some(uint(op, 1)?);
+        let method = if builtin == builtins.function_prototype_apply {
+            "apply"
+        } else if builtin == builtins.function_prototype_call {
+            "call"
+        } else {
+            return Err(unsupported(f, op, "unsupported builtin branch"));
         };
         let expr = b::binary(
             BinaryOp::EqEqEq,

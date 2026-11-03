@@ -436,6 +436,52 @@ CASES = {
         var middle = outer(3), first = middle(2), second = middle(5);
         print("nested-environments", first(), second(), first());
     """,
+    "language/typeof_is.js": r"""
+        function kinds(value) {
+          var isString = typeof value === "string", isObject = typeof value === "object";
+          var isFunction = typeof value === "function", isUndefined = typeof value === "undefined";
+          return [isString, isObject, isFunction, isUndefined].join("");
+        }
+        print("typeof-is", kinds("a"), kinds(null), kinds({}), kinds(kinds), kinds(), kinds(1n));
+    """,
+    "language/computed_class_keys.js": r"""
+        var log = [];
+        var key = { toString: function () { log.push("key"); return "named"; } };
+        var symbol = Symbol("tag");
+        class Keys {
+          [key]() { return "method"; }
+          static [symbol]() { return "static"; }
+          get [1 + 1]() { return "getter"; }
+        }
+        print("computed-class-keys", new Keys().named(), Keys[symbol](), new Keys()[2], log.join(","));
+    """,
+    "language/inlined_closures.js": r"""
+        function counter() {
+          let total = 0;
+          const bump = (function () { let step = 10; return function () { step++; total++; return step + total; }; })();
+          return function () { return bump() + bump(); };
+        }
+        var count = counter();
+        print("closure-environment", count(), count());
+        function mapped(values) {
+          function double(value) { return value * 2; }
+          return values.map(function (value) { return double(value) + 1; });
+        }
+        print("inlined-helper", mapped([1, 2, 3]).join(","));
+        (function () {
+          function fail(message, depth) { if (depth > 0) fail(message + depth, depth - 1); throw new Error(message); }
+          function first(value) { if (value) return 1; fail("first", 2); }
+          function second(value) { if (value) return 2; fail("second", 1); }
+          globalThis.check = function (value) {
+            var out = [];
+            for (var test of [first, second]) { try { out.push(test(value)); } catch (error) { out.push(error.message); } }
+            return out.join(";");
+          };
+        })();
+        print("noreturn", check(1), check(0));
+        function forward(target) { return function () { return target.apply(this, arguments); }; }
+        print("apply-arguments", forward(function (a, b) { return this.base + a + b; }).call({ base: 1 }, 2, 3));
+    """,
 }
 
 
